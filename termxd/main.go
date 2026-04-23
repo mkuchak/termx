@@ -1,23 +1,11 @@
 package main
 
-import (
-	"fmt"
-	"os"
+import "github.com/mkuchak/termx/termxd/cmd"
 
-	"github.com/spf13/cobra"
-)
-
+// version is set via -ldflags at build time and mirrored into cmd.Version.
 var version = "dev"
 
 func main() {
-	root := &cobra.Command{
-		Use:     "termx",
-		Short:   "termx VPS companion — session registry, event stream, permission broker for Claude Code",
-		Version: version,
-	}
-	// Subcommands added in P4.2+
-	if err := root.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	cmd.Version = version
+	cmd.Execute()
 }
