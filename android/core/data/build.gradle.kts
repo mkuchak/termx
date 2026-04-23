@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
+    alias(libs.plugins.hilt)
 }
 
 android {
@@ -19,6 +20,13 @@ android {
     }
 }
 
+// Emit the Room schema JSON to `schemas/` on every successful compile.
+// The first build's `1.json` is intentionally not checked in yet — task #51
+// covers committing it after CI produces the artifact.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:domain"))
@@ -28,4 +36,6 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
     implementation(libs.datastore)
+    implementation(libs.hilt.android)
+    ksp(libs.hilt.compiler)
 }
