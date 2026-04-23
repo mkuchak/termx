@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.1](https://github.com/mkuchak/termx/compare/v0.2.0...v0.2.1) (2026-04-23)
+
+### Bug Fixes
+
+* correct KSP version to 2.2.10-2.0.2 ([2deb99f](https://github.com/mkuchak/termx/commit/2deb99f9118484ba6931f2e0e1d1f640675ef30f))
+
 ## 0.2.0 (2026-04-23)
 
 ### Features
