@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.3](https://github.com/mkuchak/termx/compare/v0.2.2...v0.2.3) (2026-04-23)
+
+### Bug Fixes
+
+* Kotlin 2.2 removed kotlinOptions DSL; add Base64 import ([3cbf61b](https://github.com/mkuchak/termx/commit/3cbf61b66042eda3b51ea486814b46321ab6681f))
+
 ## [0.2.2](https://github.com/mkuchak/termx/compare/v0.2.1...v0.2.2) (2026-04-23)
 
 ### Bug Fixes
