@@ -1,0 +1,17 @@
+{
+  "name": "termx-tooling",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Monorepo tooling for termx (Android SSH client designed for commanding Claude Code on a VPS)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "release": "GITHUB_TOKEN=$(gh auth token) release-it"
+  },
+  "devDependencies": {
+    "@release-it/conventional-changelog": "^10.0.5",
+    "release-it": "^19.2.4"
+  }
+}

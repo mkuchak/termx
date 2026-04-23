@@ -1,0 +1,44 @@
+# Gradle
+.gradle/
+build/
+!android/gradle/wrapper/gradle-wrapper.jar
+local.properties
+
+# Android
+*.apk
+*.aab
+*.ap_
+*.dex
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Kotlin
+*.kotlin_module
+
+# JetBrains
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# VSCode
+.vscode/
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+.directory
+
+# Keystores / secrets
+*.jks
+*.keystore
+keystore.properties
+
+# Node
+node_modules/
+.npm/
+.pnpm-store/
