@@ -1,0 +1,100 @@
+{"type":"session_created","ts":"2026-04-23T12:00:00Z","session":"s0"}
+{"type":"session_created","ts":"2026-04-23T12:00:01Z","session":"s1"}
+{"type":"session_created","ts":"2026-04-23T12:00:02Z","session":"s2"}
+{"type":"session_created","ts":"2026-04-23T12:00:03Z","session":"s3"}
+{"type":"session_created","ts":"2026-04-23T12:00:04Z","session":"s4"}
+{"type":"session_created","ts":"2026-04-23T12:00:05Z","session":"s5"}
+{"type":"session_created","ts":"2026-04-23T12:00:06Z","session":"s6"}
+{"type":"session_created","ts":"2026-04-23T12:00:07Z","session":"s7"}
+{"type":"session_created","ts":"2026-04-23T12:00:08Z","session":"s8"}
+{"type":"session_created","ts":"2026-04-23T12:00:09Z","session":"s9"}
+{"type":"session_closed","ts":"2026-04-23T12:01:00Z","session":"s0"}
+{"type":"session_closed","ts":"2026-04-23T12:01:01Z","session":"s1"}
+{"type":"session_closed","ts":"2026-04-23T12:01:02Z","session":"s2"}
+{"type":"session_closed","ts":"2026-04-23T12:01:03Z","session":"s3"}
+{"type":"session_closed","ts":"2026-04-23T12:01:04Z","session":"s4"}
+{"type":"session_closed","ts":"2026-04-23T12:01:05Z","session":"s5"}
+{"type":"session_closed","ts":"2026-04-23T12:01:06Z","session":"s6"}
+{"type":"session_closed","ts":"2026-04-23T12:01:07Z","session":"s7"}
+{"type":"session_closed","ts":"2026-04-23T12:01:08Z","session":"s8"}
+{"type":"session_closed","ts":"2026-04-23T12:01:09Z","session":"s9"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:00Z","session":"s0","cmd":"cargo build 0","duration_ms":30000,"exit_code":0,"pwd":"/home/u/p0"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:01Z","session":"s1","cmd":"cargo build 1","duration_ms":30100,"exit_code":0,"pwd":"/home/u/p1"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:02Z","session":"s2","cmd":"cargo build 2","duration_ms":30200,"exit_code":0,"pwd":"/home/u/p2"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:03Z","session":"s3","cmd":"cargo build 3","duration_ms":30300,"exit_code":0,"pwd":"/home/u/p3"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:04Z","session":"s4","cmd":"cargo build 4","duration_ms":30400,"exit_code":0,"pwd":"/home/u/p4"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:05Z","session":"s5","cmd":"cargo build 5","duration_ms":30500,"exit_code":0,"pwd":"/home/u/p5"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:06Z","session":"s6","cmd":"cargo build 6","duration_ms":30600,"exit_code":0,"pwd":"/home/u/p6"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:07Z","session":"s7","cmd":"cargo build 7","duration_ms":30700,"exit_code":0,"pwd":"/home/u/p7"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:08Z","session":"s8","cmd":"cargo build 8","duration_ms":30800,"exit_code":0,"pwd":"/home/u/p8"}
+{"type":"shell_command_long","ts":"2026-04-23T12:02:09Z","session":"s9","cmd":"cargo build 9","duration_ms":30900,"exit_code":0,"pwd":"/home/u/p9"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:00Z","session":"s0","cmd":"fail 0","duration_ms":10,"exit_code":1,"pwd":null}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:01Z","session":"s1","cmd":"fail 1","duration_ms":11,"exit_code":2,"pwd":"/tmp/e1"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:02Z","session":"s2","cmd":"fail 2","duration_ms":12,"exit_code":3,"pwd":"/tmp/e2"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:03Z","session":"s3","cmd":"fail 3","duration_ms":13,"exit_code":4,"pwd":"/tmp/e3"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:04Z","session":"s4","cmd":"fail 4","duration_ms":14,"exit_code":5,"pwd":"/tmp/e4"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:05Z","session":"s5","cmd":"fail 5","duration_ms":15,"exit_code":6,"pwd":"/tmp/e5"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:06Z","session":"s6","cmd":"fail 6","duration_ms":16,"exit_code":7,"pwd":"/tmp/e6"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:07Z","session":"s7","cmd":"fail 7","duration_ms":17,"exit_code":8,"pwd":"/tmp/e7"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:08Z","session":"s8","cmd":"fail 8","duration_ms":18,"exit_code":9,"pwd":"/tmp/e8"}
+{"type":"shell_command_error","ts":"2026-04-23T12:03:09Z","session":"s9","cmd":"fail 9","duration_ms":19,"exit_code":10,"pwd":"/tmp/e9"}
+{"type":"permission_requested","ts":"2026-04-23T12:04:00Z","session":"s0","request_id":"r0","tool_name":"Bash","tool_args":{"cmd":"ls /etc/0"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:01Z","session":"s1","request_id":"r1","tool_name":"Bash","tool_args":{"cmd":"ls /etc/1"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:02Z","session":"s2","request_id":"r2","tool_name":"Bash","tool_args":{"cmd":"ls /etc/2"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:03Z","session":"s3","request_id":"r3","tool_name":"Bash","tool_args":{"cmd":"ls /etc/3"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:04Z","session":"s4","request_id":"r4","tool_name":"Bash","tool_args":{"cmd":"ls /etc/4"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:05Z","session":"s5","request_id":"r5","tool_name":"Bash","tool_args":{"cmd":"ls /etc/5"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:06Z","session":"s6","request_id":"r6","tool_name":"Bash","tool_args":{"cmd":"ls /etc/6"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:07Z","session":"s7","request_id":"r7","tool_name":"Bash","tool_args":{"cmd":"ls /etc/7"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:08Z","session":"s8","request_id":"r8","tool_name":"Bash","tool_args":{"cmd":"ls /etc/8"}}
+{"type":"permission_requested","ts":"2026-04-23T12:04:09Z","session":"s9","request_id":"r9","tool_name":"Bash","tool_args":{"cmd":"ls /etc/9"}}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:00Z","session":"s0","request_id":"r0","decision":"allow","reason":null}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:01Z","session":"s1","request_id":"r1","decision":"deny","reason":"ok"}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:02Z","session":"s2","request_id":"r2","decision":"always","reason":null}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:03Z","session":"s3","request_id":"r3","decision":"allow","reason":"ok"}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:04Z","session":"s4","request_id":"r4","decision":"deny","reason":null}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:05Z","session":"s5","request_id":"r5","decision":"always","reason":"ok"}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:06Z","session":"s6","request_id":"r6","decision":"allow","reason":null}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:07Z","session":"s7","request_id":"r7","decision":"deny","reason":"ok"}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:08Z","session":"s8","request_id":"r8","decision":"always","reason":null}
+{"type":"permission_resolved","ts":"2026-04-23T12:05:09Z","session":"s9","request_id":"r9","decision":"allow","reason":"ok"}
+{"type":"diff_created","ts":"2026-04-23T12:06:00Z","session":"s0","diff_id":"d0","file_path":"/src/f0.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:01Z","session":"s1","diff_id":"d1","file_path":"/src/f1.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:02Z","session":"s2","diff_id":"d2","file_path":"/src/f2.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:03Z","session":"s3","diff_id":"d3","file_path":"/src/f3.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:04Z","session":"s4","diff_id":"d4","file_path":"/src/f4.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:05Z","session":"s5","diff_id":"d5","file_path":"/src/f5.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:06Z","session":"s6","diff_id":"d6","file_path":"/src/f6.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:07Z","session":"s7","diff_id":"d7","file_path":"/src/f7.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:08Z","session":"s8","diff_id":"d8","file_path":"/src/f8.kt","tool":"Edit"}
+{"type":"diff_created","ts":"2026-04-23T12:06:09Z","session":"s9","diff_id":"d9","file_path":"/src/f9.kt","tool":"Edit"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:00Z","session":"s0"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:01Z","session":"s1"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:02Z","session":"s2"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:03Z","session":"s3"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:04Z","session":"s4"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:05Z","session":"s5"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:06Z","session":"s6"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:07Z","session":"s7"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:08Z","session":"s8"}
+{"type":"claude_idle","ts":"2026-04-23T12:07:09Z","session":"s9"}
+{"type":"claude_working","ts":"2026-04-23T12:08:00Z","session":"s0"}
+{"type":"claude_working","ts":"2026-04-23T12:08:01Z","session":"s1"}
+{"type":"claude_working","ts":"2026-04-23T12:08:02Z","session":"s2"}
+{"type":"claude_working","ts":"2026-04-23T12:08:03Z","session":"s3"}
+{"type":"claude_working","ts":"2026-04-23T12:08:04Z","session":"s4"}
+{"type":"claude_working","ts":"2026-04-23T12:08:05Z","session":"s5"}
+{"type":"claude_working","ts":"2026-04-23T12:08:06Z","session":"s6"}
+{"type":"claude_working","ts":"2026-04-23T12:08:07Z","session":"s7"}
+{"type":"claude_working","ts":"2026-04-23T12:08:08Z","session":"s8"}
+{"type":"claude_working","ts":"2026-04-23T12:08:09Z","session":"s9"}
+{"type":"future_event","ts":"2026-04-23T12:09:00Z","session":"s0","n":0}
+{"type":"future_event","ts":"2026-04-23T12:09:01Z","session":"s1","n":1}
+{"type":"future_event","ts":"2026-04-23T12:09:02Z","session":"s2","n":2}
+{"type":"future_event","ts":"2026-04-23T12:09:03Z","session":"s3","n":3}
+{"type":"future_event","ts":"2026-04-23T12:09:04Z","session":"s4","n":4}
+{"type":"future_event","ts":"2026-04-23T12:09:05Z","session":"s5","n":5}
+{"type":"future_event","ts":"2026-04-23T12:09:06Z","session":"s6","n":6}
+{"type":"future_event","ts":"2026-04-23T12:09:07Z","session":"s7","n":7}
+{"type":"future_event","ts":"2026-04-23T12:09:08Z","session":"s8","n":8}
+{"type":"future_event","ts":"2026-04-23T12:09:09Z","session":"s9","n":9}

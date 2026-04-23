@@ -24,6 +24,7 @@ hilt-navigation-compose = "1.3.0"
 # Kotlin ecosystem
 coroutines = "1.9.0"
 serialization = "1.7.3"
+kotlinx-datetime = "0.6.1"
 
 # SSH transport
 sshj = "0.39.0"
@@ -61,7 +62,9 @@ datastore = { module = "androidx.datastore:datastore", version.ref = "datastore"
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 
 coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
 
 sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
 bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }

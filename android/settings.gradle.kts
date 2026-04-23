@@ -26,6 +26,7 @@ include(
     ":feature:keys",
     ":feature:ptt",
     ":feature:settings",
-    ":libs:terminal-view",
+    ":libs:companion",
     ":libs:ssh-native",
+    ":libs:terminal-view",
 )
