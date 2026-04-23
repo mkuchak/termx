@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.5](https://github.com/mkuchak/termx/compare/v0.2.4...v0.2.5) (2026-04-23)
+
+### Bug Fixes
+
+* bump Hilt 2.53 -> 2.59.2 for Kotlin 2.2 compatibility ([ff9eacb](https://github.com/mkuchak/termx/commit/ff9eacb5f71585efbd503b74ee8bfd231b56ae37))
+
 ## [0.2.4](https://github.com/mkuchak/termx/compare/v0.2.3...v0.2.4) (2026-04-23)
 
 ### Bug Fixes
