@@ -16,6 +16,37 @@ Every module is a stub. The two most load-bearing omissions are:
 
 ---
 
+## How to execute this roadmap
+
+This document is the strategic view. Execution happens through **39 discrete
+tasks** in the Claude Code task list — `TaskList` in any session. Tasks are
+self-contained (project context + exact file paths + acceptance criteria) and
+have an explicit blocker graph, so any engineer (AI or human) can claim an
+unblocked task and execute without reading the other 38.
+
+Task ID ranges by phase:
+
+| Phase | Task IDs | Sub-tasks |
+|---|---|---|
+| 1 — Terminal foundations         | 12–18 | 7 |
+| 2 — Server manager + keys        | 19–24 | 6 |
+| 3 — tmux + multi-tab + mosh      | 25–28 | 4 |
+| 4 — termxd + event stream        | 29–34 | 6 |
+| 5 — Permission broker + diff     | 35–38 | 4 |
+| 6 — Push-to-talk                 | 39–42 | 4 |
+| 7 — Notifications + fg service   | 43–45 | 3 |
+| 8 — Polish → v1.0                | 46–50 | 5 |
+
+Starter tasks with zero blockers (pick any, parallelizable):
+**12** (Termux fork) · **13** (mosh cross-compile) · **14** (SshClient wrapper)
+· **19** (Room DB) · **20** (Keystore vault) · **29** (termxd scaffolding) ·
+**40** (Gemini client) · **49** (F-Droid metadata).
+
+When a roadmap sub-section and a task disagree on detail, **the task wins** —
+it reflects what was actually thought through at execution time.
+
+---
+
 ## Architectural ground rules (locked — don't re-litigate)
 
 All 15 decisions from the April 2026 grilling are recorded at:
@@ -108,22 +139,34 @@ present in both `lib/arm64-v8a/` and `lib/armeabi-v7a/`, and `file` on the
 extracted binary reports "ELF 64-bit LSB executable, ARM aarch64" (and the
 32-bit equivalent).
 
-### 1.3 Minimal terminal screen
+### 1.3 SshClient wrapper in :libs:ssh-native
+
+- Pure-Kotlin module; depends on sshj (`com.hierynomus:sshj`) + BouncyCastle
+- Public API: `SshClient`, `SshTarget`, `SshAuth` (sealed: `Password` /
+  `PublicKey`), `SshSession`, `PtyChannel` (with `output: Flow<ByteArray>`),
+  `ExecChannel` (with `exitCode: Deferred<Int>`), `SftpClient`
+- Registers BouncyCastle provider at module init for Ed25519 + fallback JCA
+- Hides all sshj types from the public surface → feature modules depend on
+  our abstractions, not sshj
+
+**Exit**: unit test spins up an in-memory sshd (Apache MINA), connects, runs
+`echo hello`, verifies output flow. No sshj types leak through the module API.
+
+### 1.4 Minimal terminal screen
 
 - `:feature:terminal` exposes `@Composable TerminalScreen(serverId: UUID?)`
 - Uses `AndroidView` to host Termux's `TerminalView`
-- sshj wrapper in `:libs:ssh-native` (new Kotlin package
-  `dev.kuch.termx.libs.sshnative.SshClient`): opens a session, starts a
-  shell channel with a PTY, returns an `InputStream`/`OutputStream` pair
 - A tiny bridge class implements Termux's `TerminalSession.SessionClient`
-  contract against sshj's streams
+  contract against the `PtyChannel` from §1.3
+- Wires keypresses → channel.write, channel.output → terminal session,
+  layout-size changes → channel.resize
 
 **Exit**: hardcoded "test server" env var (`TERMX_TEST_SERVER=user@host`) +
 temporary private key in assets (debug build only, .gitignore'd) → app boots
 to a "Connect" button → tap → bash prompt appears, `ls` returns real
 remote output, characters typed on the on-screen keyboard reach the VPS.
 
-### 1.4 Extra-keys bar
+### 1.5 Extra-keys bar
 
 Per the grilled decision (two swipeable rows, user-editable *later*).
 For Phase 1 ship two hardcoded rows:
@@ -140,7 +183,7 @@ Sticky modifier behavior:
 Volume Down = Ctrl binding per original plan (users expect it from Termux).
 Haptic on every tap.
 
-### 1.5 Gestures
+### 1.6 Gestures
 
 - **Pinch-to-zoom** font size (8sp–32sp, persisted via DataStore)
 - **Two-finger vertical scroll** → scrollback (falls through to the
@@ -149,7 +192,7 @@ Haptic on every tap.
   selection copies
 - **Double-tap on URL** → browser open confirmation dialog
 
-### 1.6 Theme pack
+### 1.7 Theme pack
 
 Six built-in themes, no custom editor yet:
 
@@ -249,7 +292,9 @@ the mosh connection without killing the tmux session.
 ## Phase 4 — termxd + event stream
 
 **Goal.** Install the Go companion on the VPS and start reading its event
-stream from the phone.
+stream from the phone. Introduces a new Gradle module `:libs:companion` on
+the Android side — pure-Kotlin NDJSON parser + event schema + SSH-backed
+event reader, testable without a device.
 
 - **`termxd/` Go module**
   - `go mod init github.com/mkuchak/termx/termxd`
