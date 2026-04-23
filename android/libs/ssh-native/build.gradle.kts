@@ -15,10 +15,16 @@ android {
     }
 
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+    sourceSets["main"].kotlin.srcDirs("src/main/kotlin")
+    sourceSets["test"].kotlin.srcDirs("src/test/kotlin")
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
+    }
+
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
 }
 
@@ -27,4 +33,9 @@ dependencies {
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.bouncycastle.bcpkix)
     implementation(libs.coroutines.android)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.sshd.core)
+    testImplementation(libs.bouncycastle.bcprov)
 }
