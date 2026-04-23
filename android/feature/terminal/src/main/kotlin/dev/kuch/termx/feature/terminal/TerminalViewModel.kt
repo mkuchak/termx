@@ -2,11 +2,17 @@ package dev.kuch.termx.feature.terminal
 
 import android.content.Context
 import android.util.Log
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.termux.terminal.RemoteTerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.kuch.termx.core.data.vault.SecretVault
+import dev.kuch.termx.core.data.vault.VaultLockedException
+import dev.kuch.termx.core.domain.model.AuthType
+import dev.kuch.termx.core.domain.repository.KeyPairRepository
+import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
 import dev.kuch.termx.libs.sshnative.PtyChannel
 import dev.kuch.termx.libs.sshnative.SshAuth
@@ -26,11 +32,19 @@ import javax.inject.Inject
 /**
  * Owns one live SSH session + shell + emulator bridge.
  *
- * For Phase 1 the server picker doesn't exist yet, so a `null` `serverId`
- * means "use the test server configured via BuildConfig env vars and the
- * debug-build private key shipped at `assets/test-key.pem`". When the key
- * or env vars are missing we land in [TerminalUiState.Error] with a clear
- * message rather than a crash.
+ * Two call paths:
+ *  - `serverId != null` (Phase 2+): look up the [dev.kuch.termx.core.domain.model.Server]
+ *    row via [ServerRepository], pull the private bytes from [SecretVault]
+ *    using the linked [dev.kuch.termx.core.domain.model.KeyPair.keystoreAlias],
+ *    and connect with those credentials. Password auth is parked until
+ *    Task #23 wires vault-stored passwords.
+ *  - `serverId == null` (Phase 1 test path): fall back to `BuildConfig.TEST_SERVER_*`
+ *    env-vars + the debug-only test key shipped at `assets/test-key.pem`.
+ *
+ * Hilt resolves the `serverId` via [SavedStateHandle], populated by the
+ * NavGraph composable's route arg. Passing `null` from the caller (e.g.
+ * a direct composable usage in Phase 1 tests) still works — the handle
+ * just has no `serverId` key.
  *
  * Lifecycle:
  *  - `connect(serverId)` → `Connecting` → `Connected` | `Error`
@@ -40,6 +54,10 @@ import javax.inject.Inject
 @HiltViewModel
 class TerminalViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
+    private val savedStateHandle: SavedStateHandle,
+    private val serverRepository: ServerRepository,
+    private val keyPairRepository: KeyPairRepository,
+    private val secretVault: SecretVault,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<TerminalUiState>(TerminalUiState.Idle)
@@ -54,15 +72,21 @@ class TerminalViewModel @Inject constructor(
     private var outputJob: Job? = null
 
     /**
-     * Start a connection. Idempotent: a second call while already connecting
-     * or connected is a no-op. Use [disconnect] + [connect] to reconnect.
+     * Start a connection. Idempotent: a second call while already
+     * connecting or connected is a no-op. The [serverId] overrides
+     * whatever was set via [SavedStateHandle] so callers that own the
+     * value explicitly don't need to stuff it into the nav route too.
      */
     fun connect(serverId: UUID?) {
         if (_state.value is TerminalUiState.Connecting || _state.value is TerminalUiState.Connected) return
+
+        val resolvedId = serverId ?: savedStateHandle.get<String>(ARG_SERVER_ID)
+            ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
             _state.value = TerminalUiState.Connecting
-            runCatching { openSession(serverId) }
+            runCatching { openSession(resolvedId) }
                 .onFailure { t ->
                     Log.e(LOG_TAG, "connect failed", t)
                     cleanupQuietly()
@@ -72,25 +96,7 @@ class TerminalViewModel @Inject constructor(
     }
 
     private suspend fun openSession(serverId: UUID?) {
-        require(serverId == null) {
-            // Phase 2 (Task #21) will look the server up in Room; fail loudly
-            // if anything wires a non-null ID into the Phase 1 path.
-            "Phase 1 test-server path doesn't accept a serverId yet"
-        }
-
-        val host = BuildConfig.TEST_SERVER_HOST
-        val user = BuildConfig.TEST_SERVER_USER
-        val port = BuildConfig.TEST_SERVER_PORT
-        if (host.isBlank() || user.isBlank()) {
-            throw IllegalStateException("No test server configured")
-        }
-
-        val keyBytes = readTestKey()
-            ?: throw IllegalStateException("No test server configured")
-
-        val knownHostsPath = appContext.filesDir.absolutePath + "/known_hosts"
-        val target = SshTarget(host = host, port = port, username = user, knownHostsPath = knownHostsPath)
-        val auth = SshAuth.PublicKey(privateKeyPem = keyBytes, passphrase = null)
+        val (target, auth) = resolveConnection(serverId)
 
         val client = SshClient().also { sshClient = it }
         val session = client.connect(target, auth)
@@ -143,6 +149,70 @@ class TerminalViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Decide which host + credentials to use.
+     *
+     * For a non-null [serverId] we resolve the Server row and (for
+     * key auth) unlock the private bytes from the vault. Missing rows,
+     * missing keys, or a locked vault throw — the outer
+     * `runCatching` in [connect] turns them into a user-facing
+     * [TerminalUiState.Error].
+     *
+     * For a null [serverId] we fall back to the Phase 1 env-var path.
+     */
+    private suspend fun resolveConnection(serverId: UUID?): Pair<SshTarget, SshAuth> {
+        val knownHostsPath = appContext.filesDir.absolutePath + "/known_hosts"
+
+        if (serverId != null) {
+            val server = serverRepository.getById(serverId)
+                ?: throw IllegalStateException("Server not found")
+
+            val target = SshTarget(
+                host = server.host,
+                port = server.port,
+                username = server.username,
+                knownHostsPath = knownHostsPath,
+            )
+
+            val auth: SshAuth = when (server.authType) {
+                AuthType.KEY -> {
+                    val keyPairId = server.keyPairId
+                        ?: throw IllegalStateException("Server has no key assigned")
+                    val keyPair = keyPairRepository.getById(keyPairId)
+                        ?: throw IllegalStateException("Linked key not found")
+                    val bytes = try {
+                        secretVault.load(keyPair.keystoreAlias)
+                    } catch (t: VaultLockedException) {
+                        throw IllegalStateException("Vault is locked — unlock to connect", t)
+                    } ?: throw IllegalStateException("Private key missing from vault")
+                    SshAuth.PublicKey(privateKeyPem = bytes, passphrase = null)
+                }
+                AuthType.PASSWORD -> {
+                    // Task #23 will fetch this from the vault. For now we
+                    // surface a clean error instead of guessing an empty
+                    // string and letting sshj report auth-failed.
+                    throw IllegalStateException(
+                        "Password auth isn't wired yet (Task #23).",
+                    )
+                }
+            }
+            return target to auth
+        }
+
+        // Phase 1 fallback: env-var test server + asset key.
+        val host = BuildConfig.TEST_SERVER_HOST
+        val user = BuildConfig.TEST_SERVER_USER
+        val port = BuildConfig.TEST_SERVER_PORT
+        if (host.isBlank() || user.isBlank()) {
+            throw IllegalStateException("No test server configured")
+        }
+        val keyBytes = readTestKey()
+            ?: throw IllegalStateException("No test server configured")
+        val target = SshTarget(host = host, port = port, username = user, knownHostsPath = knownHostsPath)
+        val auth = SshAuth.PublicKey(privateKeyPem = keyBytes, passphrase = null)
+        return target to auth
+    }
+
     /** Tear everything down. Idempotent. */
     fun disconnect() {
         connectJob?.cancel()
@@ -182,6 +252,9 @@ class TerminalViewModel @Inject constructor(
         const val LOG_TAG = "TerminalViewModel"
         const val TEST_KEY_ASSET = "test-key.pem"
 
+        /** Matches the route arg name declared by `TermxNavHost`. */
+        const val ARG_SERVER_ID = "serverId"
+
         // Pre-resize "defaults" so the initial openShell request has *some*
         // geometry. TerminalView's onSizeChanged triggers the real resize
         // within the first layout pass.
@@ -189,4 +262,3 @@ class TerminalViewModel @Inject constructor(
         const val INITIAL_ROWS = 24
     }
 }
-

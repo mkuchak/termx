@@ -1,35 +1,38 @@
 package dev.kuch.termx
 
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.kuch.termx.core.data.vault.VaultLockState
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
+import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
+import java.util.UUID
 import javax.inject.Inject
 
 /**
  * App-wide navigation graph.
  *
- * On top of the Phase 1 single-route (`terminal`) skeleton, Task #20 adds
- * a `unlock` route and a cross-cutting gate: whenever
- * [VaultLockState.state] reads anything other than
- * [VaultLockState.State.Unlocked] we navigate to `unlock` and pop every
- * other entry so the back stack can't leak a pre-lock screen.
+ * Start destination is `servers` — the server list is the app's home.
+ * Tapping a row navigates to `terminal/{serverId}`; Task #15's
+ * [TerminalScreen] now accepts a non-null UUID and connects via Room +
+ * the vault rather than the BuildConfig fallback.
  *
- * Post-unlock navigation is handled implicitly — the
- * [BiometricUnlockScreen] calls [VaultLockState.markUnlocked] on
- * success, the [LaunchedEffect] below observes that and bounces the user
- * back to the terminal. The `pendingDestination` ref remembers whatever
- * the user was headed towards before the lock event; Task #21 will use
- * it to deep-link back into the server list.
+ * The `unlock` gate installed by Task #20 is preserved: any lock-state
+ * transition to [VaultLockState.State.Locked] jumps to `unlock` and
+ * pops the prior back stack. Post-unlock we land back on the server
+ * list, which is the user's expected "home" in the locked-flow recovery.
  */
 @Composable
 fun TermxNavHost() {
@@ -50,7 +53,7 @@ fun TermxNavHost() {
             }
             VaultLockState.State.Unlocked -> {
                 if (navController.currentDestination?.route == Routes.Unlock) {
-                    navController.navigate(Routes.Terminal) {
+                    navController.navigate(Routes.Servers) {
                         popUpTo(Routes.Unlock) { inclusive = true }
                         launchSingleTop = true
                     }
@@ -62,17 +65,46 @@ fun TermxNavHost() {
 
     NavHost(
         navController = navController,
-        startDestination = Routes.Terminal,
+        startDestination = Routes.Servers,
     ) {
-        composable(Routes.Terminal) {
-            TerminalScreen(serverId = null)
+        composable(Routes.Servers) {
+            ServerListScreen(
+                onServerTap = { id ->
+                    navController.navigate(Routes.terminalRoute(id))
+                },
+                onManageKeys = {
+                    navController.navigate(Routes.Keys)
+                },
+            )
+        }
+        composable(
+            route = Routes.TerminalPattern,
+            arguments = listOf(
+                navArgument(Routes.ArgServerId) {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                },
+            ),
+        ) { backStackEntry ->
+            val id = backStackEntry.arguments
+                ?.getString(Routes.ArgServerId)
+                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            TerminalScreen(serverId = id)
+        }
+        composable(Routes.Keys) {
+            // Task #23 replaces this stub with the real key manager.
+            Text(
+                text = "Key management coming in Task #23",
+                color = MaterialTheme.colorScheme.onBackground,
+            )
         }
         composable(Routes.Unlock) {
             BiometricUnlockScreen(
                 onUnlocked = {
                     // Fallback path — the LaunchedEffect above normally
                     // drives this transition off the VaultLockState flow.
-                    navController.navigate(Routes.Terminal) {
+                    navController.navigate(Routes.Servers) {
                         popUpTo(Routes.Unlock) { inclusive = true }
                         launchSingleTop = true
                     }
@@ -93,6 +125,11 @@ class NavGateViewModel @Inject constructor(
 ) : ViewModel()
 
 private object Routes {
-    const val Terminal = "terminal"
+    const val Servers = "servers"
+    const val Keys = "keys"
     const val Unlock = "unlock"
+    const val ArgServerId = "serverId"
+    const val TerminalPattern = "terminal/{$ArgServerId}"
+
+    fun terminalRoute(id: UUID): String = "terminal/$id"
 }
