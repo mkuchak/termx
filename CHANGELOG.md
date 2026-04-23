@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.7](https://github.com/mkuchak/termx/compare/v0.2.6...v0.2.7) (2026-04-23)
+
+### Bug Fixes
+
+* align Java target to 21 to match Kotlin 2.2 default ([47253f9](https://github.com/mkuchak/termx/commit/47253f96c3287e7ec01d45f8ad38be3c7e3549e6))
+
 ## [0.2.6](https://github.com/mkuchak/termx/compare/v0.2.5...v0.2.6) (2026-04-23)
 
 ### Bug Fixes
