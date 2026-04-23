@@ -12,10 +12,29 @@ android {
 
     defaultConfig {
         minSdk = 28
+
+        // Mirrored from :app so TerminalViewModel can read its own
+        // BuildConfig without reaching into app's classpath.
+        buildConfigField(
+            "String",
+            "TEST_SERVER_HOST",
+            "\"${System.getenv("TERMX_TEST_SERVER_HOST") ?: ""}\"",
+        )
+        buildConfigField(
+            "String",
+            "TEST_SERVER_USER",
+            "\"${System.getenv("TERMX_TEST_SERVER_USER") ?: ""}\"",
+        )
+        buildConfigField(
+            "int",
+            "TEST_SERVER_PORT",
+            "${System.getenv("TERMX_TEST_SERVER_PORT")?.toIntOrNull() ?: 22}",
+        )
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -31,6 +50,9 @@ dependencies {
     implementation(project(":libs:ssh-native"))
 
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.coroutines.android)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

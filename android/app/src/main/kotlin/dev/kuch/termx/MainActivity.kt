@@ -1,26 +1,28 @@
 package dev.kuch.termx
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
+import androidx.fragment.app.FragmentActivity
 import dagger.hilt.android.AndroidEntryPoint
 
+/**
+ * Host Activity for the whole app.
+ *
+ * Uses [FragmentActivity] (not plain ComponentActivity) so Task #20's
+ * BiometricPrompt can attach on Android 9+ without repainting the surface.
+ * Everything user-facing is Compose — the Fragment ancestry is purely a
+ * BiometricPrompt compatibility requirement.
+ */
 @AndroidEntryPoint
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
             TermxTheme {
-                App()
+                TermxNavHost()
             }
         }
     }
@@ -29,17 +31,4 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun TermxTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = darkColorScheme(), content = content)
-}
-
-@Composable
-private fun App() {
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                text = "termx",
-                style = MaterialTheme.typography.displayLarge,
-                color = MaterialTheme.colorScheme.onBackground,
-            )
-        }
-    }
 }

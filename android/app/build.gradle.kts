@@ -47,6 +47,26 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
+
+        // Test-server coordinates for the Phase 1 "no server manager yet"
+        // path. Populate by exporting TERMX_TEST_SERVER_HOST / _USER / _PORT
+        // before building; empty defaults let release builds compile cleanly
+        // while TerminalViewModel surfaces a friendly error at connect time.
+        buildConfigField(
+            "String",
+            "TEST_SERVER_HOST",
+            "\"${System.getenv("TERMX_TEST_SERVER_HOST") ?: ""}\"",
+        )
+        buildConfigField(
+            "String",
+            "TEST_SERVER_USER",
+            "\"${System.getenv("TERMX_TEST_SERVER_USER") ?: ""}\"",
+        )
+        buildConfigField(
+            "int",
+            "TEST_SERVER_PORT",
+            "${System.getenv("TERMX_TEST_SERVER_PORT")?.toIntOrNull() ?: 22}",
+        )
     }
 
     signingConfigs {
@@ -85,6 +105,7 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
@@ -114,6 +135,8 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.fragment)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

@@ -37,6 +37,8 @@ out/
 *.jks
 *.keystore
 keystore.properties
+android/app/src/debug/assets/test-key.pem
+android/app/src/debug/assets/test-key
 
 # Node
 node_modules/

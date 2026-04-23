@@ -43,14 +43,21 @@ import java.util.UUID;
  * <p>
  * NOTE: The terminal session may outlive the EmulatorView, so be careful with callbacks!
  */
-public final class TerminalSession extends TerminalOutput {
+// termx adaptation (Task #15): removed `final` so that
+// dev.kuch.termx.feature.terminal.RemoteTerminalSession can subclass this
+// and route I/O through an sshj PtyChannel instead of a local JNI subprocess.
+// Original Termux source had `public final class TerminalSession`.
+public class TerminalSession extends TerminalOutput {
 
     private static final int MSG_NEW_INPUT = 1;
     private static final int MSG_PROCESS_EXITED = 4;
 
     public final String mHandle = UUID.randomUUID().toString();
 
-    TerminalEmulator mEmulator;
+    // termx adaptation (Task #15): promoted from package-private to protected
+    // so RemoteTerminalSession (in feature:terminal, different module) can
+    // set the emulator from its overridden initializeEmulator().
+    protected TerminalEmulator mEmulator;
 
     /**
      * A queue written to from a separate thread when the process outputs, and read by main thread to process by
@@ -66,7 +73,10 @@ public final class TerminalSession extends TerminalOutput {
     private final byte[] mUtf8InputBuffer = new byte[5];
 
     /** Callback which gets notified when a session finishes or changes title. */
-    TerminalSessionClient mClient;
+    // termx adaptation (Task #15): promoted to protected so subclasses (e.g.,
+    // RemoteTerminalSession in a different Kotlin module) can call back
+    // through to the client from their overrides.
+    protected TerminalSessionClient mClient;
 
     /** The pid of the shell process. 0 if not started and -1 if finished running. */
     int mShellPid;
