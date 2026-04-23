@@ -10,7 +10,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-internal class KeyPairRepositoryImpl @Inject constructor(
+class KeyPairRepositoryImpl @Inject constructor(
     private val dao: KeyPairDao,
 ) : KeyPairRepository {
 

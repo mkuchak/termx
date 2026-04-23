@@ -13,7 +13,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
-internal class ServerRepositoryImpl @Inject constructor(
+class ServerRepositoryImpl @Inject constructor(
     private val db: AppDatabase,
     private val dao: ServerDao,
 ) : ServerRepository {
