@@ -12,6 +12,10 @@ builds:
     binary: termx
     env:
       - CGO_ENABLED=0
+    flags:
+      # Shell preexec/precmd invokes termx per command — keep cold start
+      # fast and the binary reproducible.
+      - -trimpath
     goos:
       - linux
     goarch:

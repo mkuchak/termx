@@ -9,21 +9,21 @@ import (
 // Paths holds the canonical filesystem locations termx writes to. All paths
 // are absolute and resolved from the current user's home directory.
 type Paths struct {
-	Home             string
-	TermxDir         string
-	SessionsDir      string
-	ApprovalsDir     string
-	DiffsDir         string
-	CommandsDir      string
-	EventsFile       string
-	ShellHooksFile   string
-	LocalBin         string
-	LocalBinTermx    string
-	Bashrc           string
-	Zshrc            string
-	TmuxConf         string
-	ClaudeDir        string
-	ClaudeSettings   string
+	Home           string
+	TermxDir       string
+	SessionsDir    string
+	ApprovalsDir   string
+	DiffsDir       string
+	CommandsDir    string
+	EventsFile     string
+	ShellHooksFile string
+	LocalBin       string
+	LocalBinTermx  string
+	Bashrc         string
+	Zshrc          string
+	TmuxConf       string
+	ClaudeDir      string
+	ClaudeSettings string
 }
 
 // ResolvePaths returns canonical paths based on $HOME (or os/user fallback).

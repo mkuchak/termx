@@ -14,10 +14,53 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const shellHooksStub = `#!/usr/bin/env sh
-# termx shell hooks — TODO: P4.3 will replace this stub with real preexec /
-# precmd wrappers that emit events into ~/.termx/events.ndjson.
-# For now this file is sourced by .bashrc / .zshrc as a no-op.
+// shellHooksScript is sourced by ~/.bashrc and ~/.zshrc (via the marked
+// block). It wires termx's _preexec / _precmd hooks into the active
+// shell so every long command becomes an event the phone can render.
+//
+// Both hook invocations are backgrounded (&) and silenced (>/dev/null
+// 2>&1) so a broken termx binary can never wedge the user's prompt.
+// The bash side guards against the DEBUG trap firing for termx's own
+// helper calls via _termx_in_preexec recursion guard.
+const shellHooksScript = `#!/usr/bin/env sh
+# termx shell hooks — sourced by bash/zsh rc files.
+# Invokes $HOME/.local/bin/termx _preexec / _precmd around each command.
+
+_termx_bin="$HOME/.local/bin/termx"
+
+if [ -n "$ZSH_VERSION" ]; then
+    autoload -Uz add-zsh-hook
+    _termx_preexec() {
+        local cmd="$1"
+        "$_termx_bin" _preexec "$(printf '%s' "$cmd" | base64 | tr -d '\n')" >/dev/null 2>&1 &
+    }
+    _termx_precmd() {
+        local ec=$?
+        "$_termx_bin" _precmd "$ec" >/dev/null 2>&1 &
+    }
+    add-zsh-hook preexec _termx_preexec
+    add-zsh-hook precmd  _termx_precmd
+elif [ -n "$BASH_VERSION" ]; then
+    # Bash: DEBUG trap fires before every command; PROMPT_COMMAND fires before each prompt (after cmd).
+    _termx_in_preexec=0
+    _termx_preexec() {
+        if [ -n "$BASH_COMMAND" ] && [ "$BASH_COMMAND" != "_termx_precmd" ] && [ "$_termx_in_preexec" = "0" ]; then
+            _termx_in_preexec=1
+            "$_termx_bin" _preexec "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')" >/dev/null 2>&1 &
+            _termx_in_preexec=0
+        fi
+    }
+    _termx_precmd() {
+        local ec=$?
+        "$_termx_bin" _precmd "$ec" >/dev/null 2>&1 &
+    }
+    trap '_termx_preexec' DEBUG
+    # Prepend (don't clobber) PROMPT_COMMAND
+    case ";$PROMPT_COMMAND;" in
+        *";_termx_precmd;"*) : ;;
+        *) PROMPT_COMMAND="_termx_precmd;$PROMPT_COMMAND" ;;
+    esac
+fi
 `
 
 const bashrcBlockBody = `export PATH="$HOME/.local/bin:$PATH"
@@ -245,14 +288,15 @@ func ensureTermxTree(p *internal.Paths, w io.Writer) error {
 	} else {
 		reportFileOp(w, "write_file", p.EventsFile, false)
 	}
-	// Shell hooks stub. Always overwrite with the stub content iff content is
-	// missing or unchanged; otherwise preserve user edits.
+	// Shell hooks script. Always overwrite with the canonical content —
+	// the script is a pure artifact of install, and preserving user edits
+	// here is a footgun that prevents shipping fixes via a new release.
 	existing, err := os.ReadFile(p.ShellHooksFile)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if len(existing) == 0 {
-		if err := os.WriteFile(p.ShellHooksFile, []byte(shellHooksStub), 0o600); err != nil {
+	if string(existing) != shellHooksScript {
+		if err := os.WriteFile(p.ShellHooksFile, []byte(shellHooksScript), 0o700); err != nil {
 			return fmt.Errorf("write %s: %w", p.ShellHooksFile, err)
 		}
 		reportFileOp(w, "write_file", p.ShellHooksFile, true)
