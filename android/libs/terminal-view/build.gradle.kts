@@ -15,3 +15,7 @@ android {
         targetCompatibility = JavaVersion.VERSION_21
     }
 }
+
+dependencies {
+    implementation(libs.androidx.annotation)
+}
