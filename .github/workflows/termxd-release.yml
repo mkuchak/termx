@@ -1,0 +1,36 @@
+name: termxd release
+
+on:
+  push:
+    tags:
+      - 'termxd-v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Compute version (strip termxd-v prefix)
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#termxd-v}" >> "$GITHUB_OUTPUT"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: '~> v2'
+          args: release --clean --config .goreleaser.yaml
+          workdir: termxd
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tag is termxd-vX.Y.Z; override so {{ .Version }} resolves to X.Y.Z.
+          GORELEASER_CURRENT_TAG: v${{ steps.ver.outputs.version }}

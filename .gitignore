@@ -42,3 +42,7 @@ keystore.properties
 node_modules/
 .npm/
 .pnpm-store/
+
+# Go (termxd)
+termxd/dist/
+termxd/coverage.out
