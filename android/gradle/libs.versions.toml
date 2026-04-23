@@ -2,7 +2,7 @@
 # Build tooling
 agp = "8.12.1"
 kotlin = "2.2.10"
-ksp = "2.2.10-1.0.27"
+ksp = "2.2.10-2.0.2"
 
 # Compose
 compose-bom = "2026.03.00"
