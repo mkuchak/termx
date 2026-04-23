@@ -36,6 +36,8 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
     implementation(libs.datastore)
+    implementation(libs.androidx.datastore.preferences)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 }

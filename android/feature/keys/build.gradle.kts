@@ -27,9 +27,16 @@ android {
 dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:domain"))
+    implementation(project(":core:data"))
     implementation(project(":libs:ssh-native"))
 
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.androidx.fragment)
+    implementation(libs.androidx.biometric)
+
+    implementation(libs.coroutines.android)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
