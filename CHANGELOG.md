@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.4](https://github.com/mkuchak/termx/compare/v0.2.3...v0.2.4) (2026-04-23)
+
+### Bug Fixes
+
+* bump compileSdk + targetSdk from 34 to 35 ([6030f53](https://github.com/mkuchak/termx/commit/6030f53639d856af97721bda542bae35664e65d1))
+
 ## [0.2.3](https://github.com/mkuchak/termx/compare/v0.2.2...v0.2.3) (2026-04-23)
 
 ### Bug Fixes
