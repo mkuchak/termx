@@ -2,7 +2,7 @@ package dev.kuch.termx.libs.sshnative
 
 /**
  * Minimal SFTP surface. Phase 4+ (termxd companion) uses this for reading
- * `~/.termx/sessions/*.json` and tailing `events.ndjson` when a plain
+ * `~/.termx/sessions/` JSON session files and tailing `events.ndjson` when a plain
  * exec tail is insufficient.
  */
 interface SftpClient : AutoCloseable {

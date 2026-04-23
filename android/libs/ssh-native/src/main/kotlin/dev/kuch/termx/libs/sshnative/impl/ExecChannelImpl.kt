@@ -5,7 +5,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.awaitClose
@@ -64,7 +64,7 @@ internal class ExecChannelImpl(
         closed = true
         runCatching { cmd.close() }
         runCatching { session.close() }
-        if (!exit.isCompleted) exit.cancel(Job("ExecChannel closed"))
+        if (!exit.isCompleted) exit.cancel(CancellationException("ExecChannel closed"))
         scope.cancel()
     }
 
