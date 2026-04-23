@@ -8,7 +8,7 @@ plugins {
 
 android {
     namespace = "dev.kuch.termx.feature.ptt"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 28

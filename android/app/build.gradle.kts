@@ -35,12 +35,12 @@ val appVersionCode: Int = run {
 
 android {
     namespace = "dev.kuch.termx"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "dev.kuch.termx"
         minSdk = 28
-        targetSdk = 34
+        targetSdk = 35
         versionName = appVersionName
         versionCode = appVersionCode
 

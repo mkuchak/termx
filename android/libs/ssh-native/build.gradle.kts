@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "dev.kuch.termx.libs.sshnative"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 28

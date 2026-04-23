@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "dev.kuch.termx.core.data"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         minSdk = 28
