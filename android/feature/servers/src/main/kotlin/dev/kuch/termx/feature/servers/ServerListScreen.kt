@@ -19,9 +19,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -31,6 +34,7 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -42,6 +46,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
@@ -89,6 +94,8 @@ import kotlinx.coroutines.launch
 fun ServerListScreen(
     onServerTap: (UUID) -> Unit,
     onManageKeys: () -> Unit,
+    onLaunchSetupWizard: () -> Unit = {},
+    onOpenSettings: () -> Unit = {},
     viewModel: ServerListViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
@@ -98,6 +105,7 @@ fun ServerListScreen(
     val scope = rememberCoroutineScope()
 
     var showAddSheet by rememberSaveable { mutableStateOf(false) }
+    var showAddPicker by rememberSaveable { mutableStateOf(false) }
     var editingServerId by rememberSaveable { mutableStateOf<String?>(null) }
     var reorderMode by rememberSaveable { mutableStateOf(false) }
     var moveToGroupForServerId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -141,12 +149,15 @@ fun ServerListScreen(
                     IconButton(onClick = onManageKeys) {
                         Icon(Icons.Filled.VpnKey, contentDescription = "Manage keys")
                     }
+                    IconButton(onClick = onOpenSettings) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
                 },
             )
         },
         floatingActionButton = {
             FloatingActionButton(
-                onClick = { showAddSheet = true },
+                onClick = { showAddPicker = true },
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ) {
@@ -176,7 +187,7 @@ fun ServerListScreen(
         ) {
             when (val s = uiState) {
                 ServerListUiState.Loading -> LoadingPane()
-                ServerListUiState.Empty -> EmptyPane(onAdd = { showAddSheet = true })
+                ServerListUiState.Empty -> EmptyPane(onAdd = { showAddPicker = true })
                 is ServerListUiState.Error -> ErrorPane(message = s.message)
                 is ServerListUiState.Loaded -> ServerListBody(
                     buckets = s.groupsWithServers,
@@ -194,6 +205,20 @@ fun ServerListScreen(
                 )
             }
         }
+    }
+
+    if (showAddPicker) {
+        AddServerPickerSheet(
+            onDismiss = { showAddPicker = false },
+            onQuickAdd = {
+                showAddPicker = false
+                showAddSheet = true
+            },
+            onGuidedSetup = {
+                showAddPicker = false
+                onLaunchSetupWizard()
+            },
+        )
     }
 
     if (showAddSheet) {
@@ -510,4 +535,95 @@ private fun GroupPickRow(label: String, onClick: () -> Unit) {
             .padding(vertical = 10.dp),
         style = MaterialTheme.typography.bodyLarge,
     )
+}
+
+/**
+ * FAB-triggered chooser: "Quick add" opens the classic bottom sheet,
+ * "Guided setup" launches the 5-step wizard. Keeps the power-user path
+ * one-tap (reopen the sheet) while putting the onboarding flow front and
+ * centre for first-time users.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddServerPickerSheet(
+    onDismiss: () -> Unit,
+    onQuickAdd: () -> Unit,
+    onGuidedSetup: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+        ) {
+            Text(
+                text = "Add a server",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "First VPS? Guided setup walks you through test + key share.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            AddOptionRow(
+                icon = Icons.Filled.AutoAwesome,
+                title = "Guided setup",
+                subtitle = "5 steps: connect, test, install companion, save, share key.",
+                onClick = onGuidedSetup,
+            )
+            Spacer(Modifier.height(8.dp))
+            AddOptionRow(
+                icon = Icons.Filled.FlashOn,
+                title = "Quick add",
+                subtitle = "Single bottom sheet — best when you already know the drill.",
+                onClick = onQuickAdd,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun AddOptionRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold)
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
 }

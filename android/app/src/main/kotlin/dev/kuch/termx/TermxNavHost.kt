@@ -19,6 +19,8 @@ import dev.kuch.termx.feature.keys.KeyImportScreen
 import dev.kuch.termx.feature.keys.KeyListScreen
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
 import dev.kuch.termx.feature.servers.ServerListScreen
+import dev.kuch.termx.feature.servers.setup.SetupWizardScreen
+import dev.kuch.termx.feature.settings.SettingsScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
 import java.util.UUID
 import javax.inject.Inject
@@ -77,6 +79,28 @@ fun TermxNavHost() {
                 onManageKeys = {
                     navController.navigate(Routes.Keys)
                 },
+                onLaunchSetupWizard = {
+                    navController.navigate(Routes.SetupWizard)
+                },
+                onOpenSettings = {
+                    navController.navigate(Routes.Settings)
+                },
+            )
+        }
+        composable(Routes.SetupWizard) {
+            SetupWizardScreen(
+                onDone = { _ ->
+                    // Row is already persisted — just pop back to the
+                    // server list, which will auto-reflect the new entry
+                    // via the Room flow.
+                    navController.popBackStack(Routes.Servers, inclusive = false)
+                },
+                onCancel = { navController.popBackStack() },
+            )
+        }
+        composable(Routes.Settings) {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
             )
         }
         composable(
@@ -163,6 +187,8 @@ private object Routes {
     const val Keys = "keys"
     const val KeyGenerate = "keys/generate"
     const val KeyImport = "keys/import"
+    const val Settings = "settings"
+    const val SetupWizard = "setup-wizard"
     const val Unlock = "unlock"
     const val ArgServerId = "serverId"
     const val ArgKeyId = "id"
