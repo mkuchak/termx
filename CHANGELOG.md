@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.2.6](https://github.com/mkuchak/termx/compare/v0.2.5...v0.2.6) (2026-04-23)
+
+### Bug Fixes
+
+* pin Hilt to 2.58 for AGP 8.x compatibility ([13e9526](https://github.com/mkuchak/termx/commit/13e9526fde3c5d03f384335d48c3b419839bdb82))
+
 ## [0.2.5](https://github.com/mkuchak/termx/compare/v0.2.4...v0.2.5) (2026-04-23)
 
 ### Bug Fixes
