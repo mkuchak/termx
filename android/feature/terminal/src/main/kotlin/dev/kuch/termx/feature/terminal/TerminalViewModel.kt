@@ -213,6 +213,21 @@ class TerminalViewModel @Inject constructor(
         return target to auth
     }
 
+    /**
+     * Forward raw bytes to the current PTY. Used by the extra-keys
+     * toolbar and Volume-Down=Ctrl binding to push keypresses that
+     * don't flow through the Termux view's key handler. No-op if the
+     * channel isn't open.
+     */
+    fun writeToPty(bytes: ByteArray) {
+        if (bytes.isEmpty()) return
+        val channel = ptyChannel ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { channel.write(bytes) }
+                .onFailure { Log.w(LOG_TAG, "pty write failed", it) }
+        }
+    }
+
     /** Tear everything down. Idempotent. */
     fun disconnect() {
         connectJob?.cancel()

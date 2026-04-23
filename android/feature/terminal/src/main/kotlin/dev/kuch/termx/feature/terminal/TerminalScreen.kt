@@ -3,12 +3,15 @@ package dev.kuch.termx.feature.terminal
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.widget.FrameLayout
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -19,8 +22,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -28,6 +37,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
+import dev.kuch.termx.feature.terminal.keys.ExtraKey
+import dev.kuch.termx.feature.terminal.keys.ExtraKeyBytes
+import dev.kuch.termx.feature.terminal.keys.ExtraKeysBar
 import java.util.UUID
 
 /**
@@ -60,7 +72,10 @@ fun TerminalScreen(
             TerminalUiState.Idle,
             TerminalUiState.Connecting -> ConnectingPane()
 
-            is TerminalUiState.Connected -> TerminalPane(state.session)
+            is TerminalUiState.Connected -> ConnectedPane(
+                session = state.session,
+                onWriteToPty = viewModel::writeToPty,
+            )
 
             is TerminalUiState.Error -> ErrorPane(
                 message = state.message,
@@ -120,10 +135,153 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
     }
 }
 
+/**
+ * The terminal + extra-keys bar vertical stack. Wraps the
+ * [TerminalPane] in a [Column] so the extra-keys bar docks above the
+ * IME. Volume-Down-as-Ctrl interception is attached both as a
+ * Compose-level [onKeyEvent] and as a native
+ * [android.view.View.OnKeyListener] on the [TerminalView] itself so it
+ * fires regardless of which child holds focus at the time.
+ */
 @Composable
-private fun TerminalPane(session: TerminalSession) {
+private fun ConnectedPane(
+    session: TerminalSession,
+    onWriteToPty: (ByteArray) -> Unit,
+) {
+    val volState = remember { VolDownState() }
+    val focusRequester = remember { FocusRequester() }
+
+    LaunchedEffect(Unit) {
+        runCatching { focusRequester.requestFocus() }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .imePadding()
+            .focusRequester(focusRequester)
+            .focusable()
+            .onKeyEvent { event ->
+                handleVolDownAwareKey(
+                    keyCode = event.nativeKeyEvent.keyCode,
+                    native = event.nativeKeyEvent,
+                    isDown = event.type == KeyEventType.KeyDown,
+                    isUp = event.type == KeyEventType.KeyUp,
+                    state = volState,
+                    onWriteToPty = onWriteToPty,
+                )
+            },
+    ) {
+        TerminalPane(
+            session = session,
+            volState = volState,
+            onWriteToPty = onWriteToPty,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        )
+        ExtraKeysBar(
+            onKey = onWriteToPty,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/**
+ * Shared mutable state for the Vol-Down modifier detector. Held by a
+ * `remember {}` in [ConnectedPane] and read from both the Compose
+ * `onKeyEvent` handler and the native `TerminalView.setOnKeyListener`.
+ */
+private class VolDownState {
+    var pressedAtMs: Long = 0L
+    var consumedAsModifier: Boolean = false
+}
+
+/**
+ * Shared dispatch function for Vol-Down-as-Ctrl. Returns `true` if the
+ * event was consumed.
+ *
+ *  - Vol-Down key-down → remember the timestamp, swallow (no volume UI).
+ *  - Vol-Down key-up → if nothing consumed it as a modifier *and* it
+ *    was held for >500ms, let the OS have it back (pass-through so the
+ *    user can still lower the volume by holding alone). Otherwise
+ *    swallow.
+ *  - Any other key-down while Vol-Down is held → encode as Ctrl+<key>
+ *    and write to the PTY; mark modifier-consumed so the Vol-Down-up
+ *    doesn't fall through.
+ */
+private fun handleVolDownAwareKey(
+    keyCode: Int,
+    native: KeyEvent,
+    isDown: Boolean,
+    isUp: Boolean,
+    state: VolDownState,
+    onWriteToPty: (ByteArray) -> Unit,
+): Boolean {
+    if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
+        return when {
+            isDown -> {
+                if (state.pressedAtMs == 0L) state.pressedAtMs = System.currentTimeMillis()
+                true
+            }
+            isUp -> {
+                val heldAlone = !state.consumedAsModifier
+                val heldMs = System.currentTimeMillis() - state.pressedAtMs
+                state.pressedAtMs = 0L
+                state.consumedAsModifier = false
+                !(heldAlone && heldMs > VOL_DOWN_PASSTHROUGH_MS)
+            }
+            else -> false
+        }
+    }
+    if (state.pressedAtMs != 0L && isDown) {
+        val extra = extraKeyFromNativeKeyCode(keyCode, native)
+        if (extra != null) {
+            val bytes = ExtraKeyBytes.encode(extra, ctrl = true, alt = false)
+            onWriteToPty(bytes)
+            state.consumedAsModifier = true
+            return true
+        }
+    }
+    return false
+}
+
+/**
+ * Map an Android native keycode onto an [ExtraKey] for the
+ * Vol-Down+<key>=Ctrl+<key> binding. Returns `null` for keycodes the
+ * toolbar can't sensibly encode (the caller falls through to let the
+ * terminal view handle them normally).
+ */
+private fun extraKeyFromNativeKeyCode(keyCode: Int, event: KeyEvent): ExtraKey? {
+    if (keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
+        val c = ('a' + (keyCode - KeyEvent.KEYCODE_A))
+        return ExtraKey.Char(c)
+    }
+    if (keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) {
+        val c = ('0' + (keyCode - KeyEvent.KEYCODE_0))
+        return ExtraKey.Char(c)
+    }
+    return when (keyCode) {
+        KeyEvent.KEYCODE_SPACE -> ExtraKey.Char(' ')
+        KeyEvent.KEYCODE_ENTER -> ExtraKey.Enter
+        KeyEvent.KEYCODE_TAB -> ExtraKey.Tab
+        KeyEvent.KEYCODE_ESCAPE -> ExtraKey.Escape
+        else -> {
+            val ch = event.unicodeChar
+            if (ch != 0) ExtraKey.Char(ch.toChar()) else null
+        }
+    }
+}
+
+@Composable
+private fun TerminalPane(
+    session: TerminalSession,
+    volState: VolDownState,
+    onWriteToPty: (ByteArray) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     AndroidView(
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier,
         factory = { ctx ->
             val view = TerminalView(ctx, null).apply {
                 setTerminalViewClient(MinimalTerminalViewClient)
@@ -135,6 +293,20 @@ private fun TerminalPane(session: TerminalSession) {
                 )
                 isFocusable = true
                 isFocusableInTouchMode = true
+                // Vol-Down=Ctrl works even when the TerminalView itself
+                // has focus — the Compose `onKeyEvent` only fires while
+                // the outer Column holds focus, and the user typically
+                // taps the view to type into it.
+                setOnKeyListener { _, keyCode, ev ->
+                    handleVolDownAwareKey(
+                        keyCode = keyCode,
+                        native = ev,
+                        isDown = ev.action == KeyEvent.ACTION_DOWN,
+                        isUp = ev.action == KeyEvent.ACTION_UP,
+                        state = volState,
+                        onWriteToPty = onWriteToPty,
+                    )
+                }
             }
             view.attachSession(session)
             view.requestFocus()
@@ -185,3 +357,4 @@ private object MinimalTerminalViewClient : TerminalViewClient {
 }
 
 private const val DEFAULT_TERMINAL_TEXT_SIZE_SP = 14
+private const val VOL_DOWN_PASSTHROUGH_MS = 500L
