@@ -201,6 +201,7 @@ fun ServerListScreen(
             serverId = null,
             onDismiss = { showAddSheet = false },
             onSaved = { showAddSheet = false },
+            onManageKeys = onManageKeys,
         )
     }
 
@@ -211,6 +212,7 @@ fun ServerListScreen(
                 serverId = id,
                 onDismiss = { editingServerId = null },
                 onSaved = { editingServerId = null },
+                onManageKeys = onManageKeys,
             )
         }
     }

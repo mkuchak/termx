@@ -30,6 +30,7 @@ kotlinx-datetime = "0.6.1"
 # SSH transport
 sshj = "0.39.0"
 bouncycastle = "1.78.1"
+zxing-core = "3.5.3"
 
 # Test
 sshd = "2.13.2"
@@ -72,6 +73,7 @@ kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.
 sshj = { module = "com.hierynomus:sshj", version.ref = "sshj" }
 bouncycastle-bcprov = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bouncycastle" }
 bouncycastle-bcpkix = { module = "org.bouncycastle:bcpkix-jdk18on", version.ref = "bouncycastle" }
+zxing-core = { module = "com.google.zxing:core", version.ref = "zxing-core" }
 
 sshd-core = { module = "org.apache.sshd:sshd-core", version.ref = "sshd" }
 coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }

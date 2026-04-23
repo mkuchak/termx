@@ -1,7 +1,5 @@
 package dev.kuch.termx
 
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -15,6 +13,10 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.kuch.termx.core.data.vault.VaultLockState
+import dev.kuch.termx.feature.keys.KeyDetailScreen
+import dev.kuch.termx.feature.keys.KeyGenerateScreen
+import dev.kuch.termx.feature.keys.KeyImportScreen
+import dev.kuch.termx.feature.keys.KeyListScreen
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
 import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
@@ -93,10 +95,42 @@ fun TermxNavHost() {
             TerminalScreen(serverId = id)
         }
         composable(Routes.Keys) {
-            // Task #23 replaces this stub with the real key manager.
-            Text(
-                text = "Key management coming in Task #23",
-                color = MaterialTheme.colorScheme.onBackground,
+            KeyListScreen(
+                onKeyTap = { id -> navController.navigate(Routes.keyDetailRoute(id)) },
+                onGenerate = { navController.navigate(Routes.KeyGenerate) },
+                onImport = { navController.navigate(Routes.KeyImport) },
+            )
+        }
+        composable(Routes.KeyGenerate) {
+            KeyGenerateScreen(
+                onDone = { id ->
+                    navController.popBackStack(Routes.Keys, inclusive = false)
+                    navController.navigate(Routes.keyDetailRoute(id))
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(Routes.KeyImport) {
+            KeyImportScreen(
+                onDone = { id ->
+                    navController.popBackStack(Routes.Keys, inclusive = false)
+                    navController.navigate(Routes.keyDetailRoute(id))
+                },
+                onBack = { navController.popBackStack() },
+            )
+        }
+        composable(
+            route = Routes.KeyDetailPattern,
+            arguments = listOf(
+                navArgument(Routes.ArgKeyId) { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val id = UUID.fromString(
+                backStackEntry.arguments!!.getString(Routes.ArgKeyId),
+            )
+            KeyDetailScreen(
+                keyId = id,
+                onBack = { navController.popBackStack() },
             )
         }
         composable(Routes.Unlock) {
@@ -127,9 +161,14 @@ class NavGateViewModel @Inject constructor(
 private object Routes {
     const val Servers = "servers"
     const val Keys = "keys"
+    const val KeyGenerate = "keys/generate"
+    const val KeyImport = "keys/import"
     const val Unlock = "unlock"
     const val ArgServerId = "serverId"
+    const val ArgKeyId = "id"
     const val TerminalPattern = "terminal/{$ArgServerId}"
+    const val KeyDetailPattern = "keys/{$ArgKeyId}"
 
     fun terminalRoute(id: UUID): String = "terminal/$id"
+    fun keyDetailRoute(id: UUID): String = "keys/$id"
 }

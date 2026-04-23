@@ -75,6 +75,7 @@ fun AddEditServerSheet(
     serverId: UUID? = null,
     onDismiss: () -> Unit,
     onSaved: (UUID) -> Unit,
+    onManageKeys: (() -> Unit)? = null,
     viewModel: AddEditServerViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -105,10 +106,16 @@ fun AddEditServerSheet(
             onTmuxSessionNameChange = viewModel::onTmuxSessionNameChange,
             onGroupSelected = viewModel::onGroupSelected,
             onManageKeys = {
-                // TODO(#23): navigate to the keys screen once its route is
-                //   registered in TermxNavHost. For now just dismiss so the
-                //   user can take the obvious next step manually.
-                onDismiss()
+                // Task #23: route to the keys screen. Callers that don't
+                // provide a navigation lambda (previews, tests) fall back
+                // to the dismiss behaviour from pre-#23.
+                val nav = onManageKeys
+                if (nav != null) {
+                    onDismiss()
+                    nav()
+                } else {
+                    onDismiss()
+                }
             },
             onTestConnection = { viewModel.testConnection() },
             onCancel = onDismiss,
