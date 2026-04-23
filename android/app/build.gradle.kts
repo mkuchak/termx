@@ -1,5 +1,6 @@
 import groovy.json.JsonSlurper
 import java.io.ByteArrayOutputStream
+import java.util.Base64
 
 plugins {
     alias(libs.plugins.android.application)
@@ -53,7 +54,7 @@ android {
             val ksB64 = System.getenv("ANDROID_KEYSTORE_BASE64")
             if (!ksB64.isNullOrBlank()) {
                 val ksFile = File.createTempFile("termx-ks", ".jks").apply {
-                    writeBytes(java.util.Base64.getDecoder().decode(ksB64))
+                    writeBytes(Base64.getDecoder().decode(ksB64))
                     deleteOnExit()
                 }
                 storeFile = ksFile
@@ -90,11 +91,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
     applicationVariants.all {
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
