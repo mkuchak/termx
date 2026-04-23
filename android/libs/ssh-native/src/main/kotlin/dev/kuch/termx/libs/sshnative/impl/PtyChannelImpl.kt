@@ -8,24 +8,42 @@ import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
 import net.schmizz.sshj.connection.channel.direct.Session
+import java.io.InputStream
+import java.io.OutputStream
 
 /**
  * sshj-backed [PtyChannel].
  *
- * [output] is a [channelFlow] that reads the shell's InputStream on
- * Dispatchers.IO and emits non-empty byte chunks as they arrive. The Flow
- * terminates cleanly when the remote end closes, or when the collector
- * cancels (which also tears down the channel).
+ * Either [shell] or [command] is non-null — never both, never neither.
+ * The two modes share behavior: bytes flow from the underlying
+ * InputStream into the [output] Flow, writes fan into the underlying
+ * OutputStream, and window-size changes hit sshj's
+ * `changeWindowDimensions`. The [session] owns the PTY; closing either
+ * mode closes the session and reclaims the channel slot.
+ *
+ * [output] is a [channelFlow] that reads on Dispatchers.IO and emits
+ * non-empty byte chunks as they arrive. The Flow terminates cleanly
+ * when the remote end closes, or when the collector cancels (which
+ * also tears down the channel).
  */
 internal class PtyChannelImpl(
     private val session: Session,
-    private val shell: Session.Shell,
+    private val shell: Session.Shell? = null,
+    private val command: Session.Command? = null,
 ) : PtyChannel {
+
+    init {
+        require((shell == null) xor (command == null)) {
+            "PtyChannelImpl requires exactly one of shell or command"
+        }
+    }
+
+    private val input: InputStream = shell?.inputStream ?: command!!.inputStream
+    private val outputStream: OutputStream = shell?.outputStream ?: command!!.outputStream
 
     @Volatile private var closed = false
 
     override val output: Flow<ByteArray> = channelFlow {
-        val input = shell.inputStream
         val buffer = ByteArray(8 * 1024)
         try {
             while (!closed) {
@@ -35,8 +53,8 @@ internal class PtyChannelImpl(
             }
         } finally {
             awaitClose {
-                // Collector scope cancelled → close the underlying shell so the
-                // session can reclaim the channel slot.
+                // Collector scope cancelled → close the underlying channel so
+                // the session can reclaim the channel slot.
                 runCatching { close() }
             }
         }
@@ -44,8 +62,8 @@ internal class PtyChannelImpl(
 
     override suspend fun write(bytes: ByteArray) = withContext(Dispatchers.IO) {
         try {
-            shell.outputStream.write(bytes)
-            shell.outputStream.flush()
+            outputStream.write(bytes)
+            outputStream.flush()
         } catch (t: Throwable) {
             throw t.toSshException()
         }
@@ -53,7 +71,13 @@ internal class PtyChannelImpl(
 
     override suspend fun resize(cols: Int, rows: Int) = withContext(Dispatchers.IO) {
         try {
-            shell.changeWindowDimensions(cols, rows, 0, 0)
+            // sshj's `changeWindowDimensions` is declared on `Session.Shell`
+            // rather than the base `Session`. The concrete `SessionChannel`
+            // backing an exec-with-PTY also implements `Session.Shell` (the
+            // PTY lives on the channel, not the subsystem), so we can safely
+            // cast in both the startShell and exec cases.
+            val windowSink = shell ?: (session as Session.Shell)
+            windowSink.changeWindowDimensions(cols, rows, 0, 0)
         } catch (t: Throwable) {
             throw t.toSshException()
         }
@@ -62,7 +86,8 @@ internal class PtyChannelImpl(
     override fun close() {
         if (closed) return
         closed = true
-        runCatching { shell.close() }
+        runCatching { shell?.close() }
+        runCatching { command?.close() }
         runCatching { session.close() }
     }
 }

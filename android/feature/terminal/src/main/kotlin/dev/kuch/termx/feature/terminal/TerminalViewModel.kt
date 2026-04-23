@@ -19,6 +19,7 @@ import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
 import dev.kuch.termx.libs.sshnative.SshSession
 import dev.kuch.termx.libs.sshnative.SshTarget
+import dev.kuch.termx.libs.sshnative.tmuxAutoAttachCommand
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,7 +103,25 @@ class TerminalViewModel @Inject constructor(
         val session = client.connect(target, auth)
         sshSession = session
 
-        val channel = session.openShell(cols = INITIAL_COLS, rows = INITIAL_ROWS)
+        // tmux auto-attach path (Phase 3 / Task #25):
+        // When the resolved Server row sets autoAttachTmux = true, we try
+        // to open the shell with `tmux new-session -A -s '<name>'` so the
+        // phone lands directly in the persistent session. If tmux isn't
+        // installed we fall back to a plain login shell and raise a
+        // banner flag the UI can surface.
+        val server = serverId?.let { serverRepository.getById(it) }
+        val wantsTmux = server?.autoAttachTmux == true
+        val tmuxAvailable = if (wantsTmux) probeTmux(session) else true
+        val shellCommand = if (wantsTmux && tmuxAvailable) {
+            tmuxAutoAttachCommand(server!!.tmuxSessionName)
+        } else null
+        val tmuxMissing = wantsTmux && !tmuxAvailable
+
+        val channel = session.openShell(
+            cols = INITIAL_COLS,
+            rows = INITIAL_ROWS,
+            command = shellCommand,
+        )
         ptyChannel = channel
 
         val client2 = SshSessionClient(
@@ -131,7 +150,7 @@ class TerminalViewModel @Inject constructor(
         )
         remoteSession = terminal
 
-        _state.value = TerminalUiState.Connected(terminal)
+        _state.value = TerminalUiState.Connected(terminal, tmuxMissing = tmuxMissing)
 
         // Collect remote bytes → emulator. Runs as long as the channel's
         // Flow is alive; completes when the shell exits or we close.
@@ -262,6 +281,26 @@ class TerminalViewModel @Inject constructor(
     }.getOrElse { t ->
         if (t is FileNotFoundException) null else throw t
     }
+
+    /**
+     * Pre-flight check: does `tmux` exist on the remote $PATH?
+     *
+     * We can't reliably detect exit 127 once we're inside a PTY exec
+     * (the PtyChannel has no exit code surface), so instead we run a
+     * plain non-PTY `command -v tmux` first. On failure or timeout we
+     * treat tmux as missing — the fallback is a plain login shell, so
+     * being cautious here is safe.
+     */
+    private suspend fun probeTmux(session: SshSession): Boolean =
+        runCatching {
+            session.openExec("command -v tmux").use { exec ->
+                exec.stdout.collect { /* drain */ }
+                exec.exitCode.await() == 0
+            }
+        }.getOrElse { t ->
+            Log.w(LOG_TAG, "tmux probe failed; falling back to plain shell", t)
+            false
+        }
 
     private companion object {
         const val LOG_TAG = "TerminalViewModel"

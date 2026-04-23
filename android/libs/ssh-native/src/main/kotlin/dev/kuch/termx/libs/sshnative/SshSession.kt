@@ -14,11 +14,18 @@ interface SshSession : AutoCloseable {
      * @param term `$TERM` advertised to the server
      * @param cols initial column count
      * @param rows initial row count
+     * @param command optional command to exec in place of a plain login
+     *   shell. When non-null, the PTY is allocated and then
+     *   `session.exec(command)` runs it — the returned [PtyChannel]
+     *   behaves identically (bytes, writes, resize) except the remote
+     *   process tree is rooted at [command] instead of the user's login
+     *   shell. Used by the tmux auto-attach path (Task #25).
      */
     suspend fun openShell(
         term: String = "xterm-256color",
         cols: Int,
         rows: Int,
+        command: String? = null,
     ): PtyChannel
 
     /** Run a single command; returns an [ExecChannel] exposing stdout/stderr/exit. */
