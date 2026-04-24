@@ -2,7 +2,6 @@ package dev.kuch.termx.core.data.vault
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
-import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -18,7 +17,6 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -28,17 +26,21 @@ import android.util.Base64 as AndroidBase64
  * Real [SecretVault] implementation backed by:
  *
  * 1. An Android Keystore AES-256-GCM symmetric master key stored under
- *    alias [MASTER_KEY_ALIAS]. The key is hardware-backed and bound to
- *    this device/install, but does NOT require per-operation user
+ *    alias [MASTER_KEY_ALIAS_V2]. The key is hardware-backed and bound
+ *    to this device/install, but does NOT require per-operation user
  *    authentication — the app-level [VaultLockState] (biometric prompt
  *    on launch + auto-lock timer) is the access gate. An earlier spec
- *    used `setUserAuthenticationParameters(0, …)` / `-1` validity which
- *    demands a CryptoObject-bound prompt per op; our unlock flow doesn't
- *    use a CryptoObject, and some devices surfaced that as an opaque
- *    "Attempt to get length of null array" NPE from deep in the Keystore
- *    provider. Legacy keys of that shape are auto-migrated in
- *    [getOrCreateMasterKey] (wipe key + vault blob and regenerate; the
- *    old entries are unrecoverable without auth).
+ *    (stored under the legacy [MASTER_KEY_ALIAS_V1]) used
+ *    `setUserAuthenticationParameters(0, …)` / `-1` validity which
+ *    demanded a CryptoObject-bound prompt per op; our unlock flow
+ *    doesn't use a CryptoObject, and some devices surfaced that as an
+ *    opaque "Attempt to get length of null array" NPE from deep in the
+ *    Keystore provider. Migration strategy is version-aliased: if the
+ *    v2 key exists we use it; otherwise we wipe the v1 alias and the
+ *    vault blob (the old entries are unrecoverable without auth) and
+ *    generate a fresh v2. This is deterministic — once v2 exists we
+ *    never re-enter the migration path, so the user only re-enters
+ *    their secrets once.
  *
  * 2. A single blob file `filesDir/vault.enc` holding a JSON map from
  *    opaque alias → base64(iv || ciphertext_with_gcm_tag). A fresh
@@ -127,17 +129,19 @@ class KeystoreSecretVault @Inject constructor(
 
     private fun getOrCreateMasterKey(): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
-        val existing = keyStore.getKey(MASTER_KEY_ALIAS, null) as? SecretKey
-        if (existing != null) {
-            if (!requiresMigration(existing)) return existing
-            // Legacy key created with per-op user-authentication. We can't
-            // decrypt the existing blob without a CryptoObject-bound prompt
-            // (and the unlock flow doesn't provide one), so wipe both the
-            // key and the blob and start fresh. The user re-enters any
-            // saved secrets on next use. Both cleanup steps are wrapped
-            // defensively — generator.generateKey() below will overwrite
-            // the alias regardless, so a delete-entry failure isn't fatal.
-            runCatching { keyStore.deleteEntry(MASTER_KEY_ALIAS) }
+
+        // Happy path: the current-shape key is already present.
+        (keyStore.getKey(MASTER_KEY_ALIAS_V2, null) as? SecretKey)?.let { return it }
+
+        // No v2 yet — look for the legacy alias so we know whether this is
+        // a fresh install or an upgrade from the pre-per-op-auth scheme.
+        // Introspecting the legacy key via SecretKeyFactory + KeyInfo is
+        // unreliable on some devices (NoSuchAlgorithmException / opaque
+        // Keystore errors), so we don't ask questions — if v1 exists, wipe
+        // v1 + the vault blob and start fresh under v2. If v1 also isn't
+        // there, this is a clean install.
+        if (keyStore.containsAlias(MASTER_KEY_ALIAS_V1)) {
+            runCatching { keyStore.deleteEntry(MASTER_KEY_ALIAS_V1) }
             runCatching { blobFile.delete() }
         }
 
@@ -147,7 +151,7 @@ class KeystoreSecretVault @Inject constructor(
         )
 
         val spec = KeyGenParameterSpec.Builder(
-            MASTER_KEY_ALIAS,
+            MASTER_KEY_ALIAS_V2,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -157,16 +161,6 @@ class KeystoreSecretVault @Inject constructor(
 
         generator.init(spec)
         return generator.generateKey()
-    }
-
-    private fun requiresMigration(key: SecretKey): Boolean = try {
-        val factory = SecretKeyFactory.getInstance(key.algorithm, KEYSTORE_PROVIDER)
-        val info = factory.getKeySpec(key, KeyInfo::class.java) as KeyInfo
-        info.isUserAuthenticationRequired
-    } catch (_: Throwable) {
-        // If introspection fails, err on the side of migrating — a
-        // broken legacy key is worse than a fresh one.
-        true
     }
 
     // --- Crypto -------------------------------------------------------------
@@ -218,7 +212,12 @@ class KeystoreSecretVault @Inject constructor(
     }
 
     private companion object {
-        const val MASTER_KEY_ALIAS = "dev.kuch.termx.vault-master"
+        /** Legacy alias — created with setUserAuthenticationRequired(true). */
+        const val MASTER_KEY_ALIAS_V1 = "dev.kuch.termx.vault-master"
+
+        /** Current alias — no per-op auth; app-level VaultLockState gates access. */
+        const val MASTER_KEY_ALIAS_V2 = "dev.kuch.termx.vault-master-v2"
+
         const val KEYSTORE_PROVIDER = "AndroidKeyStore"
         const val BLOB_FILENAME = "vault.enc"
         const val AES_GCM_TRANSFORMATION = "AES/GCM/NoPadding"

@@ -32,6 +32,7 @@ import dev.kuch.termx.libs.sshnative.SshSession
 import dev.kuch.termx.libs.sshnative.SshTarget
 import dev.kuch.termx.libs.sshnative.tmuxAutoAttachCommand
 import java.io.FileNotFoundException
+import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -273,6 +274,7 @@ class TerminalViewModel @Inject constructor(
 
             if (mosh != null) {
                 val tab = openMoshTab(mosh, server.tmuxSessionName)
+                touchLastConnected(server.id)
                 _state.value = _state.value.copy(
                     status = TerminalUiState.Status.Connected,
                     activeSession = tab.emulator,
@@ -311,6 +313,7 @@ class TerminalViewModel @Inject constructor(
         val tmuxMissing = wantsTmux && !tmuxAvailable
 
         val tab = openTab(initialTabName, attachCommand)
+        server?.id?.let { touchLastConnected(it) }
         _state.value = _state.value.copy(
             status = TerminalUiState.Status.Connected,
             activeSession = tab.emulator,
@@ -321,6 +324,19 @@ class TerminalViewModel @Inject constructor(
             moshBacked = false,
             error = null,
         )
+    }
+
+    /**
+     * Fire-and-forget write of `lastConnected = now()` for [serverId].
+     * Runs off the UI-state-update path so a slow/failing Room write can't
+     * block surfacing "Connected" — the server card on the list just keeps
+     * its prior stamp (or "never connected") if the write drops.
+     */
+    private fun touchLastConnected(serverId: UUID) {
+        viewModelScope.launch {
+            runCatching { serverRepository.updateLastConnected(serverId, Instant.now()) }
+                .onFailure { Log.w(LOG_TAG, "updateLastConnected failed for $serverId", it) }
+        }
     }
 
     /**
