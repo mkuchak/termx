@@ -10,6 +10,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.PasswordCache
+import dev.kuch.termx.core.data.session.SessionRegistry
 import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
@@ -75,18 +76,35 @@ class TerminalViewModel @Inject constructor(
     private val secretVault: SecretVault,
     private val passwordCache: PasswordCache,
     private val appPreferences: AppPreferences,
+    private val sessionRegistry: SessionRegistry,
 ) : ViewModel() {
+
+    init {
+        // Notification "Disconnect all" action posts into the registry;
+        // every live VM collects it and tears its own session down.
+        viewModelScope.launch {
+            sessionRegistry.disconnectAllRequest.collect {
+                disconnect()
+            }
+        }
+    }
 
     /**
      * One open PTY tab. [outputJob] collects the sshj byte stream into
      * [emulator] until the channel ends or we cancel it; dropping the
      * tab cancels the job and closes the channel.
+     *
+     * [serverIdForRegistry] + [serverLabel] mirror what we pushed into
+     * [SessionRegistry] on open so the matching unregister call can be
+     * made from [detachTab] / [cleanupQuietly] without another repo hit.
      */
     private data class SessionPty(
         val name: String,
         val pty: PtyChannel,
         val emulator: RemoteTerminalSession,
         val outputJob: Job,
+        val serverIdForRegistry: UUID,
+        val serverLabel: String,
     )
 
     private val _state = MutableStateFlow(TerminalUiState())
@@ -108,6 +126,15 @@ class TerminalViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_THEME_ID)
 
     private var currentServerId: UUID? = null
+    /**
+     * Cached display label + stable UUID for the active connection, used
+     * to tag every tab pushed into [SessionRegistry]. The stable UUID is
+     * the persisted server id when we have one, or [FALLBACK_SERVER_ID]
+     * for the BuildConfig test-server path — either way the registry
+     * (and the service's notification) sees a consistent key.
+     */
+    private var currentServerLabel: String = "termx"
+    private var currentServerRegistryId: UUID = FALLBACK_SERVER_ID
     private var sshClient: SshClient? = null
     private var sshSession: SshSession? = null
 
@@ -182,6 +209,9 @@ class TerminalViewModel @Inject constructor(
         sshSession = session
 
         val server = serverId?.let { serverRepository.getById(it) }
+        currentServerRegistryId = server?.id ?: FALLBACK_SERVER_ID
+        currentServerLabel = server?.label ?: "Test server"
+
         val wantsTmux = server?.autoAttachTmux == true
         val tmuxAvailable = if (wantsTmux) probeTmux(session) else true
         val initialTabName = if (wantsTmux && tmuxAvailable) server!!.tmuxSessionName else DEFAULT_TAB
@@ -259,6 +289,7 @@ class TerminalViewModel @Inject constructor(
         tab.outputJob.cancel()
         runCatching { tab.pty.close() }
         tab.emulator.onRemoteSessionClosed()
+        sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
 
         val active = _state.value.activeTabName
         if (active == name) {
@@ -372,8 +403,20 @@ class TerminalViewModel @Inject constructor(
             emulator.onRemoteSessionClosed()
         }
 
-        val tab = SessionPty(tabName, channel, emulator, outputJob)
+        val tab = SessionPty(
+            name = tabName,
+            pty = channel,
+            emulator = emulator,
+            outputJob = outputJob,
+            serverIdForRegistry = currentServerRegistryId,
+            serverLabel = currentServerLabel,
+        )
         tabs[tabName] = tab
+        sessionRegistry.register(
+            serverId = tab.serverIdForRegistry,
+            serverLabel = tab.serverLabel,
+            tabName = tab.name,
+        )
         return tab
     }
 
@@ -473,6 +516,7 @@ class TerminalViewModel @Inject constructor(
             tab.outputJob.cancel()
             runCatching { tab.pty.close() }
             tab.emulator.onRemoteSessionClosed()
+            sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
         }
         tabs.clear()
         runCatching { sshSession?.close() }
@@ -509,5 +553,13 @@ class TerminalViewModel @Inject constructor(
         const val INITIAL_ROWS = 24
         const val DEFAULT_FONT_SIZE_SP = 14
         const val DEFAULT_THEME_ID = "dracula"
+
+        /**
+         * Stable sentinel UUID for BuildConfig test-server connections
+         * that have no persisted [dev.kuch.termx.core.domain.model.Server]
+         * row. Keeps the [SessionRegistry] key shape uniform.
+         */
+        val FALLBACK_SERVER_ID: UUID =
+            UUID.fromString("00000000-0000-0000-0000-000000000000")
     }
 }

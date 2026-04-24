@@ -22,6 +22,7 @@ import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.servers.setup.SetupWizardScreen
 import dev.kuch.termx.feature.settings.SettingsScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
+import dev.kuch.termx.service.NotificationPermissionRequester
 import java.util.UUID
 import javax.inject.Inject
 
@@ -40,6 +41,8 @@ import javax.inject.Inject
  */
 @Composable
 fun TermxNavHost() {
+    NotificationPermissionRequester()
+
     val gateViewModel: NavGateViewModel = hiltViewModel()
     val lockState by gateViewModel.vaultLockState.state.collectAsStateWithLifecycle()
 
