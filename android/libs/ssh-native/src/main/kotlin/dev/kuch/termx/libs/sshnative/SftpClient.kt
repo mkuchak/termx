@@ -18,5 +18,13 @@ interface SftpClient : AutoCloseable {
     /** `true` if anything (file, dir, symlink) exists at [remotePath]. */
     suspend fun exists(remotePath: String): Boolean
 
+    /**
+     * Rename [src] to [dst] atomically on the server. Used to publish a
+     * fully-written temp file into its final location so readers never see
+     * a half-written payload (see `EventStreamClient.sendCommand` for the
+     * companion-commands write path).
+     */
+    suspend fun rename(src: String, dst: String)
+
     override fun close()
 }

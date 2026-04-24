@@ -68,6 +68,15 @@ internal class SftpClientImpl(
         }
     }
 
+    override suspend fun rename(src: String, dst: String) = withContext(Dispatchers.IO) {
+        check(!closed) { "SFTP closed" }
+        try {
+            sftp.rename(src, dst)
+        } catch (t: Throwable) {
+            throw t.toSshException()
+        }
+    }
+
     override fun close() {
         if (closed) return
         closed = true
