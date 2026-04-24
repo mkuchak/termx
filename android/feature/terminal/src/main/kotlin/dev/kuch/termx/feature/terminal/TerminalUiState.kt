@@ -1,6 +1,7 @@
 package dev.kuch.termx.feature.terminal
 
 import com.termux.terminal.RemoteTerminalSession
+import java.util.UUID
 
 /**
  * View-facing state for `TerminalScreen`.
@@ -35,6 +36,12 @@ data class TerminalUiState(
     val tmuxMissing: Boolean = false,
     val error: String? = null,
     /**
+     * When non-null, the UI should render a password prompt dialog. Set
+     * when `connect()` hits a password-auth server with no cached entry;
+     * cleared on submit or cancel.
+     */
+    val awaitingPassword: AwaitingPasswordInfo? = null,
+    /**
      * URL pending a confirmation dialog (Task #17 double-tap). Set by
      * [TerminalViewModel.onUrlDoubleTap]; cleared by
      * [TerminalViewModel.onUrlTapConfirmed] or
@@ -44,3 +51,14 @@ data class TerminalUiState(
 ) {
     enum class Status { Idle, Connecting, Connected, Disconnected }
 }
+
+/**
+ * Identifies a server waiting for a user-entered password. Carried in
+ * [TerminalUiState.awaitingPassword] so the prompt dialog knows which
+ * server label to show and which id to pass back to
+ * [TerminalViewModel.submitPassword].
+ */
+data class AwaitingPasswordInfo(
+    val serverId: UUID,
+    val serverLabel: String,
+)

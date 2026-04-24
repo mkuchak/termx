@@ -68,6 +68,7 @@ class TmuxSessionRepositoryImpl @Inject constructor(
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val secretVault: SecretVault,
+    private val passwordCache: dev.kuch.termx.core.data.prefs.PasswordCache,
     private val sshClient: SshClient,
 ) : TmuxSessionRepository {
 
@@ -302,9 +303,14 @@ class TmuxSessionRepositoryImpl @Inject constructor(
                 } ?: throw IllegalStateException("Private key missing from vault")
                 SshAuth.PublicKey(privateKeyPem = bytes, passphrase = null)
             }
-            AuthType.PASSWORD -> throw IllegalStateException(
-                "Password auth isn't wired yet",
-            )
+            AuthType.PASSWORD -> {
+                val pw = passwordCache.get(serverId)
+                    ?: throw IllegalStateException(
+                        "No password cached for this server. " +
+                            "Open the terminal and enter your password to start a session.",
+                    )
+                SshAuth.Password(pw)
+            }
         }
         sshClient.connect(target, auth)
     }

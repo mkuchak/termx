@@ -55,6 +55,7 @@ class SetupWizardViewModelTest {
         secretVault = vault,
         vaultLockState = VaultLockState().apply { markUnlocked() },
         installCompanion = installCompanion,
+        passwordCache = dev.kuch.termx.core.data.prefs.PasswordCache(),
         sshClient = FakeSshClient(),
     )
 

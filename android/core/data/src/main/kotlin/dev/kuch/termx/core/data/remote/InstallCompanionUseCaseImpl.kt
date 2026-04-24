@@ -48,6 +48,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val secretVault: SecretVault,
+    private val passwordCache: dev.kuch.termx.core.data.prefs.PasswordCache,
     private val sshClient: SshClient,
     private val releaseFetcher: TermxReleaseFetcher,
 ) : InstallCompanionUseCase {
@@ -402,8 +403,9 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     private suspend fun resolveAuth(server: Server, passwordOverride: String?): SshAuth = when (server.authType) {
         AuthType.PASSWORD -> {
             val pw = passwordOverride
+                ?: passwordCache.get(server.id)
                 ?: throw IllegalStateException(
-                    "Password required. Passwords aren't persisted yet; re-enter via the wizard.",
+                    "Password required. Open the terminal for this server and enter your password first.",
                 )
             if (pw.isBlank()) {
                 throw IllegalStateException("Password is blank")

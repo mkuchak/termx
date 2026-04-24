@@ -15,11 +15,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -35,6 +43,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.GestureDetectorCompat
@@ -238,6 +248,14 @@ fun TerminalScreen(
         UrlTapConfirmDialog(
             url = pendingUrl,
             onDismiss = { viewModel.onUrlTapDismissed() },
+        )
+    }
+
+    uiState.awaitingPassword?.let { info ->
+        PasswordPromptDialog(
+            serverLabel = info.serverLabel,
+            onSubmit = { pw -> viewModel.submitPassword(info.serverId, pw) },
+            onDismiss = { viewModel.cancelPasswordPrompt() },
         )
     }
 }
@@ -593,3 +611,53 @@ private object MinimalTerminalViewClient : TerminalViewClient {
 }
 
 private const val VOL_DOWN_PASSTHROUGH_MS = 500L
+
+/**
+ * Prompts the user for a password when the server row uses password auth
+ * but the in-memory cache is empty. The entered value is cached by
+ * [TerminalViewModel.submitPassword] for the process lifetime; a kill or
+ * reinstall clears it.
+ */
+@Composable
+private fun PasswordPromptDialog(
+    serverLabel: String,
+    onSubmit: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var password by remember { mutableStateOf("") }
+    var visible by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Password for $serverLabel") },
+        text = {
+            Column {
+                Text("Your password is not stored — it's kept in memory for this session only.")
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    singleLine = true,
+                    visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { visible = !visible }) {
+                            Icon(
+                                imageVector = if (visible) Icons.Filled.VisibilityOff else Icons.Filled.Visibility,
+                                contentDescription = if (visible) "Hide password" else "Show password",
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onSubmit(password) },
+                enabled = password.isNotBlank(),
+            ) { Text("Connect") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}

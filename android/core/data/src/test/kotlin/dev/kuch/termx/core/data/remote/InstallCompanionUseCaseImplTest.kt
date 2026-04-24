@@ -92,6 +92,7 @@ class InstallCompanionUseCaseImplTest {
         serverRepository = servers,
         keyPairRepository = keys,
         secretVault = vault,
+        passwordCache = dev.kuch.termx.core.data.prefs.PasswordCache(),
         sshClient = sshClient,
         releaseFetcher = releaseFetcher,
     )

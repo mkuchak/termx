@@ -9,6 +9,7 @@ import com.termux.terminal.RemoteTerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.prefs.AppPreferences
+import dev.kuch.termx.core.data.prefs.PasswordCache
 import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
@@ -55,6 +56,16 @@ import kotlinx.coroutines.launch
  *    Android `TerminalView`; the others keep feeding their emulators
  *    in the background so re-binding on swap shows up-to-date output.
  */
+/**
+ * Thrown by `resolveConnection` when the selected server uses password auth
+ * but no password is cached yet. The `connect()` flow catches this
+ * specifically and surfaces a prompt dialog instead of an error banner.
+ */
+class PasswordRequiredException(
+    val serverId: UUID,
+    val serverLabel: String,
+) : Exception("Password required for $serverLabel")
+
 @HiltViewModel
 class TerminalViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -62,6 +73,7 @@ class TerminalViewModel @Inject constructor(
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val secretVault: SecretVault,
+    private val passwordCache: PasswordCache,
     private val appPreferences: AppPreferences,
 ) : ViewModel() {
 
@@ -124,6 +136,14 @@ class TerminalViewModel @Inject constructor(
             )
             runCatching { openSession(resolvedId) }
                 .onFailure { t ->
+                    if (t is PasswordRequiredException) {
+                        _state.value = _state.value.copy(
+                            status = TerminalUiState.Status.Disconnected,
+                            awaitingPassword = AwaitingPasswordInfo(t.serverId, t.serverLabel),
+                            error = null,
+                        )
+                        return@onFailure
+                    }
                     Log.e(LOG_TAG, "connect failed", t)
                     cleanupQuietly()
                     _state.value = _state.value.copy(
@@ -135,6 +155,22 @@ class TerminalViewModel @Inject constructor(
                     )
                 }
         }
+    }
+
+    /**
+     * Invoked by the terminal's password prompt dialog. Caches the
+     * password in-memory for this process's lifetime and retries
+     * [connect] for the same server.
+     */
+    fun submitPassword(serverId: UUID, password: String) {
+        passwordCache.put(serverId, password)
+        _state.value = _state.value.copy(awaitingPassword = null)
+        connect(serverId)
+    }
+
+    /** User cancelled the password prompt — just clear the flag. */
+    fun cancelPasswordPrompt() {
+        _state.value = _state.value.copy(awaitingPassword = null)
     }
 
     private suspend fun openSession(serverId: UUID?) {
@@ -379,9 +415,9 @@ class TerminalViewModel @Inject constructor(
                     SshAuth.PublicKey(privateKeyPem = bytes, passphrase = null)
                 }
                 AuthType.PASSWORD -> {
-                    throw IllegalStateException(
-                        "Password auth isn't wired yet (Task #23).",
-                    )
+                    val cached = passwordCache.get(server.id)
+                        ?: throw PasswordRequiredException(server.id, server.label)
+                    SshAuth.Password(cached)
                 }
             }
             return target to auth

@@ -63,6 +63,7 @@ class SetupWizardViewModel @Inject constructor(
     private val secretVault: SecretVault,
     private val vaultLockState: VaultLockState,
     private val installCompanion: InstallCompanionUseCase,
+    private val passwordCache: dev.kuch.termx.core.data.prefs.PasswordCache,
     private val sshClient: SshClient,
 ) : ViewModel() {
 
@@ -287,6 +288,11 @@ class SetupWizardViewModel @Inject constructor(
         val id = UUID.randomUUID()
         val server = current.draft.toServer(id)
         _state.update { it.copy(savedServerId = id) }
+        // Seed the in-memory password cache so the subsequent install +
+        // terminal-connect flows don't demand the user re-type it.
+        if (current.draft.authType == AuthType.PASSWORD && current.draft.password.isNotBlank()) {
+            passwordCache.put(id, current.draft.password)
+        }
         viewModelScope.launch {
             runCatching { serverRepository.upsert(server) }
         }
