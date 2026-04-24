@@ -58,6 +58,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.GestureDetectorCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.termux.terminal.MoshRemoteTerminalSession
@@ -164,7 +166,13 @@ fun TerminalScreen(
 
     val onToggleKeyboard: () -> Unit = {
         terminalViewRef.value?.let { v ->
-            if (v.isFocused) {
+            // `isFocused` isn't a reliable IME-visibility signal: the
+            // TerminalView keeps focus across hide/show, so checking it
+            // made the toggle latch to "hide" after the first tap. Read
+            // the actual IME inset from WindowInsets instead.
+            val imeVisible = ViewCompat.getRootWindowInsets(v)
+                ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+            if (imeVisible) {
                 imm.hideSoftInputFromWindow(v.windowToken, 0)
             } else {
                 v.requestFocus()
