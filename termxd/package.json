@@ -1,0 +1,7 @@
+{
+  "name": "termxd-version",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Version file for the termxd Go companion binary. Bumped by `npm run release:termxd` at the repo root; consumed by release-it to tag `termxd-vX.Y.Z`. Not used by Go — the binary reads its version from an ldflag injected by GoReleaser.",
+  "license": "MIT"
+}

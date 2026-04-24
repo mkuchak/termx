@@ -1,0 +1,43 @@
+{
+  "git": {
+    "commitMessage": "chore(release): termxd v${version}",
+    "tagName": "termxd-v${version}",
+    "tagAnnotation": "termxd release v${version}",
+    "requireCleanWorkingDir": true,
+    "requireUpstream": true,
+    "push": true
+  },
+  "npm": {
+    "publish": false,
+    "ignoreVersion": false
+  },
+  "github": {
+    "release": false,
+    "tokenRef": "GITHUB_TOKEN"
+  },
+  "hooks": {
+    "before:init": "if [ -t 0 ]; then printf '\\n\\u26A0  Have you tested the termxd binary against a real VPS install?\\n    Press Enter to continue or Ctrl+C to abort.\\n' && read _ || exit 1; else printf '\\n\\u26A0  Skipping checklist prompt (non-interactive shell)\\n'; fi",
+    "after:bump": "echo \"Pushing tag termxd-v${version} triggers termxd-release.yml — GoReleaser builds linux/amd64 + linux/arm64, gh release create publishes under the termxd-v tag.\""
+  },
+  "plugins": {
+    "@release-it/conventional-changelog": {
+      "preset": {
+        "name": "conventionalcommits",
+        "types": [
+          { "type": "feat", "section": "Features" },
+          { "type": "fix", "section": "Bug Fixes" },
+          { "type": "perf", "section": "Performance" },
+          { "type": "refactor", "section": "Refactoring" },
+          { "type": "chore", "hidden": true },
+          { "type": "docs", "hidden": true },
+          { "type": "style", "hidden": true },
+          { "type": "test", "hidden": true },
+          { "type": "ci", "hidden": true },
+          { "type": "build", "hidden": true }
+        ]
+      },
+      "path": "termxd",
+      "infile": "termxd/CHANGELOG.md"
+    }
+  }
+}
