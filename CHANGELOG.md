@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/mkuchak/termx/compare/v1.0.0...v1.1.0) (2026-04-24)
+
+### Features
+
+* **auth:** persist SSH passwords in Keystore vault + fix Step 3 race ([8c8be0a](https://github.com/mkuchak/termx/commit/8c8be0ac236e54968bca774897fcf15c7dccc240))
+* **keyboard:** show IME on tap + adjustResize + toggle button in tab bar ([e4de44f](https://github.com/mkuchak/termx/commit/e4de44ff50a8f308bdf0bb10e43b146257d14548)), closes [#1](https://github.com/mkuchak/termx/issues/1)
+
+### Bug Fixes
+
+* **mosh:** bundle minimal terminfo DB + diagnostic logging on early exit ([0ffcc7a](https://github.com/mkuchak/termx/commit/0ffcc7a1b76ee6d6a61ad2c1878905bdad7ef2be))
+* **terminal:** wire view invalidate on remote bytes + PtyChannel backpressure ([a49e890](https://github.com/mkuchak/termx/commit/a49e8909b62a40cea7f9381a320551e9dc98a48b))
+
 ## [1.0.0](https://github.com/mkuchak/termx/compare/v0.3.4...v1.0.0) (2026-04-24)
 
 ### Features
