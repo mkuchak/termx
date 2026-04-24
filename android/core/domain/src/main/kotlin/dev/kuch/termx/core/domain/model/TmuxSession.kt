@@ -6,7 +6,8 @@ import java.time.Instant
  * A snapshot of one tmux session discovered on the remote host.
  *
  * Sourced initially by parsing `tmux ls -F ...` (Task #25); Phase 4 swaps
- * the transport to `~/.termx/sessions/*.json` but the model stays stable.
+ * the transport to per-session JSON files under `~/.termx/sessions/`
+ * but the model stays stable.
  *
  * [claudeDetected] is a cheap heuristic — any pane whose current command
  * contains "claude" or "node" flips the flag so the tab bar (Task #26)

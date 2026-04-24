@@ -8,9 +8,10 @@ import kotlinx.coroutines.flow.Flow
  * Live view of the tmux sessions running on a given [dev.kuch.termx.core.domain.model.Server].
  *
  * Phase 3 (Task #25) implements this by polling `tmux ls` over SSH.
- * Phase 4 (Task #34) rewrites the backing transport to tail
- * `~/.termx/sessions/*.json` — but the interface stays stable so the
- * tab-bar UI (Task #26) and anything else upstream doesn't need to change.
+ * Phase 4 (Task #34) rewrites the backing transport to tail the
+ * per-session JSON files under `~/.termx/sessions/` — but the interface
+ * stays stable so the tab-bar UI (Task #26) and anything else upstream
+ * doesn't need to change.
  */
 interface TmuxSessionRepository {
 
