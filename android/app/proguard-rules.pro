@@ -9,7 +9,10 @@
 -dontwarn org.bouncycastle.**
 -dontwarn com.hierynomus.**
 -dontwarn javax.naming.**
+-dontwarn javax.security.auth.**
+-dontwarn org.ietf.jgss.**
 -dontwarn org.slf4j.**
+-dontwarn net.schmizz.sshj.userauth.method.AuthGssApi**
 
 # Keep BouncyCastle providers — registered reflectively via Security.addProvider
 -keep class org.bouncycastle.jce.provider.** { *; }
