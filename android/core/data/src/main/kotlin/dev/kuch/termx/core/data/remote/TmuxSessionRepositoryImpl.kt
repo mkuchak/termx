@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -92,7 +93,23 @@ class TmuxSessionRepositoryImpl @Inject constructor(
         serverId: UUID,
         foregroundHint: Flow<Boolean>,
     ): Flow<List<TmuxSession>> = callbackFlow {
-        acquireCache(serverId)
+        // Cache warm-up can throw (server row missing, vault locked, password
+        // auth not yet wired end-to-end, DNS fail, etc.). Surface the error
+        // via the [errors] side channel and emit an empty tab list rather
+        // than propagating the exception to downstream collectors — an
+        // uncaught throw here would crash the ViewModel via
+        // viewModelScope's default uncaught handler.
+        val cacheReady = runCatching { acquireCache(serverId) }
+            .onFailure { t ->
+                if (t is TmuxError) _errors.tryEmit(t)
+                else _errors.tryEmit(TmuxError.TransportFailure(serverId, t))
+                trySend(emptyList())
+            }
+            .isSuccess
+        if (!cacheReady) {
+            awaitClose { }
+            return@callbackFlow
+        }
         val pollJob = launch {
             while (true) {
                 val list = runCatching { refresh(serverId) }
@@ -115,9 +132,18 @@ class TmuxSessionRepositoryImpl @Inject constructor(
         }
         awaitClose {
             pollJob.cancel()
-            releaseCache(serverId)
+            runCatching { releaseCache(serverId) }
         }
-    }.distinctUntilChanged()
+    }
+        .catch { t ->
+            // Last-line-of-defense catch: any uncaught exception escaping the
+            // callbackFlow above becomes a benign empty emission plus a logged
+            // TmuxError instead of crashing the subscribing ViewModel.
+            if (t is TmuxError) _errors.tryEmit(t)
+            else _errors.tryEmit(TmuxError.TransportFailure(serverId, t))
+            emit(emptyList())
+        }
+        .distinctUntilChanged()
 
     override suspend fun refresh(serverId: UUID): List<TmuxSession> {
         val cache = acquireCache(serverId)

@@ -22,6 +22,7 @@ import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
@@ -62,6 +63,20 @@ class InstallCompanionUseCaseImpl @Inject constructor(
             Stage.Install -> runInstall(serverId, context.passwordOverride)
         }
     }.flowOn(Dispatchers.IO)
+        .catch { t ->
+            // Last-line-of-defense. Any uncaught exception from the stage
+            // coroutines (transport drop mid-install, SFTP stall, sshj
+            // turning a half-closed stream into an IOException on a
+            // background read, etc.) would otherwise propagate into the
+            // ViewModel's `collect {}` block and kill the Activity via
+            // the default coroutine-scope uncaught handler. Convert to an
+            // on-screen Error instead — the user can Retry or Skip.
+            emit(
+                InstallStep3State.Error(
+                    "Unexpected error during $stage: ${describe(t)}",
+                ),
+            )
+        }
 
     // sshj's `client.timeout` is the transport-level idle read timeout — a
     // channel read that sits silent longer than this raises SocketTimeoutException
