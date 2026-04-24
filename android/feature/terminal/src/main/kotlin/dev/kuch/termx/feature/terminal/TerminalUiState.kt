@@ -1,32 +1,39 @@
 package dev.kuch.termx.feature.terminal
 
-import com.termux.terminal.TerminalSession
+import com.termux.terminal.RemoteTerminalSession
 
-/** View-facing state for [TerminalScreen]. */
-sealed interface TerminalUiState {
-    /** Initial state before `connect()` has been called. */
-    data object Idle : TerminalUiState
-
-    /** Connecting to the host / authenticating / opening shell. */
-    data object Connecting : TerminalUiState
-
-    /**
-     * Shell is open; [session] is bound to the Android `TerminalView`.
-     *
-     * [tmuxMissing] is a soft banner flag set when the server had
-     * `autoAttachTmux = true` but `tmux` was absent on the remote.
-     * We fell back to a plain login shell so the screen is still
-     * usable — the banner nudges the user to install it via the
-     * companion (wired up in Task #33).
-     */
-    data class Connected(
-        val session: TerminalSession,
-        val tmuxMissing: Boolean = false,
-    ) : TerminalUiState
-
-    /** Connection attempt or live session failed with [message]. */
-    data class Error(val message: String) : TerminalUiState
-
-    /** Session closed cleanly (user, remote, or cancellation). */
-    data object Disconnected : TerminalUiState
+/**
+ * View-facing state for `TerminalScreen`.
+ *
+ * Task #15 shipped a sealed hierarchy (`Idle`, `Connecting`,
+ * `Connected(session)`, `Error`, `Disconnected`); Task #26 flattens that
+ * into a single data class because the multi-session tab bar needs to
+ * render concurrent per-status fields — e.g. one tab active-and-connected
+ * while another is still spinning up. The status enum absorbs what the
+ * old sealed interface carried.
+ *
+ *  - [status] drives the whole-screen chrome (connecting spinner,
+ *    disconnected banner, error pane).
+ *  - [activeSession] is the Termux [RemoteTerminalSession] currently
+ *    bound to the on-screen [com.termux.view.TerminalView]. Null when
+ *    we haven't opened any PTY yet (pre-connect or mid-swap).
+ *  - [activeTabName] is the tmux session name the active PTY attached
+ *    to. Drives the tab-bar highlight.
+ *  - [openTabs] is the set of tmux session names we currently have an
+ *    open [dev.kuch.termx.libs.sshnative.PtyChannel] for. Used to gate
+ *    swipe-up-detach and kill-session affordances.
+ *  - [tmuxMissing] surfaces the "we wanted tmux but it's not installed"
+ *    banner from the auto-attach path (Task #25).
+ *  - [error] is the connection-level failure message; reset on the
+ *    next `connect()` attempt.
+ */
+data class TerminalUiState(
+    val status: Status = Status.Idle,
+    val activeSession: RemoteTerminalSession? = null,
+    val activeTabName: String? = null,
+    val openTabs: Set<String> = emptySet(),
+    val tmuxMissing: Boolean = false,
+    val error: String? = null,
+) {
+    enum class Status { Idle, Connecting, Connected, Disconnected }
 }

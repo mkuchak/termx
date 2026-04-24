@@ -22,7 +22,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -34,27 +37,55 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.termux.terminal.TerminalSession
+import com.termux.terminal.RemoteTerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
+import dev.kuch.termx.core.domain.model.TmuxSession
 import dev.kuch.termx.feature.terminal.keys.ExtraKey
 import dev.kuch.termx.feature.terminal.keys.ExtraKeyBytes
 import dev.kuch.termx.feature.terminal.keys.ExtraKeysBar
+import dev.kuch.termx.feature.terminal.sessions.KillSessionDialog
+import dev.kuch.termx.feature.terminal.sessions.NewSessionDialog
+import dev.kuch.termx.feature.terminal.sessions.RenameSessionDialog
+import dev.kuch.termx.feature.terminal.sessions.SessionTabActionsMenu
+import dev.kuch.termx.feature.terminal.sessions.SessionTabBar
+import dev.kuch.termx.feature.terminal.sessions.SessionTabBarViewModel
 import java.util.UUID
+import kotlinx.coroutines.launch
 
 /**
- * The app's only terminal surface (Phase 1).
+ * The app's only terminal surface.
  *
- * For the Phase 1 "no server manager yet" path [serverId] is always `null`
- * and the ViewModel falls back to `BuildConfig.TEST_SERVER_*` + a debug-only
- * test key in assets. Phase 2 (Task #21) will pass a real UUID.
+ * Task #26 layered the multi-session tab bar on top of the original
+ * Task #15 composable. Layout top-to-bottom:
+ *
+ *  1. [SessionTabBar] — tmux session pills with activity indicators +
+ *     "+" button.
+ *  2. The active tab's `TerminalView` via [AndroidView].
+ *  3. [ExtraKeysBar] docked above the soft keyboard.
+ *
+ * Two ViewModels collaborate here:
+ *  - [TerminalViewModel] owns the shared sshj [dev.kuch.termx.libs.sshnative.SshSession]
+ *    plus a map of open [dev.kuch.termx.libs.sshnative.PtyChannel] by tab name,
+ *    and exposes the currently-bound emulator as [TerminalUiState.activeSession].
+ *  - [SessionTabBarViewModel] drives the tab list (via
+ *    [dev.kuch.termx.core.domain.repository.TmuxSessionRepository.observeSessions])
+ *    and the activity-flash set, plus the tmux write verbs
+ *    (new/rename/kill) for the tab's context menu.
  */
 @Composable
 fun TerminalScreen(
     serverId: UUID? = null,
     viewModel: TerminalViewModel = hiltViewModel(),
+    tabBarViewModel: SessionTabBarViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
+    val activityFlashes by tabBarViewModel.activityFlashes.collectAsStateWithLifecycle()
+    val sessionsFlow = remember(serverId) {
+        serverId?.let { tabBarViewModel.sessions(it) }
+    }
+    val sessionList by (sessionsFlow?.collectAsStateWithLifecycle(initialValue = emptyList())
+        ?: remember { mutableStateOf<List<TmuxSession>>(emptyList()) })
 
     LaunchedEffect(serverId) {
         viewModel.connect(serverId)
@@ -64,28 +95,134 @@ fun TerminalScreen(
         onDispose { viewModel.disconnect() }
     }
 
+    // Dialog state — the tab bar long-press opens a dropdown menu which
+    // kicks off one of these flows.
+    var menuForSession by remember { mutableStateOf<TmuxSession?>(null) }
+    var renameTarget by remember { mutableStateOf<TmuxSession?>(null) }
+    var killTarget by remember { mutableStateOf<TmuxSession?>(null) }
+    var showNewSession by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
     ) {
-        when (val state = uiState) {
-            TerminalUiState.Idle,
-            TerminalUiState.Connecting -> ConnectingPane()
+        Column(modifier = Modifier.fillMaxSize()) {
+            if (serverId != null) {
+                SessionTabBar(
+                    sessions = sessionList,
+                    activeSessionName = uiState.activeTabName,
+                    activityFlashes = activityFlashes,
+                    onTabSelected = viewModel::selectTab,
+                    onNewSession = { showNewSession = true },
+                    onLongPressTab = { menuForSession = it },
+                    onSwipeUpTab = { viewModel.detachTab(it.name) },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                SessionTabActionsMenu(
+                    session = menuForSession,
+                    onDismiss = { menuForSession = null },
+                    onRename = {
+                        renameTarget = it
+                        menuForSession = null
+                    },
+                    onKill = {
+                        killTarget = it
+                        menuForSession = null
+                    },
+                    onClose = {
+                        viewModel.detachTab(it.name)
+                        menuForSession = null
+                    },
+                )
+            }
 
-            is TerminalUiState.Connected -> ConnectedPane(
-                session = state.session,
-                onWriteToPty = viewModel::writeToPty,
-            )
-
-            is TerminalUiState.Error -> ErrorPane(
-                message = state.message,
-                onRetry = { viewModel.connect(serverId) },
-            )
-
-            TerminalUiState.Disconnected -> DisconnectedPane(
-                onReconnect = { viewModel.connect(serverId) },
-            )
+            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+                when (uiState.status) {
+                    TerminalUiState.Status.Idle,
+                    TerminalUiState.Status.Connecting -> ConnectingPane()
+                    TerminalUiState.Status.Connected -> {
+                        val active = uiState.activeSession
+                        if (active != null) {
+                            ConnectedPane(
+                                session = active,
+                                onWriteToPty = viewModel::writeToPty,
+                            )
+                        } else {
+                            ConnectingPane()
+                        }
+                    }
+                    TerminalUiState.Status.Disconnected -> {
+                        val err = uiState.error
+                        if (err != null) {
+                            ErrorPane(message = err, onRetry = {
+                                viewModel.clearError()
+                                viewModel.connect(serverId)
+                            })
+                        } else {
+                            DisconnectedPane(onReconnect = { viewModel.connect(serverId) })
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    if (showNewSession && serverId != null) {
+        NewSessionDialog(
+            onConfirm = { name ->
+                showNewSession = false
+                scope.launch {
+                    runCatching {
+                        tabBarViewModel.newSession(serverId, name)
+                        // Force a refresh so the tab appears immediately,
+                        // then auto-switch to it.
+                        tabBarViewModel.refresh(serverId)
+                        viewModel.selectTab(name)
+                    }
+                }
+            },
+            onDismiss = { showNewSession = false },
+        )
+    }
+
+    val renaming = renameTarget
+    if (renaming != null && serverId != null) {
+        RenameSessionDialog(
+            currentName = renaming.name,
+            onConfirm = { newName ->
+                renameTarget = null
+                scope.launch {
+                    runCatching {
+                        tabBarViewModel.renameSession(serverId, renaming.name, newName)
+                        tabBarViewModel.refresh(serverId)
+                    }
+                }
+            },
+            onDismiss = { renameTarget = null },
+        )
+    }
+
+    val killing = killTarget
+    if (killing != null && serverId != null) {
+        KillSessionDialog(
+            sessionName = killing.name,
+            onConfirm = {
+                killTarget = null
+                scope.launch {
+                    runCatching {
+                        // Detach locally first so we don't try to write
+                        // to a channel whose tmux target is gone.
+                        if (uiState.openTabs.contains(killing.name)) {
+                            viewModel.detachTab(killing.name)
+                        }
+                        tabBarViewModel.killSession(serverId, killing.name)
+                        tabBarViewModel.refresh(serverId)
+                    }
+                }
+            },
+            onDismiss = { killTarget = null },
+        )
     }
 }
 
@@ -145,7 +282,7 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
  */
 @Composable
 private fun ConnectedPane(
-    session: TerminalSession,
+    session: RemoteTerminalSession,
     onWriteToPty: (ByteArray) -> Unit,
 ) {
     val volState = remember { VolDownState() }
@@ -202,7 +339,7 @@ private class VolDownState {
  * event was consumed.
  *
  *  - Vol-Down key-down → remember the timestamp, swallow (no volume UI).
- *  - Vol-Down key-up → if nothing consumed it as a modifier *and* it
+ *  - Vol-Down key-up → if nothing consumed it as a modifier and it
  *    was held for >500ms, let the OS have it back (pass-through so the
  *    user can still lower the volume by holding alone). Otherwise
  *    swallow.
@@ -275,7 +412,7 @@ private fun extraKeyFromNativeKeyCode(keyCode: Int, event: KeyEvent): ExtraKey? 
 
 @Composable
 private fun TerminalPane(
-    session: TerminalSession,
+    session: RemoteTerminalSession,
     volState: VolDownState,
     onWriteToPty: (ByteArray) -> Unit,
     modifier: Modifier = Modifier,
@@ -293,10 +430,6 @@ private fun TerminalPane(
                 )
                 isFocusable = true
                 isFocusableInTouchMode = true
-                // Vol-Down=Ctrl works even when the TerminalView itself
-                // has focus — the Compose `onKeyEvent` only fires while
-                // the outer Column holds focus, and the user typically
-                // taps the view to type into it.
                 setOnKeyListener { _, keyCode, ev ->
                     handleVolDownAwareKey(
                         keyCode = keyCode,
@@ -322,9 +455,9 @@ private fun TerminalPane(
 }
 
 /**
- * Placeholder client for TerminalView. Task #16 ships a real one with
- * extra-keys + sticky modifiers; Task #17 adds gestures. For now we
- * return sane defaults and forward nothing.
+ * Placeholder client for TerminalView. Task #17 adds real gesture
+ * handling (pinch-zoom, two-finger scroll, long-press select, URL
+ * tap). For now we return sane defaults and forward nothing.
  */
 private object MinimalTerminalViewClient : TerminalViewClient {
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 3.0f)
@@ -334,14 +467,14 @@ private object MinimalTerminalViewClient : TerminalViewClient {
     override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
     override fun isTerminalViewSelected(): Boolean = true
     override fun copyModeChanged(copyMode: Boolean) {}
-    override fun onKeyDown(keyCode: Int, e: KeyEvent?, session: TerminalSession?): Boolean = false
+    override fun onKeyDown(keyCode: Int, e: KeyEvent?, session: com.termux.terminal.TerminalSession?): Boolean = false
     override fun onKeyUp(keyCode: Int, e: KeyEvent?): Boolean = false
     override fun onLongPress(event: MotionEvent?): Boolean = false
     override fun readControlKey(): Boolean = false
     override fun readAltKey(): Boolean = false
     override fun readShiftKey(): Boolean = false
     override fun readFnKey(): Boolean = false
-    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: TerminalSession?): Boolean = false
+    override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: com.termux.terminal.TerminalSession?): Boolean = false
     override fun onEmulatorSet() {}
     override fun logError(tag: String?, message: String?) { android.util.Log.e(tag ?: "TerminalView", message.orEmpty()) }
     override fun logWarn(tag: String?, message: String?) { android.util.Log.w(tag ?: "TerminalView", message.orEmpty()) }

@@ -20,37 +20,37 @@ import dev.kuch.termx.libs.sshnative.SshClient
 import dev.kuch.termx.libs.sshnative.SshSession
 import dev.kuch.termx.libs.sshnative.SshTarget
 import dev.kuch.termx.libs.sshnative.tmuxAutoAttachCommand
+import java.io.FileNotFoundException
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.io.FileNotFoundException
-import java.util.UUID
-import javax.inject.Inject
 
 /**
- * Owns one live SSH session + shell + emulator bridge.
+ * Owns the live SSH transport plus one [PtyChannel] per open tmux tab.
  *
- * Two call paths:
- *  - `serverId != null` (Phase 2+): look up the [dev.kuch.termx.core.domain.model.Server]
- *    row via [ServerRepository], pull the private bytes from [SecretVault]
- *    using the linked [dev.kuch.termx.core.domain.model.KeyPair.keystoreAlias],
- *    and connect with those credentials. Password auth is parked until
- *    Task #23 wires vault-stored passwords.
- *  - `serverId == null` (Phase 1 test path): fall back to `BuildConfig.TEST_SERVER_*`
- *    env-vars + the debug-only test key shipped at `assets/test-key.pem`.
+ * Task #15 shipped a single-PTY VM; Task #26 extends it to a
+ * `Map<String, SessionPty>` keyed by tmux session name so tab swaps
+ * don't tear down the remote shell. Closed tabs (user-initiated
+ * detach or kill) drop their entry; switching back to a detached tab
+ * opens a fresh `tmux attach-session -t '<name>'`.
  *
- * Hilt resolves the `serverId` via [SavedStateHandle], populated by the
- * NavGraph composable's route arg. Passing `null` from the caller (e.g.
- * a direct composable usage in Phase 1 tests) still works — the handle
- * just has no `serverId` key.
- *
- * Lifecycle:
- *  - `connect(serverId)` → `Connecting` → `Connected` | `Error`
- *  - PTY flow ends or throws → `Disconnected` | `Error`
- *  - `disconnect()` → `Disconnected`, closes channel + session
+ * Important invariants:
+ *  - One [SshSession] is shared across every tab on this server.
+ *    `cleanupQuietly()` closes the session, which implicitly closes
+ *    every [PtyChannel] under it.
+ *  - Each [SessionPty] holds its own [RemoteTerminalSession] +
+ *    [TerminalEmulator] so scrollback / cursor state survives a tab
+ *    swap (memory-cap is a follow-up — see Task #54 / the roadmap
+ *    Phase 3.2 notes).
+ *  - Only the tab named by [uiState.activeTabName] is bound to the
+ *    Android `TerminalView`; the others keep feeding their emulators
+ *    in the background so re-binding on swap shows up-to-date output.
  */
 @HiltViewModel
 class TerminalViewModel @Inject constructor(
@@ -61,81 +61,204 @@ class TerminalViewModel @Inject constructor(
     private val secretVault: SecretVault,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow<TerminalUiState>(TerminalUiState.Idle)
+    /**
+     * One open PTY tab. [outputJob] collects the sshj byte stream into
+     * [emulator] until the channel ends or we cancel it; dropping the
+     * tab cancels the job and closes the channel.
+     */
+    private data class SessionPty(
+        val name: String,
+        val pty: PtyChannel,
+        val emulator: RemoteTerminalSession,
+        val outputJob: Job,
+    )
+
+    private val _state = MutableStateFlow(TerminalUiState())
     val state: StateFlow<TerminalUiState> = _state.asStateFlow()
 
+    private var currentServerId: UUID? = null
     private var sshClient: SshClient? = null
     private var sshSession: SshSession? = null
-    private var ptyChannel: PtyChannel? = null
-    private var remoteSession: RemoteTerminalSession? = null
+
+    private val tabs = ConcurrentHashMap<String, SessionPty>()
 
     private var connectJob: Job? = null
-    private var outputJob: Job? = null
 
     /**
-     * Start a connection. Idempotent: a second call while already
-     * connecting or connected is a no-op. The [serverId] overrides
-     * whatever was set via [SavedStateHandle] so callers that own the
-     * value explicitly don't need to stuff it into the nav route too.
+     * Start a connection. Idempotent across Connecting/Connected. Sets
+     * up the shared [SshSession] and opens the first PTY against the
+     * tmux session declared on the server row (creating-if-needed via
+     * `tmux new-session -A`).
      */
     fun connect(serverId: UUID?) {
-        if (_state.value is TerminalUiState.Connecting || _state.value is TerminalUiState.Connected) return
+        val s = _state.value.status
+        if (s == TerminalUiState.Status.Connecting || s == TerminalUiState.Status.Connected) return
 
         val resolvedId = serverId ?: savedStateHandle.get<String>(ARG_SERVER_ID)
             ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
 
         connectJob?.cancel()
         connectJob = viewModelScope.launch {
-            _state.value = TerminalUiState.Connecting
+            _state.value = _state.value.copy(
+                status = TerminalUiState.Status.Connecting,
+                error = null,
+            )
             runCatching { openSession(resolvedId) }
                 .onFailure { t ->
                     Log.e(LOG_TAG, "connect failed", t)
                     cleanupQuietly()
-                    _state.value = TerminalUiState.Error(t.message ?: "connection failed")
+                    _state.value = _state.value.copy(
+                        status = TerminalUiState.Status.Disconnected,
+                        error = t.message ?: "connection failed",
+                        activeSession = null,
+                        activeTabName = null,
+                        openTabs = emptySet(),
+                    )
                 }
         }
     }
 
     private suspend fun openSession(serverId: UUID?) {
+        currentServerId = serverId
         val (target, auth) = resolveConnection(serverId)
 
         val client = SshClient().also { sshClient = it }
         val session = client.connect(target, auth)
         sshSession = session
 
-        // tmux auto-attach path (Phase 3 / Task #25):
-        // When the resolved Server row sets autoAttachTmux = true, we try
-        // to open the shell with `tmux new-session -A -s '<name>'` so the
-        // phone lands directly in the persistent session. If tmux isn't
-        // installed we fall back to a plain login shell and raise a
-        // banner flag the UI can surface.
         val server = serverId?.let { serverRepository.getById(it) }
         val wantsTmux = server?.autoAttachTmux == true
         val tmuxAvailable = if (wantsTmux) probeTmux(session) else true
-        val shellCommand = if (wantsTmux && tmuxAvailable) {
+        val initialTabName = if (wantsTmux && tmuxAvailable) server!!.tmuxSessionName else DEFAULT_TAB
+        val attachCommand = if (wantsTmux && tmuxAvailable) {
             tmuxAutoAttachCommand(server!!.tmuxSessionName)
         } else null
         val tmuxMissing = wantsTmux && !tmuxAvailable
 
+        val tab = openTab(initialTabName, attachCommand)
+        _state.value = _state.value.copy(
+            status = TerminalUiState.Status.Connected,
+            activeSession = tab.emulator,
+            activeTabName = tab.name,
+            openTabs = tabs.keys.toSet(),
+            tmuxMissing = tmuxMissing,
+            error = null,
+        )
+    }
+
+    /**
+     * Switch to an already-open tab or open a fresh `tmux attach-session`
+     * for [name].
+     *
+     * Open-tab case: just rebind the emulator. The background output
+     * job is still running, so the emulator already has up-to-date
+     * scrollback — the view's `update` callback picks up the new
+     * session reference and re-attaches on the next frame.
+     *
+     * Missing-tab case: we assume the session actually exists on the
+     * remote (the caller is reacting to a tab-bar row that came from
+     * the poller) and open a new PTY attached to it. Failing that,
+     * the PTY open will throw and we surface the error via a snackbar
+     * at the call site.
+     */
+    fun selectTab(name: String) {
+        val existing = tabs[name]
+        if (existing != null) {
+            _state.value = _state.value.copy(
+                activeSession = existing.emulator,
+                activeTabName = existing.name,
+                openTabs = tabs.keys.toSet(),
+            )
+            return
+        }
+        val serverId = currentServerId
+        if (sshSession == null) {
+            Log.w(LOG_TAG, "selectTab without live ssh session")
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                val command = "tmux attach-session -t '${name.replace("'", "")}'"
+                openTab(name, command)
+            }.onSuccess { tab ->
+                _state.value = _state.value.copy(
+                    activeSession = tab.emulator,
+                    activeTabName = tab.name,
+                    openTabs = tabs.keys.toSet(),
+                )
+            }.onFailure { t ->
+                Log.w(LOG_TAG, "selectTab failed for $name on $serverId", t)
+                _state.value = _state.value.copy(error = "Couldn't open '$name': ${t.message}")
+            }
+        }
+    }
+
+    /**
+     * Drop the PtyChannel for [name] without killing the remote tmux
+     * session. If the dropped tab was active, we fall back to any
+     * other open tab; otherwise we transition to Disconnected so the
+     * UI can prompt a reconnect.
+     */
+    fun detachTab(name: String) {
+        val tab = tabs.remove(name) ?: return
+        tab.outputJob.cancel()
+        runCatching { tab.pty.close() }
+        tab.emulator.onRemoteSessionClosed()
+
+        val active = _state.value.activeTabName
+        if (active == name) {
+            val fallback = tabs.values.firstOrNull()
+            if (fallback != null) {
+                _state.value = _state.value.copy(
+                    activeSession = fallback.emulator,
+                    activeTabName = fallback.name,
+                    openTabs = tabs.keys.toSet(),
+                )
+            } else {
+                _state.value = _state.value.copy(
+                    activeSession = null,
+                    activeTabName = null,
+                    openTabs = tabs.keys.toSet(),
+                    status = TerminalUiState.Status.Disconnected,
+                )
+            }
+        } else {
+            _state.value = _state.value.copy(openTabs = tabs.keys.toSet())
+        }
+    }
+
+    /** Clear a one-shot error once the UI has rendered it. */
+    fun clearError() {
+        if (_state.value.error != null) {
+            _state.value = _state.value.copy(error = null)
+        }
+    }
+
+    /**
+     * Open a PTY for [tabName], wiring bytes in both directions into
+     * a fresh [RemoteTerminalSession], and register the tab in
+     * [tabs]. Caller updates UI state.
+     */
+    private suspend fun openTab(tabName: String, command: String?): SessionPty {
+        val session = sshSession ?: throw IllegalStateException("No live ssh session")
         val channel = session.openShell(
             cols = INITIAL_COLS,
             rows = INITIAL_ROWS,
-            command = shellCommand,
+            command = command,
         )
-        ptyChannel = channel
 
-        val client2 = SshSessionClient(
+        val sessionClient = SshSessionClient(
             context = appContext,
             onSessionFinished = {
-                // Called on the main thread (RemoteTerminalSession posts there).
-                _state.value = TerminalUiState.Disconnected
-                cleanupQuietly()
+                // Remote shell exited (user typed `exit`, tmux was
+                // killed, transport dropped). Clean just this tab; the
+                // rest of the transport may still be healthy.
+                detachTab(tabName)
             },
         )
-        val terminal = RemoteTerminalSession(
-            client = client2,
+        val emulator = RemoteTerminalSession(
+            client = sessionClient,
             onInputBytes = { bytes ->
-                // Keypresses + emulator-originated sequences → remote PTY stdin.
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching { channel.write(bytes) }
                         .onFailure { Log.w(LOG_TAG, "pty write failed", it) }
@@ -148,24 +271,19 @@ class TerminalViewModel @Inject constructor(
                 }
             },
         )
-        remoteSession = terminal
 
-        _state.value = TerminalUiState.Connected(terminal, tmuxMissing = tmuxMissing)
-
-        // Collect remote bytes → emulator. Runs as long as the channel's
-        // Flow is alive; completes when the shell exits or we close.
-        outputJob = viewModelScope.launch(Dispatchers.IO) {
+        val outputJob = viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 channel.output.collect { chunk ->
-                    terminal.feedRemoteBytes(chunk)
+                    emulator.feedRemoteBytes(chunk)
                 }
-            }.onFailure { t ->
-                Log.w(LOG_TAG, "pty output collector ended", t)
-            }
-            // Flow completion (normal or error) means the remote shell went
-            // away. Let the session client route to Disconnected.
-            terminal.onRemoteSessionClosed()
+            }.onFailure { t -> Log.w(LOG_TAG, "pty output ended for $tabName", t) }
+            emulator.onRemoteSessionClosed()
         }
+
+        val tab = SessionPty(tabName, channel, emulator, outputJob)
+        tabs[tabName] = tab
+        return tab
     }
 
     /**
@@ -174,8 +292,7 @@ class TerminalViewModel @Inject constructor(
      * For a non-null [serverId] we resolve the Server row and (for
      * key auth) unlock the private bytes from the vault. Missing rows,
      * missing keys, or a locked vault throw — the outer
-     * `runCatching` in [connect] turns them into a user-facing
-     * [TerminalUiState.Error].
+     * `runCatching` in [connect] turns them into a user-facing error.
      *
      * For a null [serverId] we fall back to the Phase 1 env-var path.
      */
@@ -207,9 +324,6 @@ class TerminalViewModel @Inject constructor(
                     SshAuth.PublicKey(privateKeyPem = bytes, passphrase = null)
                 }
                 AuthType.PASSWORD -> {
-                    // Task #23 will fetch this from the vault. For now we
-                    // surface a clean error instead of guessing an empty
-                    // string and letting sshj report auth-failed.
                     throw IllegalStateException(
                         "Password auth isn't wired yet (Task #23).",
                     )
@@ -218,7 +332,6 @@ class TerminalViewModel @Inject constructor(
             return target to auth
         }
 
-        // Phase 1 fallback: env-var test server + asset key.
         val host = BuildConfig.TEST_SERVER_HOST
         val user = BuildConfig.TEST_SERVER_USER
         val port = BuildConfig.TEST_SERVER_PORT
@@ -233,14 +346,13 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * Forward raw bytes to the current PTY. Used by the extra-keys
-     * toolbar and Volume-Down=Ctrl binding to push keypresses that
-     * don't flow through the Termux view's key handler. No-op if the
-     * channel isn't open.
+     * Forward raw bytes to the currently-active PTY. Used by the
+     * extra-keys toolbar and the Volume-Down=Ctrl binding.
      */
     fun writeToPty(bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        val channel = ptyChannel ?: return
+        val active = _state.value.activeTabName ?: return
+        val channel = tabs[active]?.pty ?: return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { channel.write(bytes) }
                 .onFailure { Log.w(LOG_TAG, "pty write failed", it) }
@@ -251,29 +363,30 @@ class TerminalViewModel @Inject constructor(
     fun disconnect() {
         connectJob?.cancel()
         connectJob = null
-        outputJob?.cancel()
-        outputJob = null
-        remoteSession?.onRemoteSessionClosed()
         cleanupQuietly()
-        if (_state.value !is TerminalUiState.Error) {
-            _state.value = TerminalUiState.Disconnected
-        }
+        _state.value = _state.value.copy(
+            status = TerminalUiState.Status.Disconnected,
+            activeSession = null,
+            activeTabName = null,
+            openTabs = emptySet(),
+        )
     }
 
     override fun onCleared() {
-        // viewModelScope is cancelled for us by AndroidX; close the
-        // transport synchronously so sshj releases the TCP socket.
         cleanupQuietly()
         super.onCleared()
     }
 
     private fun cleanupQuietly() {
-        runCatching { ptyChannel?.close() }
+        tabs.values.forEach { tab ->
+            tab.outputJob.cancel()
+            runCatching { tab.pty.close() }
+            tab.emulator.onRemoteSessionClosed()
+        }
+        tabs.clear()
         runCatching { sshSession?.close() }
-        ptyChannel = null
         sshSession = null
         sshClient = null
-        remoteSession = null
     }
 
     private fun readTestKey(): ByteArray? = runCatching {
@@ -284,12 +397,6 @@ class TerminalViewModel @Inject constructor(
 
     /**
      * Pre-flight check: does `tmux` exist on the remote $PATH?
-     *
-     * We can't reliably detect exit 127 once we're inside a PTY exec
-     * (the PtyChannel has no exit code surface), so instead we run a
-     * plain non-PTY `command -v tmux` first. On failure or timeout we
-     * treat tmux as missing — the fallback is a plain login shell, so
-     * being cautious here is safe.
      */
     private suspend fun probeTmux(session: SshSession): Boolean =
         runCatching {
@@ -305,13 +412,8 @@ class TerminalViewModel @Inject constructor(
     private companion object {
         const val LOG_TAG = "TerminalViewModel"
         const val TEST_KEY_ASSET = "test-key.pem"
-
-        /** Matches the route arg name declared by `TermxNavHost`. */
         const val ARG_SERVER_ID = "serverId"
-
-        // Pre-resize "defaults" so the initial openShell request has *some*
-        // geometry. TerminalView's onSizeChanged triggers the real resize
-        // within the first layout pass.
+        const val DEFAULT_TAB = "shell"
         const val INITIAL_COLS = 80
         const val INITIAL_ROWS = 24
     }
