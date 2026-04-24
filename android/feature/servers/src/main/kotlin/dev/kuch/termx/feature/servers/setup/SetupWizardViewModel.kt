@@ -272,9 +272,23 @@ class SetupWizardViewModel @Inject constructor(
             // The in-memory cache was already seeded in
             // `ensureDraftPersisted` but users who jump straight to step 4
             // without walking through the detect step still need it set.
+            val priorAlias = existing?.passwordAlias
             val shouldStorePassword = s.draft.authType == AuthType.PASSWORD &&
                 s.draft.password.isNotBlank()
-            val alias: String? = if (shouldStorePassword) "password-$id" else null
+            val authTypeFlippedAwayFromPassword = existing != null &&
+                existing.authType == AuthType.PASSWORD &&
+                s.draft.authType != AuthType.PASSWORD
+
+            // Preserve any existing vault entry unless the user is
+            // actually setting a new password or flipping auth to KEY.
+            // Same reasoning as AddEditServerViewModel.save — a blank
+            // password field on a PASSWORD-auth re-entry is NOT a
+            // "forget my password" signal.
+            val alias: String? = when {
+                shouldStorePassword -> "password-$id"
+                s.draft.authType == AuthType.PASSWORD -> priorAlias
+                else -> null
+            }
             if (shouldStorePassword) {
                 try {
                     secretVault.store(alias!!, s.draft.password.toByteArray(Charsets.UTF_8))
@@ -287,11 +301,8 @@ class SetupWizardViewModel @Inject constructor(
                     Log.e(LOG_TAG, "vault store failed; password survives in-memory only", t)
                 }
                 passwordCache.put(id, s.draft.password)
-            } else {
-                val priorAlias = existing?.passwordAlias
-                if (priorAlias != null) {
-                    runCatching { secretVault.delete(priorAlias) }
-                }
+            } else if (authTypeFlippedAwayFromPassword && priorAlias != null) {
+                runCatching { secretVault.delete(priorAlias) }
             }
 
             val server = s.draft.toServer(id).copy(

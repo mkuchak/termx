@@ -259,7 +259,25 @@ class AddEditServerViewModel @Inject constructor(
 
         val priorAlias = existing?.passwordAlias
         val shouldStorePassword = s.authType == AuthType.PASSWORD && s.password.isNotBlank()
-        val alias: String? = if (shouldStorePassword) "password-$id" else null
+        val authTypeFlippedAwayFromPassword = existing != null &&
+            existing.authType == AuthType.PASSWORD &&
+            s.authType != AuthType.PASSWORD
+
+        // A blank password field on a PASSWORD-auth edit MUST preserve the
+        // existing vault entry — the user is almost always editing an
+        // unrelated field (label, port, useMosh flag) and did not retype
+        // a password they already have stored. The old logic read "blank
+        // + PASSWORD auth" as "clear the stored password", which nuked
+        // the alias from the Room row AND deleted the vault entry. Every
+        // subsequent cold start then fell back to the password prompt
+        // because resolveConnection had nothing to load. Only the real
+        // "forget my password" signal — flipping auth type to KEY —
+        // scrubs the prior alias now.
+        val alias: String? = when {
+            shouldStorePassword -> "password-$id"
+            s.authType == AuthType.PASSWORD -> priorAlias
+            else -> null
+        }
 
         if (shouldStorePassword) {
             try {
@@ -283,9 +301,10 @@ class AddEditServerViewModel @Inject constructor(
                 Log.e(LOG_TAG, "vault store failed; falling back to in-memory cache", t)
                 passwordCache.put(id, s.password)
             }
-        } else if (priorAlias != null) {
-            // Auth type flipped away from password, or the password was
-            // cleared. Scrub the old alias to avoid orphaned vault entries.
+        } else if (authTypeFlippedAwayFromPassword && priorAlias != null) {
+            // Auth type actually flipped to KEY — scrub the orphaned
+            // vault entry and the in-memory cache. A blank field on a
+            // still-PASSWORD-auth row does NOT reach this branch.
             runCatching { secretVault.delete(priorAlias) }
             passwordCache.clear(id)
         }

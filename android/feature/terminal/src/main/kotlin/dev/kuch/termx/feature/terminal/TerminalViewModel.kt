@@ -236,24 +236,44 @@ class TerminalViewModel @Inject constructor(
     /**
      * Invoked by the terminal's password prompt dialog. Caches the
      * password in-memory for this process's lifetime, persists it into
-     * the vault under the server's existing alias (best-effort — a
-     * locked/failing vault just leaves the in-memory copy as before),
-     * and retries [connect] for the same server.
+     * the vault (self-healing — see below), and retries [connect] for
+     * the same server.
      *
      * Persisting here — not only in the Add/Edit sheet — is what stops
      * the "app asks for the password on every restart" case. Without
      * this call the password lives only in [PasswordCache], which dies
      * with the process; the prompt then fires again on every cold
      * start even though the user already answered it yesterday.
+     *
+     * Self-heal: older versions of [AddEditServerViewModel.save]
+     * incorrectly nuked `server.passwordAlias` on any edit with a
+     * blank password field (fixed in the same commit as this
+     * function). For users whose Room rows still carry that damage,
+     * we mint a fresh `"password-$serverId"` alias on the fly, write
+     * the password under it, AND upsert the server row so future
+     * cold-start `resolveConnection` paths pick it up. The prompt
+     * never reappears after a single successful submission.
      */
     fun submitPassword(serverId: UUID, password: String) {
         passwordCache.put(serverId, password)
         _state.value = _state.value.copy(awaitingPassword = null)
         viewModelScope.launch(Dispatchers.IO) {
-            val alias = runCatching { serverRepository.getById(serverId)?.passwordAlias }
-                .getOrNull() ?: return@launch
-            runCatching { secretVault.store(alias, password.toByteArray(Charsets.UTF_8)) }
-                .onFailure { Log.w(LOG_TAG, "persisting prompted password failed", it) }
+            val server = runCatching { serverRepository.getById(serverId) }.getOrNull()
+                ?: return@launch
+            val alias = server.passwordAlias ?: "password-$serverId"
+            val storeResult = runCatching {
+                secretVault.store(alias, password.toByteArray(Charsets.UTF_8))
+            }
+            storeResult.onFailure {
+                Log.w(LOG_TAG, "persisting prompted password failed", it)
+            }
+            if (storeResult.isSuccess && server.passwordAlias != alias) {
+                runCatching {
+                    serverRepository.upsert(server.copy(passwordAlias = alias))
+                }.onFailure {
+                    Log.w(LOG_TAG, "heal-updating server.passwordAlias failed", it)
+                }
+            }
         }
         connect(serverId)
     }

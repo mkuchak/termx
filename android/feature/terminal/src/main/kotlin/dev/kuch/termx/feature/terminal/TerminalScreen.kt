@@ -927,9 +927,10 @@ private const val VOL_DOWN_PASSTHROUGH_MS = 500L
 
 /**
  * Prompts the user for a password when the server row uses password auth
- * but the in-memory cache is empty. The entered value is cached by
- * [TerminalViewModel.submitPassword] for the process lifetime; a kill or
- * reinstall clears it.
+ * but neither the vault nor the in-memory cache has a value. The entered
+ * value is persisted to the device's Keystore-backed vault by
+ * [TerminalViewModel.submitPassword] so cold-start reconnects don't
+ * re-prompt.
  */
 @Composable
 private fun PasswordPromptDialog(
@@ -944,7 +945,7 @@ private fun PasswordPromptDialog(
         title = { Text("Password for $serverLabel") },
         text = {
             Column {
-                Text("Your password is not stored — it's kept in memory for this session only.")
+                Text("Saved to this device's Keystore-backed vault once you connect.")
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = password,
