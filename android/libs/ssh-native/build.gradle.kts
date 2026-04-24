@@ -14,6 +14,23 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
+        externalNativeBuild {
+            cmake {
+                // C only — no STL, keeps the toolchain lightweight.
+                // Leave cFlags alone so the NDK default (-std=gnu17) stays
+                // in effect; the GNU extensions unlock POSIX helpers
+                // (ptsname_r, strdup, grantpt, unlockpt) on bionic without
+                // needing explicit feature macros.
+                arguments += listOf("-DANDROID_STL=none")
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")

@@ -1,156 +1,134 @@
 package dev.kuch.termx.libs.sshnative.impl
 
-import android.system.ErrnoException
-import android.system.Os
+import android.os.ParcelFileDescriptor
 import android.util.Log
 import dev.kuch.termx.libs.sshnative.MoshDiagnostic
 import dev.kuch.termx.libs.sshnative.MoshSession
 import kotlin.concurrent.thread
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
 /**
- * [MoshSession] backed by a local mosh-client child [Process].
+ * [MoshSession] backed by a mosh-client child spawned under a
+ * pseudo-terminal (see [NativePty]).
  *
- * I/O shape mirrors [PtyChannelImpl]: [output] reads the process
- * stdout and pushes chunks into a [channelFlow]. Stderr is drained on
- * a dedicated daemon thread into a bounded "head" buffer — we keep the
- * first 1 KB for diagnostics so "mosh-client died instantly with
- * Cannot find termcap entry" stops looking like a silent disconnect.
- * We deliberately do NOT wrap the producer in
- * `try { ... } finally { awaitClose { } }` — that's the deadlock fixed
- * in c7ea47b for the sshj flows, and it applies identically here.
+ * The earlier implementation used [ProcessBuilder], which wires
+ * stdin/stdout/stderr as pipes — mosh-client then aborts at startup
+ * with "tcgetattr: Inappropriate ioctl for device" because it can't
+ * save the tty state. Launching under a pty fixes that; as a side
+ * effect stdout and stderr are merged (a pty slave has a single
+ * write side), which is fine for this transport — startup errors
+ * still surface in the emulator, and the head-buffer diagnostic
+ * below still captures the first kilobyte for the
+ * [diagnostic] snapshot.
  *
- * [resize] propagates a SIGWINCH to the mosh-client PID via
- * [android.system.Os.kill]. mosh-client re-reads its controlling TTY
- * dimensions on SIGWINCH and sends a window-change message over UDP to
- * mosh-server.
+ * Ownership:
+ *  - [masterFd] is the original ParcelFileDescriptor handed back by
+ *    [NativePty.spawn]. Its integer fd is the canonical handle used
+ *    for TIOCSWINSZ. The I/O streams below use dup'd fds so each
+ *    can be closed independently.
+ *  - [pid] is the child's pid; we wait on it on a dedicated daemon
+ *    thread (blocking waitpid doesn't play well with cancellable
+ *    coroutines) and publish the decoded exit status via
+ *    [diagnostic].
  *
- * [close] tries a clean `destroy()` first (SIGTERM on Android's
- * ProcessImpl), waits briefly, then escalates to `destroyForcibly()` —
- * same pattern as the Termux session-kill path.
+ * [resize] uses [NativePty.setWindowSize] — TIOCSWINSZ on the master
+ * makes the kernel deliver SIGWINCH to the slave's foreground process
+ * group automatically, so there's no separate signal path here.
+ *
+ * [close] sends SIGTERM, waits briefly, then SIGKILL. All dup'd fds
+ * plus the master are closed; the exit watcher thread unblocks as
+ * soon as waitpid observes the child terminate and publishes the
+ * final [diagnostic] snapshot on its way out.
  */
 internal class MoshSessionImpl(
-    private val proc: Process,
+    private val masterFd: ParcelFileDescriptor,
+    private val pid: Int,
 ) : MoshSession {
 
     @Volatile private var closed = false
 
-    /**
-     * Wall-clock at construction so we can compute "exited within N ms"
-     * for the early-exit heuristic without threading a clock around.
-     */
     private val startTimeMs: Long = System.currentTimeMillis()
 
-    /**
-     * Growing buffer of the first bytes seen on stdout+stderr, capped
-     * at [HEAD_CAP]. We surface this via [diagnostic] on early exit so
-     * the user sees ncurses / mosh error text instead of nothing.
-     */
     private val headBuf = ByteArray(HEAD_CAP)
     @Volatile private var headLen: Int = 0
 
-    /** Latest diagnostic snapshot; updated when the process terminates. */
     private val _diagnostic = MutableStateFlow(
         MoshDiagnostic(exitCode = null, elapsedMs = 0L, head = ""),
     )
     override val diagnostic: StateFlow<MoshDiagnostic> = _diagnostic.asStateFlow()
 
     /**
-     * Background scope for the stderr drainer + exit watcher. Cancelled
-     * from [close] so both threads exit promptly.
+     * Dup the master fd for the reader and writer so they own
+     * independent kernel handles. Without the dup, closing one
+     * stream would yank the fd out from under the other.
      */
-    private val auxScope: CoroutineScope =
-        CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val readPfd: ParcelFileDescriptor = masterFd.dup()
+    private val writePfd: ParcelFileDescriptor = masterFd.dup()
 
-    /**
-     * We resolve and cache the PID at construction time so [resize]
-     * doesn't have to re-walk reflection on every SIGWINCH. API 24+
-     * (min is 28) makes [Process.pid] the cheap path.
-     */
-    private val pid: Long = resolvePid(proc)
+    private val inputStream = ParcelFileDescriptor.AutoCloseInputStream(readPfd)
+    private val outputStream = ParcelFileDescriptor.AutoCloseOutputStream(writePfd)
 
     init {
-        startStderrDrainer()
         startExitWatcher()
     }
 
     override val output: Flow<ByteArray> = channelFlow {
         val buf = ByteArray(8 * 1024)
-        val stream = proc.inputStream
         while (!closed) {
-            val n = runCatching { stream.read(buf) }.getOrElse { -1 }
+            val n = runCatching { inputStream.read(buf) }.getOrElse { -1 }
             if (n <= 0) break
             appendHead(buf, n)
             // `send` (not `trySend`) so the producer suspends when the
-            // collector is slow. See [PtyChannelImpl.output] for the
-            // same rationale — drop-on-full would corrupt the emulator
-            // state for full-screen repaints.
+            // collector falls behind. Dropping bytes would corrupt the
+            // emulator's scroll region — same rationale as PtyChannelImpl.
             send(buf.copyOf(n))
         }
-        // Natural EOF: mosh-client exited or the stream errored. Let
-        // the producer return, channelFlow auto-closes the channel,
-        // the collector completes. See c7ea47b for the anti-pattern.
+        // Natural EOF: mosh-client exited or the pty closed. Let the
+        // channelFlow unwind so the collector completes cleanly.
     }.flowOn(Dispatchers.IO)
 
     override suspend fun write(bytes: ByteArray): Unit = withContext(Dispatchers.IO) {
         try {
-            proc.outputStream.write(bytes)
-            proc.outputStream.flush()
-        } catch (t: Throwable) {
+            outputStream.write(bytes)
+            outputStream.flush()
+        } catch (t: IOException) {
             Log.w(LOG_TAG, "mosh stdin write failed", t)
+        } catch (t: Throwable) {
+            Log.w(LOG_TAG, "mosh stdin write unexpected error", t)
         }
     }
 
     override suspend fun resize(cols: Int, rows: Int): Unit = withContext(Dispatchers.IO) {
-        if (pid <= 0L) return@withContext
         try {
-            // SIGWINCH=28 on Linux/Android-arm. mosh-client responds by
-            // re-reading its TTY size; we don't set the TTY ourselves —
-            // the child inherits our stdio, so the phone-side terminal
-            // emulator's own size change is what propagates anyway.
-            Os.kill(pid.toInt(), SIGWINCH)
-        } catch (t: ErrnoException) {
-            Log.w(LOG_TAG, "SIGWINCH to $pid failed", t)
+            NativePty.setWindowSize(masterFd.fd, rows, cols)
         } catch (t: Throwable) {
-            Log.w(LOG_TAG, "resize failed", t)
+            Log.w(LOG_TAG, "TIOCSWINSZ to pty master failed", t)
         }
     }
 
     override fun close() {
         if (closed) return
         closed = true
-        runCatching { proc.outputStream.close() }
-        runCatching { proc.destroy() }
-        // Give mosh-client ~200ms to exit cleanly after SIGTERM, then
-        // force-kill. We're on an IO pool, so a short block is fine.
-        try {
-            if (!proc.waitFor(200, java.util.concurrent.TimeUnit.MILLISECONDS)) {
-                runCatching { proc.destroyForcibly() }
-            }
-        } catch (_: InterruptedException) {
-            runCatching { proc.destroyForcibly() }
-        }
-        runCatching { auxScope.cancel() }
+
+        // Try a polite SIGTERM first so mosh-client can tear down the
+        // remote session gracefully; escalate to SIGKILL if it ignores us.
+        runCatching { NativePty.sendSignal(pid, NativePty.SIGTERM) }
+        Thread.sleep(200)
+        runCatching { NativePty.sendSignal(pid, NativePty.SIGKILL) }
+
+        runCatching { inputStream.close() }
+        runCatching { outputStream.close() }
+        runCatching { masterFd.close() }
     }
 
-    /**
-     * Append up to [n] bytes of [src] into [headBuf], stopping once we
-     * hit [HEAD_CAP]. Thread-safe through the single writer invariant:
-     * stdout is read on the output flow thread, stderr on the drainer
-     * thread, and they both call this — we serialize via `synchronized`.
-     */
     private fun appendHead(src: ByteArray, n: Int) {
         if (headLen >= HEAD_CAP || n <= 0) return
         synchronized(headBuf) {
@@ -163,94 +141,39 @@ internal class MoshSessionImpl(
     }
 
     /**
-     * Drain stderr on a dedicated daemon thread so stderr bytes never
-     * block stdout. Bytes are copied into [headBuf] for the exit
-     * diagnostic; we don't otherwise forward them to the emulator —
-     * that would turn a startup error like "Cannot find termcap
-     * entry for xterm-256color" into terminal garbage rather than a
-     * human-readable post-mortem.
+     * Dedicated daemon thread around the blocking [NativePty.waitPid]
+     * call. We can't host this on a coroutine because cancellation
+     * wouldn't interrupt native waitpid — close() delivers SIGKILL,
+     * which is what actually unblocks this thread.
      */
-    private fun startStderrDrainer() {
-        thread(name = "mosh-stderr-$pid", isDaemon = true) {
-            val buf = ByteArray(4 * 1024)
-            val stream = proc.errorStream
-            while (!closed) {
-                val n = runCatching { stream.read(buf) }.getOrElse { -1 }
-                if (n <= 0) break
-                appendHead(buf, n)
+    private fun startExitWatcher() {
+        thread(name = "mosh-waitpid-$pid", isDaemon = true) {
+            val code = runCatching { NativePty.waitPid(pid) }.getOrElse { -1 }
+            val elapsed = System.currentTimeMillis() - startTimeMs
+            val headSnapshot = synchronized(headBuf) {
+                String(headBuf, 0, headLen, Charsets.UTF_8)
             }
-        }
-    }
-
-    /**
-     * Watch for process termination on an aux coroutine. When the
-     * child exits, compute elapsed wall-clock + snapshot the captured
-     * head bytes and publish to [diagnostic]. If the exit was fast
-     * and non-zero, log a WARN so the "mosh disconnects immediately"
-     * class of bugs leaves a trail in logcat as well.
-     */
-    private fun startExitWatcher(): Job = auxScope.launch {
-        val code = runCatching { proc.waitFor() }.getOrElse { -1 }
-        val elapsed = System.currentTimeMillis() - startTimeMs
-        val headSnapshot = synchronized(headBuf) {
-            String(headBuf, 0, headLen, Charsets.UTF_8)
-        }
-        _diagnostic.value = MoshDiagnostic(
-            exitCode = code,
-            elapsedMs = elapsed,
-            head = headSnapshot,
-        )
-        if (elapsed < EARLY_EXIT_WINDOW_MS && code != 0) {
-            Log.w(
-                LOG_TAG,
-                "mosh-client exited in ${elapsed}ms code=$code head=${headSnapshot.take(200)}",
+            _diagnostic.value = MoshDiagnostic(
+                exitCode = code,
+                elapsedMs = elapsed,
+                head = headSnapshot,
             )
-        }
-    }
-
-    /**
-     * Resolve the process PID.
-     *
-     * Android's `android.jar` desugared stubs for `java.lang.Process` do
-     * not expose `pid()` directly from Kotlin (the method is present on
-     * the runtime class but the SDK stubs mask it behind an
-     * `@RequiresApi(26)`-style gate that KGP doesn't see at compile
-     * time). We dispatch by reflection on
-     * `java.lang.Process.pid` (preferred on API 28+), falling back to
-     * the private `pid` field that Android's `ProcessImpl` has carried
-     * since Jelly Bean for older hosts / mocks.
-     */
-    private fun resolvePid(p: Process): Long {
-        try {
-            val m = Process::class.java.getMethod("pid")
-            val result = m.invoke(p)
-            if (result is Long) return result
-            if (result is Int) return result.toLong()
-        } catch (_: Throwable) {
-            // fall through to the private-field path
-        }
-        return try {
-            val f = p.javaClass.getDeclaredField("pid")
-            f.isAccessible = true
-            f.getInt(p).toLong()
-        } catch (_: Throwable) {
-            -1L
+            if (elapsed < EARLY_EXIT_WINDOW_MS && code != 0) {
+                Log.w(
+                    LOG_TAG,
+                    "mosh-client exited in ${elapsed}ms code=$code head=${headSnapshot.take(200)}",
+                )
+            }
         }
     }
 
     private companion object {
         const val LOG_TAG = "MoshSessionImpl"
-        const val SIGWINCH = 28
 
-        /** Max bytes of stdout+stderr retained for the exit diagnostic. */
+        /** Max bytes retained for the exit diagnostic. */
         const val HEAD_CAP = 1024
 
-        /**
-         * Anything under this is considered "died immediately" — within
-         * this window an exitCode != 0 is almost certainly a startup
-         * failure (missing terminfo, failed dlopen) rather than a
-         * user-initiated exit.
-         */
+        /** Under this, an exitCode != 0 is almost certainly a startup failure. */
         const val EARLY_EXIT_WINDOW_MS = 2_000L
     }
 }

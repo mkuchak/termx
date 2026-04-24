@@ -22,10 +22,13 @@ import kotlinx.coroutines.withTimeoutOrNull
  *    output from an old mosh, errors) is discarded.
  * 3. Closes the exec + SSH session — mosh-server double-forks and
  *    detaches, so the UDP listener stays up.
- * 4. Spawns `libmoshclient.so` from the APK's native lib dir with
- *    `MOSH_KEY` in the environment and `LD_LIBRARY_PATH` pointing at
- *    the same dir so the 50+ bundled `lib*_mosh.so` deps resolve.
- * 5. Wraps the resulting [Process] in a [MoshSessionImpl].
+ * 4. Spawns `libmoshclient.so` from the APK's native lib dir UNDER A
+ *    PSEUDO-TERMINAL (see [NativePty]) with `MOSH_KEY` in the
+ *    environment and `LD_LIBRARY_PATH` pointing at the same dir so the
+ *    50+ bundled `lib*_mosh.so` deps resolve. A real pty is mandatory
+ *    — a ProcessBuilder-style pipe makes mosh-client abort at startup
+ *    with "tcgetattr: Inappropriate ioctl for device".
+ * 5. Wraps the resulting (masterFd, pid) in a [MoshSessionImpl].
  *
  * Closes everything and returns `null` on the first sign that the
  * handshake isn't going to land in time.
@@ -97,8 +100,18 @@ internal class MoshClientImpl(
     }
 
     /**
-     * Start `libmoshclient.so <host> <port>` with `MOSH_KEY` in env and
-     * the native lib dir on `LD_LIBRARY_PATH`.
+     * Start `libmoshclient.so <host> <port>` under a pseudo-terminal
+     * (see [NativePty]) with `MOSH_KEY` in env and the native lib dir
+     * on `LD_LIBRARY_PATH`.
+     *
+     * Previously launched via [ProcessBuilder], which wires the child's
+     * stdio as pipes — mosh-client's early `tcgetattr(STDIN_FILENO, …)`
+     * then returns ENOTTY and the client aborts in ~150 ms. A pty
+     * gives it a real terminal to inspect.
+     *
+     * Initial pty geometry is 80×24; the emulator calls `resize` with
+     * the real cell count right after binding, which is what actually
+     * propagates to the remote via TIOCSWINSZ → SIGWINCH.
      */
     private suspend fun spawnMoshClient(
         host: String,
@@ -118,22 +131,27 @@ internal class MoshClientImpl(
             // is why mosh-client used to exit in <100 ms with a silent
             // "Cannot find termcap entry" write to stderr.
             val terminfoDir = TerminfoInstaller.ensureInstalled(context)
-            val pb = ProcessBuilder(moshBin.absolutePath, host, port.toString())
-                // Keep stderr separate so MoshSessionImpl can capture
-                // startup errors without feeding them into the emulator
-                // as terminal bytes.
-                .redirectErrorStream(false)
-            pb.environment().apply {
-                put("TERMINFO", terminfoDir.absolutePath)
-                put("TERM", "xterm-256color")
-                put("MOSH_KEY", key)
-                put("LD_LIBRARY_PATH", binDir)
-                put("HOME", context.filesDir.absolutePath)
-                put("LANG", "en_US.UTF-8")
-                put("LC_ALL", "en_US.UTF-8")
-            }
-            val proc = pb.start()
-            MoshSessionImpl(proc)
+            val env = mapOf(
+                "TERMINFO" to terminfoDir.absolutePath,
+                "TERM" to "xterm-256color",
+                "MOSH_KEY" to key,
+                "LD_LIBRARY_PATH" to binDir,
+                "HOME" to context.filesDir.absolutePath,
+                "LANG" to "en_US.UTF-8",
+                "LC_ALL" to "en_US.UTF-8",
+                // Populate PATH so libc can resolve helper lookups if
+                // mosh ever shells out. Unlikely but cheap.
+                "PATH" to "/system/bin:/system/xbin",
+            )
+            val argv = arrayOf(moshBin.absolutePath, host, port.toString())
+            val spawn = NativePty.spawn(
+                path = moshBin.absolutePath,
+                argv = argv,
+                envp = env,
+                rows = INITIAL_PTY_ROWS,
+                cols = INITIAL_PTY_COLS,
+            )
+            MoshSessionImpl(spawn.master, spawn.pid)
         } catch (t: Throwable) {
             Log.w(LOG_TAG, "failed to spawn mosh-client", t)
             null
@@ -154,5 +172,12 @@ internal class MoshClientImpl(
         const val LOG_TAG = "MoshClientImpl"
         const val MOSH_CLIENT_SO = "libmoshclient.so"
         val MOSH_CONNECT_REGEX = Regex("""MOSH CONNECT (\d+) (\S+)""")
+
+        // Reasonable default geometry for the initial pty size. The
+        // composable-side emulator calls resize() with the real cell
+        // count as soon as the AndroidView attaches, so these are just
+        // "something sensible" for the ~1 frame before that happens.
+        const val INITIAL_PTY_COLS = 80
+        const val INITIAL_PTY_ROWS = 24
     }
 }

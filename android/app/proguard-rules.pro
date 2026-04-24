@@ -31,3 +31,8 @@
 -keepclasseswithmembers class * {
     kotlinx.serialization.KSerializer serializer(...);
 }
+
+# Native PTY helper (libtermxpty.so) — JNI looks methods up by
+# fully-qualified name (Java_dev_kuch_termx_..._NativePty_forkExec);
+# R8 must NOT rename the class or its external fun entry points.
+-keep class dev.kuch.termx.libs.sshnative.impl.NativePty { *; }
