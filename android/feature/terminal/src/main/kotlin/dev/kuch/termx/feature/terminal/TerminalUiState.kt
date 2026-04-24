@@ -1,6 +1,6 @@
 package dev.kuch.termx.feature.terminal
 
-import com.termux.terminal.RemoteTerminalSession
+import com.termux.terminal.TerminalSession
 import java.util.UUID
 
 /**
@@ -15,9 +15,14 @@ import java.util.UUID
  *
  *  - [status] drives the whole-screen chrome (connecting spinner,
  *    disconnected banner, error pane).
- *  - [activeSession] is the Termux [RemoteTerminalSession] currently
- *    bound to the on-screen [com.termux.view.TerminalView]. Null when
- *    we haven't opened any PTY yet (pre-connect or mid-swap).
+ *  - [activeSession] is the Termux [TerminalSession] currently bound
+ *    to the on-screen [com.termux.view.TerminalView]. Null when we
+ *    haven't opened any PTY yet (pre-connect or mid-swap). The
+ *    concrete subclass is either
+ *    [com.termux.terminal.RemoteTerminalSession] (sshj PTY) or
+ *    [com.termux.terminal.MoshRemoteTerminalSession] (local
+ *    mosh-client process) depending on which transport won the
+ *    Phase 3 handshake race.
  *  - [activeTabName] is the tmux session name the active PTY attached
  *    to. Drives the tab-bar highlight.
  *  - [openTabs] is the set of tmux session names we currently have an
@@ -28,16 +33,20 @@ import java.util.UUID
  *  - [tmuxBacked] is `true` once the initial PTY successfully attached
  *    to a tmux session (Task #28 gate for the copy-mode scrollback
  *    gesture). Mutually exclusive with [tmuxMissing] in practice.
+ *  - [moshBacked] is `true` when the active connection is a
+ *    mosh-client child process (Phase 3 Task #27). Drives the small
+ *    "via mosh" badge / subtitle in the terminal header.
  *  - [error] is the connection-level failure message; reset on the
  *    next `connect()` attempt.
  */
 data class TerminalUiState(
     val status: Status = Status.Idle,
-    val activeSession: RemoteTerminalSession? = null,
+    val activeSession: TerminalSession? = null,
     val activeTabName: String? = null,
     val openTabs: Set<String> = emptySet(),
     val tmuxMissing: Boolean = false,
     val tmuxBacked: Boolean = false,
+    val moshBacked: Boolean = false,
     val error: String? = null,
     /**
      * When non-null, the UI should render a password prompt dialog. Set

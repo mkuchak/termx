@@ -50,7 +50,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.GestureDetectorCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.termux.terminal.RemoteTerminalSession
+import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.kuch.termx.core.domain.model.TmuxSession
@@ -329,7 +329,7 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
  */
 @Composable
 private fun ConnectedPane(
-    session: RemoteTerminalSession,
+    session: TerminalSession,
     tmuxBacked: Boolean,
     onWriteToPty: (ByteArray) -> Unit,
     viewModel: TerminalViewModel,
@@ -470,7 +470,7 @@ private fun extraKeyFromNativeKeyCode(keyCode: Int, event: KeyEvent): ExtraKey? 
 
 @Composable
 private fun TerminalPane(
-    session: RemoteTerminalSession,
+    session: TerminalSession,
     volState: VolDownState,
     onWriteToPty: (ByteArray) -> Unit,
     fontSizeSp: Int,

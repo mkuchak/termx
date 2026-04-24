@@ -5,7 +5,9 @@ import android.util.Log
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.termux.terminal.MoshRemoteTerminalSession
 import com.termux.terminal.RemoteTerminalSession
+import com.termux.terminal.TerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.prefs.AppPreferences
@@ -21,6 +23,8 @@ import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
 import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
+import dev.kuch.termx.libs.sshnative.MoshClient
+import dev.kuch.termx.libs.sshnative.MoshSession
 import dev.kuch.termx.libs.sshnative.PtyChannel
 import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
@@ -84,6 +88,7 @@ class TerminalViewModel @Inject constructor(
     private val eventStreamHub: EventStreamHub,
     private val eventStreamRepository: EventStreamRepository,
     private val reconnectBroker: ReconnectBroker,
+    private val moshClient: MoshClient,
 ) : ViewModel() {
 
     init {
@@ -109,9 +114,15 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * One open PTY tab. [outputJob] collects the sshj byte stream into
-     * [emulator] until the channel ends or we cancel it; dropping the
-     * tab cancels the job and closes the channel.
+     * One open tab. [outputJob] collects the transport's byte stream
+     * into [emulator] until the channel ends or we cancel it; dropping
+     * the tab cancels the job and closes the transport handle.
+     *
+     * Either [pty] (sshj PTY) or [moshSession] (local mosh-client
+     * process) is non-null — never both, never neither. The mosh path
+     * is single-channel, so a mosh-backed connection has exactly one
+     * tab for now; multi-tab multiplexing still happens via tmux
+     * running inside the mosh session.
      *
      * [serverIdForRegistry] + [serverLabel] mirror what we pushed into
      * [SessionRegistry] on open so the matching unregister call can be
@@ -119,12 +130,19 @@ class TerminalViewModel @Inject constructor(
      */
     private data class SessionPty(
         val name: String,
-        val pty: PtyChannel,
-        val emulator: RemoteTerminalSession,
+        val pty: PtyChannel?,
+        val moshSession: MoshSession?,
+        val emulator: TerminalSession,
         val outputJob: Job,
         val serverIdForRegistry: UUID,
         val serverLabel: String,
-    )
+    ) {
+        init {
+            require((pty == null) xor (moshSession == null)) {
+                "SessionPty needs exactly one of pty or moshSession"
+            }
+        }
+    }
 
     private val _state = MutableStateFlow(TerminalUiState())
     val state: StateFlow<TerminalUiState> = _state.asStateFlow()
@@ -233,14 +251,46 @@ class TerminalViewModel @Inject constructor(
     private suspend fun openSession(serverId: UUID?) {
         currentServerId = serverId
         val (target, auth) = resolveConnection(serverId)
+        val server = serverId?.let { serverRepository.getById(it) }
+        currentServerRegistryId = server?.id ?: FALLBACK_SERVER_ID
+        currentServerLabel = server?.label ?: "Test server"
+
+        // Phase 3 mosh race. If the Server row opts into mosh, try the
+        // mosh-server handshake first with an 8s cap; if that returns
+        // null (server missing, UDP blocked, timeout), fall through to
+        // the sshj PTY path below. Mosh is single-channel so it opens
+        // exactly one tab; multi-session needs are handled by tmux
+        // running inside the mosh session on the remote.
+        if (server?.useMosh == true) {
+            val mosh = runCatching {
+                moshClient.tryConnect(
+                    target = target,
+                    auth = auth,
+                    handshakeTimeoutMs = MOSH_HANDSHAKE_TIMEOUT_MS,
+                )
+            }.onFailure { Log.w(LOG_TAG, "mosh tryConnect threw", it) }
+                .getOrNull()
+
+            if (mosh != null) {
+                val tab = openMoshTab(mosh, server.tmuxSessionName)
+                _state.value = _state.value.copy(
+                    status = TerminalUiState.Status.Connected,
+                    activeSession = tab.emulator,
+                    activeTabName = tab.name,
+                    openTabs = tabs.keys.toSet(),
+                    tmuxMissing = false,
+                    tmuxBacked = server.autoAttachTmux,
+                    moshBacked = true,
+                    error = null,
+                )
+                return
+            }
+            Log.i(LOG_TAG, "mosh handshake did not complete in ${MOSH_HANDSHAKE_TIMEOUT_MS}ms; falling back to ssh")
+        }
 
         val client = SshClient().also { sshClient = it }
         val session = client.connect(target, auth)
         sshSession = session
-
-        val server = serverId?.let { serverRepository.getById(it) }
-        currentServerRegistryId = server?.id ?: FALLBACK_SERVER_ID
-        currentServerLabel = server?.label ?: "Test server"
 
         // Publish the live session so `EventNotificationRouter` (and any
         // future consumer) can tail `events.ndjson` without coordinating
@@ -268,6 +318,7 @@ class TerminalViewModel @Inject constructor(
             openTabs = tabs.keys.toSet(),
             tmuxMissing = tmuxMissing,
             tmuxBacked = wantsTmux && tmuxAvailable,
+            moshBacked = false,
             error = null,
         )
     }
@@ -299,7 +350,11 @@ class TerminalViewModel @Inject constructor(
         }
         val serverId = currentServerId
         if (sshSession == null) {
-            Log.w(LOG_TAG, "selectTab without live ssh session")
+            // Mosh transport is single-channel — no way to open a
+            // second remote shell from the phone once mosh has the
+            // only UDP tuple. Users open more tabs via tmux running
+            // inside the mosh session on the remote.
+            Log.w(LOG_TAG, "selectTab without live ssh session (mosh transport?)")
             return
         }
         viewModelScope.launch {
@@ -328,8 +383,9 @@ class TerminalViewModel @Inject constructor(
     fun detachTab(name: String) {
         val tab = tabs.remove(name) ?: return
         tab.outputJob.cancel()
-        runCatching { tab.pty.close() }
-        tab.emulator.onRemoteSessionClosed()
+        runCatching { tab.pty?.close() }
+        runCatching { tab.moshSession?.close() }
+        notifyTabEmulatorFinished(tab.emulator)
         sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
 
         val active = _state.value.activeTabName
@@ -447,6 +503,66 @@ class TerminalViewModel @Inject constructor(
         val tab = SessionPty(
             name = tabName,
             pty = channel,
+            moshSession = null,
+            emulator = emulator,
+            outputJob = outputJob,
+            serverIdForRegistry = currentServerRegistryId,
+            serverLabel = currentServerLabel,
+        )
+        tabs[tabName] = tab
+        sessionRegistry.register(
+            serverId = tab.serverIdForRegistry,
+            serverLabel = tab.serverLabel,
+            tabName = tab.name,
+        )
+        return tab
+    }
+
+    /**
+     * Wire a live [MoshSession] into a single tab. The mosh transport
+     * is single-channel; any further tabs rely on tmux running inside
+     * the mosh session on the remote.
+     *
+     * Resize + keypress bytes go straight into mosh-client's stdin /
+     * SIGWINCH path. Output is piped from the child process stdout
+     * into the emulator by [outputJob].
+     */
+    private fun openMoshTab(session: MoshSession, tabName: String): SessionPty {
+        val sessionClient = SshSessionClient(
+            context = appContext,
+            onSessionFinished = {
+                detachTab(tabName)
+            },
+        )
+        val emulator = MoshRemoteTerminalSession(
+            client = sessionClient,
+            onInputBytes = { bytes ->
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { session.write(bytes) }
+                        .onFailure { Log.w(LOG_TAG, "mosh write failed", it) }
+                }
+            },
+            onResize = { cols, rows ->
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching { session.resize(cols, rows) }
+                        .onFailure { Log.w(LOG_TAG, "mosh resize failed", it) }
+                }
+            },
+        )
+
+        val outputJob = viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                session.output.collect { chunk ->
+                    emulator.feedRemoteBytes(chunk)
+                }
+            }.onFailure { t -> Log.w(LOG_TAG, "mosh output ended for $tabName", t) }
+            emulator.onRemoteSessionClosed()
+        }
+
+        val tab = SessionPty(
+            name = tabName,
+            pty = null,
+            moshSession = session,
             emulator = emulator,
             outputJob = outputJob,
             serverIdForRegistry = currentServerRegistryId,
@@ -529,6 +645,11 @@ class TerminalViewModel @Inject constructor(
     fun startCopyMode() {
         if (_inCopyMode.value) return
         val active = _state.value.activeTabName ?: return
+        // Only the sshj PTY path has a structural way to send the
+        // tmux copy-mode prefix today. The mosh transport relies on
+        // tmux running inside the mosh session — it already has a
+        // native binding for copy-mode, so the gesture becomes a
+        // no-op rather than double-dispatching the prefix.
         val channel = tabs[active]?.pty ?: return
         _inCopyMode.value = true
         viewModelScope.launch(Dispatchers.IO) {
@@ -558,10 +679,12 @@ class TerminalViewModel @Inject constructor(
     fun writeToPty(bytes: ByteArray) {
         if (bytes.isEmpty()) return
         val active = _state.value.activeTabName ?: return
-        val channel = tabs[active]?.pty ?: return
+        val tab = tabs[active] ?: return
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { channel.write(bytes) }
-                .onFailure { Log.w(LOG_TAG, "pty write failed", it) }
+            runCatching {
+                tab.pty?.write(bytes)
+                tab.moshSession?.write(bytes)
+            }.onFailure { Log.w(LOG_TAG, "pty write failed", it) }
         }
     }
 
@@ -586,8 +709,9 @@ class TerminalViewModel @Inject constructor(
     private fun cleanupQuietly() {
         tabs.values.forEach { tab ->
             tab.outputJob.cancel()
-            runCatching { tab.pty.close() }
-            tab.emulator.onRemoteSessionClosed()
+            runCatching { tab.pty?.close() }
+            runCatching { tab.moshSession?.close() }
+            notifyTabEmulatorFinished(tab.emulator)
             sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
         }
         tabs.clear()
@@ -598,6 +722,20 @@ class TerminalViewModel @Inject constructor(
         runCatching { sshSession?.close() }
         sshSession = null
         sshClient = null
+    }
+
+    /**
+     * Both [RemoteTerminalSession] and [MoshRemoteTerminalSession]
+     * expose [onRemoteSessionClosed] but don't share a common base
+     * method for it — the parent [TerminalSession] doesn't declare the
+     * hook. A tiny when-branch keeps the call site in [detachTab] /
+     * [cleanupQuietly] readable without forcing a shared mini-interface.
+     */
+    private fun notifyTabEmulatorFinished(emulator: TerminalSession) {
+        when (emulator) {
+            is RemoteTerminalSession -> emulator.onRemoteSessionClosed()
+            is MoshRemoteTerminalSession -> emulator.onRemoteSessionClosed()
+        }
     }
 
     private fun readTestKey(): ByteArray? = runCatching {
@@ -629,6 +767,13 @@ class TerminalViewModel @Inject constructor(
         const val INITIAL_ROWS = 24
         const val DEFAULT_FONT_SIZE_SP = 14
         const val DEFAULT_THEME_ID = "dracula"
+        /**
+         * Phase 3 mosh race window. If `mosh-server new` on the VPS
+         * doesn't print `MOSH CONNECT <port> <key>` within this budget,
+         * we abandon the UDP path and fall back to sshj. 8 seconds
+         * covers a fresh VPS cold-start plus firewall pinhole-probe.
+         */
+        const val MOSH_HANDSHAKE_TIMEOUT_MS: Long = 8_000L
 
         /**
          * Stable sentinel UUID for BuildConfig test-server connections
