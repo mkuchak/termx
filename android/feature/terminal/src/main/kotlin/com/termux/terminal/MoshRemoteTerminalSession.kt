@@ -118,4 +118,14 @@ class MoshRemoteTerminalSession(
     /** The session is "running" until mosh-client exits. */
     @Synchronized
     override fun isRunning(): Boolean = !sessionFinished
+
+    /**
+     * Mirror of [RemoteTerminalSession.sessionClient]: expose the
+     * concrete [dev.kuch.termx.feature.terminal.SshSessionClient] so the
+     * Compose host can wire the live [com.termux.view.TerminalView] for
+     * [dev.kuch.termx.feature.terminal.SshSessionClient.onTextChanged]
+     * to call `onScreenUpdated()` against.
+     */
+    fun sessionClient(): dev.kuch.termx.feature.terminal.SshSessionClient? =
+        mClient as? dev.kuch.termx.feature.terminal.SshSessionClient
 }

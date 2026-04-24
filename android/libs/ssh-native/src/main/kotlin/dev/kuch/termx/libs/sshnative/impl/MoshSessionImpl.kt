@@ -93,7 +93,11 @@ internal class MoshSessionImpl(
             val n = runCatching { stream.read(buf) }.getOrElse { -1 }
             if (n <= 0) break
             appendHead(buf, n)
-            trySend(buf.copyOf(n))
+            // `send` (not `trySend`) so the producer suspends when the
+            // collector is slow. See [PtyChannelImpl.output] for the
+            // same rationale — drop-on-full would corrupt the emulator
+            // state for full-screen repaints.
+            send(buf.copyOf(n))
         }
         // Natural EOF: mosh-client exited or the stream errored. Let
         // the producer return, channelFlow auto-closes the channel,

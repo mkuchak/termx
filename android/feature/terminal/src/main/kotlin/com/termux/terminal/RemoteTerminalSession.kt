@@ -131,4 +131,17 @@ class RemoteTerminalSession(
     /** The session is "running" until the remote channel closes. */
     @Synchronized
     override fun isRunning(): Boolean = !sessionFinished
+
+    /**
+     * Expose [mClient] cast to its concrete type so the Compose host can
+     * wire / unwire the live [com.termux.view.TerminalView] reference that
+     * [dev.kuch.termx.feature.terminal.SshSessionClient.onTextChanged]
+     * uses to trigger a repaint on every emulator append.
+     *
+     * Returns null if, for some reason, a non-SshSessionClient is wired
+     * — tests may use a bare TerminalSessionClient and we don't want to
+     * crash on cast.
+     */
+    fun sessionClient(): dev.kuch.termx.feature.terminal.SshSessionClient? =
+        mClient as? dev.kuch.termx.feature.terminal.SshSessionClient
 }

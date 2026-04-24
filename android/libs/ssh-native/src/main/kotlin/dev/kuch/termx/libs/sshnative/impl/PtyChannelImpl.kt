@@ -47,11 +47,18 @@ internal class PtyChannelImpl(
         while (!closed) {
             val n = runCatching { input.read(buffer) }.getOrElse { -1 }
             if (n <= 0) break
-            trySend(buffer.copyOf(n))
+            // `send` (not `trySend`) so the producer suspends when the
+            // collector falls behind. With trySend the default RENDEZVOUS
+            // channel silently drops frames when the emulator coroutine
+            // is slower than the shell — a tmux full-screen repaint
+            // would lose cells and the UI would look stale forever. A
+            // suspending producer is the correct back-pressure story for
+            // a stream where "every byte matters".
+            send(buffer.copyOf(n))
         }
         // Natural termination: EOF on the shell's stdout → producer returns →
         // channel auto-closes → collector completes. Downstream cancel is
-        // covered by trySend throwing CancellationException. The underlying
+        // covered by send throwing CancellationException. The underlying
         // shell is closed via [close], invoked from TerminalViewModel's
         // disposal path.
     }.flowOn(Dispatchers.IO)

@@ -55,6 +55,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.GestureDetectorCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.termux.terminal.MoshRemoteTerminalSession
+import com.termux.terminal.RemoteTerminalSession
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
@@ -556,8 +558,15 @@ private fun TerminalPane(
     // onTap handler can skip re-requesting focus if it's already
     // focused. Also clears the hoisted ref on dispose so a stale
     // reference doesn't point at a detached view.
-    DisposableEffect(Unit) {
+    //
+    // `session` is in the key list so a tab swap releases the view
+    // binding on the OUTGOING session's client before the new session's
+    // factory / update binds it to the new view; otherwise we'd leave a
+    // detached TerminalView pinned in the background tab's client and
+    // never repaint the active one.
+    DisposableEffect(session) {
         onDispose {
+            unbindViewFromSession(session)
             terminalViewRef.value = null
         }
     }
@@ -675,6 +684,12 @@ private fun TerminalPane(
             // Hoist the ref so TerminalScreen's tap handler and the
             // tab bar's keyboard-toggle button can both target it.
             terminalViewRef.value = view
+            // Wire the view into the active session's client so remote
+            // bytes landing in the emulator fire SshSessionClient
+            // .onTextChanged → view.onScreenUpdated → invalidate().
+            // Without this, nothing invalidates the view after the first
+            // frame and every update waits for a full activity cycle.
+            bindViewToSession(session, view)
             view
         },
         update = { view ->
@@ -682,6 +697,11 @@ private fun TerminalPane(
                 view.attachSession(session)
                 ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
                 view.requestFocus()
+                // Tab swap: unbind the previous session's client and
+                // bind the new one. The DisposableEffect(session) above
+                // handles the outgoing side; this side re-arms on the
+                // next active session.
+                bindViewToSession(session, view)
             }
 
             // Font size may have changed out-of-band (Settings slider
@@ -698,8 +718,38 @@ private fun TerminalPane(
             // Keep the hoisted ref in sync in case a new AndroidView
             // instance was created (e.g. after a configuration change).
             terminalViewRef.value = view
+            // Re-assert the binding on every update pass — harmless if
+            // already set, recovery path if the view was detached +
+            // re-attached by the Compose host.
+            bindViewToSession(session, view)
         },
     )
+    }
+}
+
+/**
+ * Wire [view] into [session]'s [SshSessionClient] so that every
+ * `TerminalSession.notifyScreenUpdate()` inside the emulator translates
+ * into `view.onScreenUpdated()` on the UI thread. See
+ * [SshSessionClient.onTextChanged] for the contract; this helper is the
+ * only place that ever assigns the reference.
+ */
+private fun bindViewToSession(session: TerminalSession, view: TerminalView) {
+    when (session) {
+        is RemoteTerminalSession -> session.sessionClient()?.terminalView = view
+        is MoshRemoteTerminalSession -> session.sessionClient()?.terminalView = view
+    }
+}
+
+/**
+ * Counterpart to [bindViewToSession]. Clears the client's view ref so
+ * the Compose host doesn't leak a detached [TerminalView] after a tab
+ * swap or composable dispose.
+ */
+private fun unbindViewFromSession(session: TerminalSession) {
+    when (session) {
+        is RemoteTerminalSession -> session.sessionClient()?.terminalView = null
+        is MoshRemoteTerminalSession -> session.sessionClient()?.terminalView = null
     }
 }
 
