@@ -24,6 +24,7 @@ include(
     ":feature:servers",
     ":feature:terminal",
     ":feature:keys",
+    ":feature:onboarding",
     ":feature:ptt",
     ":feature:settings",
     ":libs:companion",

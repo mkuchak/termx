@@ -34,6 +34,7 @@ private val Context.appPrefsDataStore by preferencesDataStore(name = "app_prefs"
  *   dev.kuch.termx.core.domain.theme.TerminalTheme] id. Shared by the
  *   Task #18 theme picker and the terminal's [
  *   dev.kuch.termx.feature.terminal.theme.ThemeBinder].
+ * - [pttMode]: last-used Push-to-talk mode (Task #42).
  *
  * All I/O is coroutine-friendly — [Flow] for reads, `suspend` for writes.
  */
@@ -56,6 +57,15 @@ class AppPreferences @Inject constructor(
     val activeThemeId: Flow<String> =
         ds.data.map { it[KEY_ACTIVE_THEME_ID] ?: DEFAULT_ACTIVE_THEME_ID }
 
+    /**
+     * Last-used Push-to-talk mode. Either `"command"` (transcript is
+     * injected into the PTY with a trailing newline so the shell
+     * executes it immediately) or `"text"` (no newline; user can edit
+     * then hit Enter themselves). Task #42.
+     */
+    val pttMode: Flow<String> =
+        ds.data.map { it[KEY_PTT_MODE] ?: DEFAULT_PTT_MODE }
+
     suspend fun setParanoidMode(value: Boolean) {
         ds.edit { it[KEY_PARANOID_MODE] = value }
     }
@@ -72,16 +82,25 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_ACTIVE_THEME_ID] = id }
     }
 
+    suspend fun setPttMode(value: String) {
+        val normalised = if (value == PTT_MODE_TEXT) PTT_MODE_TEXT else PTT_MODE_COMMAND
+        ds.edit { it[KEY_PTT_MODE] = normalised }
+    }
+
     private companion object {
         val KEY_PARANOID_MODE = booleanPreferencesKey("paranoid_mode_enabled")
         val KEY_AUTO_LOCK_MINUTES = intPreferencesKey("auto_lock_minutes")
         val KEY_FONT_SIZE_SP = intPreferencesKey("terminal_font_size_sp")
         val KEY_ACTIVE_THEME_ID = stringPreferencesKey("terminal_active_theme_id")
+        val KEY_PTT_MODE = stringPreferencesKey("ptt_mode")
         const val DEFAULT_PARANOID_MODE = false
         const val DEFAULT_AUTO_LOCK_MINUTES = 5
         const val DEFAULT_FONT_SIZE_SP = 14
         const val DEFAULT_ACTIVE_THEME_ID = "dracula"
         const val MIN_FONT_SIZE_SP = 8
         const val MAX_FONT_SIZE_SP = 32
+        const val PTT_MODE_COMMAND = "command"
+        const val PTT_MODE_TEXT = "text"
+        const val DEFAULT_PTT_MODE = PTT_MODE_COMMAND
     }
 }

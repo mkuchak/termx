@@ -6,18 +6,21 @@ import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.vault.VaultLockState
 import dev.kuch.termx.feature.keys.KeyDetailScreen
 import dev.kuch.termx.feature.keys.KeyGenerateScreen
 import dev.kuch.termx.feature.keys.KeyImportScreen
 import dev.kuch.termx.feature.keys.KeyListScreen
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
+import dev.kuch.termx.feature.onboarding.OnboardingScreen
 import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.servers.setup.SetupWizardScreen
 import dev.kuch.termx.feature.settings.SettingsScreen
@@ -27,12 +30,19 @@ import dev.kuch.termx.feature.terminal.permission.PermissionDialogHost
 import dev.kuch.termx.service.NotificationPermissionRequester
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
 
 /**
  * App-wide navigation graph.
  *
- * Start destination is `servers` — the server list is the app's home.
- * Tapping a row navigates to `terminal/{serverId}`; Task #15's
+ * Start destination is `servers` — the server list is the app's home —
+ * unless [AppPreferences.onboardingComplete] is still false, in which
+ * case we land on `onboarding` instead (Task #46). Onboarding completion
+ * flips the preference and navigates to `servers`.
+ *
+ * Tapping a server row navigates to `terminal/{serverId}`; Task #15's
  * [TerminalScreen] now accepts a non-null UUID and connects via Room +
  * the vault rather than the BuildConfig fallback.
  *
@@ -47,6 +57,8 @@ fun TermxNavHost() {
 
     val gateViewModel: NavGateViewModel = hiltViewModel()
     val lockState by gateViewModel.vaultLockState.state.collectAsStateWithLifecycle()
+    val onboardingComplete by gateViewModel.onboardingComplete
+        .collectAsStateWithLifecycle()
 
     val navController = rememberNavController()
 
@@ -72,10 +84,34 @@ fun TermxNavHost() {
         }
     }
 
+    val startDestination = if (onboardingComplete) Routes.Servers else Routes.Onboarding
+
     NavHost(
         navController = navController,
-        startDestination = Routes.Servers,
+        startDestination = startDestination,
     ) {
+        composable(Routes.Onboarding) {
+            OnboardingScreen(
+                onFinish = {
+                    navController.navigate(Routes.Servers) {
+                        popUpTo(Routes.Onboarding) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onLaunchSetupWizard = {
+                    navController.navigate(Routes.SetupWizard) {
+                        popUpTo(Routes.Onboarding) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onSetupBiometric = {
+                    navController.navigate(Routes.Unlock) {
+                        popUpTo(Routes.Onboarding) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
         composable(Routes.Servers) {
             ServerListScreen(
                 onServerTap = { id ->
@@ -204,15 +240,33 @@ fun TermxNavHost() {
 
 /**
  * Thin ViewModel wrapper exposing the process-wide [VaultLockState]
- * singleton to Compose. Direct `@Inject` onto composables is not a
- * thing — we route through a Hilt ViewModel.
+ * singleton and the first-run onboarding gate to Compose. Direct
+ * `@Inject` onto composables is not a thing — we route through a Hilt
+ * ViewModel.
  */
 @HiltViewModel
 class NavGateViewModel @Inject constructor(
     val vaultLockState: VaultLockState,
-) : ViewModel()
+    appPreferences: AppPreferences,
+) : ViewModel() {
+    /**
+     * True once the user has completed or skipped first-run onboarding.
+     * Defaults to `true` for the initial emission so existing installs
+     * (which never had this flag) don't get bounced through the
+     * onboarding flow after an upgrade — the DataStore read will override
+     * to `false` on genuinely fresh installs before the composition
+     * settles.
+     */
+    val onboardingComplete: StateFlow<Boolean> = appPreferences.onboardingComplete
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = true,
+        )
+}
 
 private object Routes {
+    const val Onboarding = "onboarding"
     const val Servers = "servers"
     const val Keys = "keys"
     const val KeyGenerate = "keys/generate"

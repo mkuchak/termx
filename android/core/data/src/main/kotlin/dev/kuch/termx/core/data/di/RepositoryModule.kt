@@ -5,9 +5,11 @@ import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import dev.kuch.termx.core.data.remote.InstallCompanionUseCaseImpl
+import dev.kuch.termx.core.data.repository.CustomThemeRepositoryImpl
 import dev.kuch.termx.core.data.repository.KeyPairRepositoryImpl
 import dev.kuch.termx.core.data.repository.ServerGroupRepositoryImpl
 import dev.kuch.termx.core.data.repository.ServerRepositoryImpl
+import dev.kuch.termx.core.domain.repository.CustomThemeRepository
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerGroupRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
@@ -39,4 +41,10 @@ abstract class RepositoryModule {
     abstract fun bindInstallCompanionUseCase(
         impl: InstallCompanionUseCaseImpl,
     ): InstallCompanionUseCase
+
+    @Binds
+    @Singleton
+    abstract fun bindCustomThemeRepository(
+        impl: CustomThemeRepositoryImpl,
+    ): CustomThemeRepository
 }

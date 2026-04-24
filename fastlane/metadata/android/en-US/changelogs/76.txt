@@ -1,0 +1,8 @@
+- feat(onboarding): first-run 3-screen flow — welcome, biometric vault, add-server.
+- feat(settings): encrypted config export/import with passphrase (AES-256-GCM over PBKDF2).
+- feat(settings): custom theme editor with HSV color pickers, stored in a new Room table.
+- feat(fdroid): fastlane metadata + F-Droid app manifest and reproducible-build notes.
+- feat(phase5): permission broker + diff capture + phone-side dialog + diff viewer.
+- feat(notifications): event router + 4 channels + battery-optimisation prompt (Phase 7 complete).
+- feat(service): foreground service + session registry + persistent notification.
+- feat(auth): in-memory password cache + terminal password prompt dialog.

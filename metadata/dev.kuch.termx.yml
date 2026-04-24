@@ -1,0 +1,43 @@
+Categories:
+  - Connectivity
+  - Development
+License: MIT
+AuthorName: Marcos Kuchak
+SourceCode: https://github.com/mkuchak/termx
+IssueTracker: https://github.com/mkuchak/termx/issues
+Changelog: https://github.com/mkuchak/termx/blob/main/CHANGELOG.md
+
+AutoName: termx
+Description: |-
+  termx turns your phone into a control surface for Claude Code running on
+  any SSH-reachable server. It opens your tmux sessions 1:1, surfaces
+  permission prompts from Claude Code's PreToolUse hook, and streams a
+  companion event log over SSH so notifications fire without running any
+  third-party relay.
+
+  SSH private keys and stored passwords never leave the phone in
+  plaintext. The optional push-to-talk feature uses your own Gemini API
+  key (pasted in Settings, stored in the Keystore vault). Donations-only;
+  no paid tier.
+
+RepoType: git
+Repo: https://github.com/mkuchak/termx
+
+Builds:
+  - versionName: 0.3.4
+    versionCode: 74
+    commit: v0.3.4
+    subdir: android/app
+    gradle:
+      - yes
+    output: android/app/build/outputs/apk/release/termx-v$$versionName$$-release.apk
+    rm:
+      - android/app/build
+    build: |-
+      cd ../..
+      ./gradlew :app:assembleRelease
+
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags ^v[0-9.]+$
+CurrentVersion: 0.3.4
+CurrentVersionCode: 74

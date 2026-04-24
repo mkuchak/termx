@@ -7,7 +7,9 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
+import dev.kuch.termx.core.data.db.ALL_MIGRATIONS
 import dev.kuch.termx.core.data.db.AppDatabase
+import dev.kuch.termx.core.data.db.dao.CustomThemeDao
 import dev.kuch.termx.core.data.db.dao.KeyPairDao
 import dev.kuch.termx.core.data.db.dao.ServerDao
 import dev.kuch.termx.core.data.db.dao.ServerGroupDao
@@ -25,6 +27,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): AppDatabase =
         Room.databaseBuilder(context, AppDatabase::class.java, "termx.db")
+            .addMigrations(*ALL_MIGRATIONS)
             .build()
 
     @Provides
@@ -35,4 +38,7 @@ object DatabaseModule {
 
     @Provides
     fun provideServerGroupDao(db: AppDatabase): ServerGroupDao = db.serverGroupDao()
+
+    @Provides
+    fun provideCustomThemeDao(db: AppDatabase): CustomThemeDao = db.customThemeDao()
 }
