@@ -31,6 +31,7 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:domain"))
     implementation(project(":libs:ssh-native"))
+    implementation(project(":libs:companion"))
     implementation(libs.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.room.runtime)
