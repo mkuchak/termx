@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.kuch.termx.core.domain.model.AuthType
+import dev.kuch.termx.core.domain.usecase.InstallStep3State
 import java.util.UUID
 
 /**
@@ -54,6 +55,7 @@ fun SetupWizardScreen(
     viewModel: SetupWizardViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val installState: InstallStep3State by viewModel.installStep3State.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -131,7 +133,12 @@ fun SetupWizardScreen(
                         onNext = viewModel::next,
                     )
                     3 -> SetupStep3InstallTermxd(
-                        onSkip = viewModel::next,
+                        state = installState,
+                        onPreview = viewModel::runCompanionPreview,
+                        onInstall = viewModel::runCompanionInstall,
+                        onRetry = viewModel::runCompanionDetect,
+                        onNext = viewModel::advanceFromCompanion,
+                        onSkip = viewModel::advanceFromCompanion,
                     )
                     4 -> SetupStep4SaveServer(
                         state = state,

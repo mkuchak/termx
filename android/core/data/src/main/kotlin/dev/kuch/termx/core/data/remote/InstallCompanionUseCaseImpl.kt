@@ -1,0 +1,355 @@
+package dev.kuch.termx.core.data.remote
+
+import android.content.Context
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.kuch.termx.core.data.network.TermxReleaseFetcher
+import dev.kuch.termx.core.data.vault.SecretVault
+import dev.kuch.termx.core.data.vault.VaultLockedException
+import dev.kuch.termx.core.domain.model.AuthType
+import dev.kuch.termx.core.domain.model.Server
+import dev.kuch.termx.core.domain.repository.KeyPairRepository
+import dev.kuch.termx.core.domain.repository.ServerRepository
+import dev.kuch.termx.core.domain.usecase.InstallCompanionUseCase
+import dev.kuch.termx.core.domain.usecase.InstallCompanionUseCase.Stage
+import dev.kuch.termx.core.domain.usecase.InstallStep3State
+import dev.kuch.termx.libs.sshnative.ExecChannel
+import dev.kuch.termx.libs.sshnative.SshAuth
+import dev.kuch.termx.libs.sshnative.SshClient
+import dev.kuch.termx.libs.sshnative.SshSession
+import dev.kuch.termx.libs.sshnative.SshTarget
+import java.util.UUID
+import javax.inject.Inject
+import javax.inject.Singleton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.launch
+
+/**
+ * Orchestrates the wizard-driven termxd install flow.
+ *
+ * Each [run] invocation opens a short-lived [SshSession] for the stage, then
+ * closes it. We don't piggyback on `TmuxSessionRepositoryImpl`'s cache because
+ *
+ *  1. the wizard runs before the server has been persisted's `autoAttachTmux`
+ *     path fires, so nothing has pre-warmed a session for this server;
+ *  2. reusing the tmux cache would require exposing it as a public API, and
+ *     the install flow is at most three round-trips per stage — a fresh
+ *     session is cheap enough.
+ *
+ *  The impl is public + non-`internal` so Hilt's `@Binds` can resolve the
+ *  domain interface against it (mirrors the fix documented in commit 074cb68).
+ */
+@Singleton
+class InstallCompanionUseCaseImpl @Inject constructor(
+    @ApplicationContext private val appContext: Context,
+    private val serverRepository: ServerRepository,
+    private val keyPairRepository: KeyPairRepository,
+    private val secretVault: SecretVault,
+    private val sshClient: SshClient,
+    private val releaseFetcher: TermxReleaseFetcher,
+) : InstallCompanionUseCase {
+
+    override fun run(
+        serverId: UUID,
+        stage: Stage,
+        context: InstallCompanionUseCase.Context,
+    ): Flow<InstallStep3State> = flow {
+        when (stage) {
+            Stage.Detect -> runDetect(serverId)
+            Stage.Preview -> runPreview(serverId, context.downloadUrl)
+            Stage.Install -> runInstall(serverId)
+        }
+    }.flowOn(Dispatchers.IO)
+
+    // --- Stage: detect ------------------------------------------------------
+
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runDetect(
+        serverId: UUID,
+    ) {
+        emit(InstallStep3State.Detecting)
+        val session = try {
+            openSession(serverId)
+        } catch (t: Throwable) {
+            emit(InstallStep3State.Error(describe(t)))
+            return
+        }
+        try {
+            // Resolve `termx` via PATH *and* the canonical install location.
+            // `which` returns 1 when the binary isn't on the shell's PATH
+            // (non-login shell over sshj), so we explicitly check
+            // `$HOME/.local/bin/termx` which is where termxd self-installs.
+            val pathLine = execCapture(
+                session,
+                "command -v termx 2>/dev/null || " +
+                    "([ -x \"\$HOME/.local/bin/termx\" ] && printf '%s' \"\$HOME/.local/bin/termx\") || true",
+            ).trim()
+
+            if (pathLine.isNotBlank()) {
+                val quoted = shellQuote(pathLine)
+                val version = execCapture(session, "$quoted --version 2>/dev/null || true")
+                    .trim()
+                    .ifBlank { "termx (version unknown)" }
+                emit(InstallStep3State.AlreadyInstalled(version))
+                return
+            }
+
+            val archRaw = execCapture(session, "uname -m").trim()
+            val arch = normalizeArch(archRaw)
+            if (arch == null) {
+                emit(InstallStep3State.Error("Unsupported architecture: $archRaw"))
+                return
+            }
+
+            emit(InstallStep3State.FetchingRelease)
+            val rel = try {
+                releaseFetcher.fetchLatest()
+            } catch (t: Throwable) {
+                emit(InstallStep3State.Error("GitHub release fetch failed: ${t.message ?: t.javaClass.simpleName}"))
+                return
+            }
+            val url = rel.assetForArch(arch)
+            if (url.isNullOrBlank()) {
+                emit(InstallStep3State.Error("No asset for architecture $arch in release ${rel.tag}"))
+                return
+            }
+            emit(InstallStep3State.ReadyToDownload(arch = arch, downloadUrl = url, releaseTag = rel.tag))
+        } finally {
+            runCatching { session.close() }
+        }
+    }
+
+    // --- Stage: preview -----------------------------------------------------
+
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runPreview(
+        serverId: UUID,
+        downloadUrl: String?,
+    ) {
+        if (downloadUrl.isNullOrBlank()) {
+            emit(InstallStep3State.Error("Missing download URL"))
+            return
+        }
+        emit(InstallStep3State.Downloading("Downloading ${downloadUrl.substringAfterLast('/')}..."))
+
+        val session = try {
+            openSession(serverId)
+        } catch (t: Throwable) {
+            emit(InstallStep3State.Error(describe(t)))
+            return
+        }
+        try {
+            val quotedUrl = shellQuote(downloadUrl)
+            // Download, then auto-extract if the asset is a tarball/zip so
+            // the final `/tmp/termx` is always an executable binary.
+            val fetchCmd = """
+                set -e
+                rm -rf /tmp/termx-install && mkdir -p /tmp/termx-install
+                cd /tmp/termx-install
+                curl -fsSL $quotedUrl -o asset
+                case "$quotedUrl" in
+                    *.tar.gz|*.tgz) tar -xzf asset ;;
+                    *.zip) unzip -q asset ;;
+                    *) cp asset termx ;;
+                esac
+                bin=${'$'}(find . -maxdepth 3 -type f -name termx -perm -u+x | head -n 1)
+                if [ -z "${'$'}bin" ]; then bin=${'$'}(find . -maxdepth 3 -type f -name termx | head -n 1); fi
+                if [ -z "${'$'}bin" ]; then echo "no termx binary in archive" >&2; exit 1; fi
+                install -m 0755 "${'$'}bin" /tmp/termx
+            """.trimIndent()
+            val fetchExit = execDiscard(session, fetchCmd)
+            if (fetchExit != 0) {
+                emit(InstallStep3State.Error("Download failed (exit $fetchExit). Check the VPS network and try again."))
+                return
+            }
+
+            emit(InstallStep3State.Downloading("Running termx install --dry-run..."))
+            val dryRunJson = execCapture(session, "/tmp/termx install --dry-run 2>/dev/null")
+            val actions = DryRunParser.parse(dryRunJson)
+            if (actions.isEmpty()) {
+                emit(
+                    InstallStep3State.Error(
+                        "Dry-run returned no changes — the binary may be incompatible.",
+                        log = dryRunJson.lines().take(40),
+                    ),
+                )
+                return
+            }
+            emit(InstallStep3State.PreviewingDiff(actions))
+        } finally {
+            runCatching { session.close() }
+        }
+    }
+
+    // --- Stage: install -----------------------------------------------------
+
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runInstall(
+        serverId: UUID,
+    ) {
+        val log = mutableListOf<String>()
+        emit(InstallStep3State.Installing(log.toList()))
+
+        val session = try {
+            openSession(serverId)
+        } catch (t: Throwable) {
+            emit(InstallStep3State.Error(describe(t), log = log.toList()))
+            return
+        }
+        try {
+            val exec = session.openExec(
+                "set -eo pipefail; /tmp/termx install --install-deps 2>&1",
+            )
+            val exit = try {
+                collectStreamLines(exec) { line ->
+                    log += line
+                    emit(InstallStep3State.Installing(log.toList()))
+                }
+            } finally {
+                runCatching { exec.close() }
+            }
+            if (exit != 0) {
+                emit(InstallStep3State.Error("termx install exited with $exit", log = log.toList()))
+                return
+            }
+
+            // Sanity check: the install_binary step should have produced
+            // ~/.termx/events.ndjson. If missing, something went wrong
+            // despite a zero exit code.
+            val eventsCheck = try {
+                val sftp = session.openSftp()
+                try {
+                    val home = execCapture(session, "printf %s \"\$HOME\"").trim()
+                    val candidate = if (home.isNotBlank()) "$home/.termx/events.ndjson" else "~/.termx/events.ndjson"
+                    sftp.exists(candidate)
+                } finally {
+                    runCatching { sftp.close() }
+                }
+            } catch (t: Throwable) {
+                log += "verification failed: ${t.message ?: t.javaClass.simpleName}"
+                false
+            }
+            if (!eventsCheck) {
+                emit(
+                    InstallStep3State.Error(
+                        "Install completed but ~/.termx/events.ndjson was not found. Re-run install.",
+                        log = log.toList(),
+                    ),
+                )
+                return
+            }
+
+            val server = serverRepository.getById(serverId)
+            if (server != null) {
+                serverRepository.upsert(server.copy(companionInstalled = true))
+            }
+            emit(InstallStep3State.Success)
+        } finally {
+            runCatching { session.close() }
+        }
+    }
+
+    // --- helpers ------------------------------------------------------------
+
+    private suspend fun execCapture(session: SshSession, command: String): String {
+        val exec = session.openExec(command)
+        return try {
+            val buf = StringBuilder()
+            exec.stdout.collect { chunk -> buf.append(String(chunk, Charsets.UTF_8)) }
+            exec.exitCode.await()
+            buf.toString()
+        } finally {
+            runCatching { exec.close() }
+        }
+    }
+
+    private suspend fun execDiscard(session: SshSession, command: String): Int {
+        val exec = session.openExec(command)
+        return try {
+            exec.stdout.collect { /* drain */ }
+            exec.stderr.collect { /* drain */ }
+            exec.exitCode.await()
+        } finally {
+            runCatching { exec.close() }
+        }
+    }
+
+    /**
+     * Collect both stdout and stderr line-by-line, calling [onLine] for each
+     * completed newline-terminated fragment from either stream. Returns the
+     * exit code.
+     */
+    private suspend fun collectStreamLines(
+        exec: ExecChannel,
+        onLine: suspend (String) -> Unit,
+    ): Int {
+        val pending = StringBuilder()
+        suspend fun drain(chunk: ByteArray) {
+            pending.append(String(chunk, Charsets.UTF_8))
+            while (true) {
+                val nl = pending.indexOf('\n')
+                if (nl < 0) break
+                val line = pending.substring(0, nl).trimEnd('\r')
+                onLine(line)
+                pending.delete(0, nl + 1)
+            }
+        }
+
+        kotlinx.coroutines.coroutineScope {
+            val stdoutJob = this.launch {
+                exec.stdout.collect { drain(it) }
+            }
+            val stderrJob = this.launch {
+                exec.stderr.collect { drain(it) }
+            }
+            stdoutJob.join()
+            stderrJob.join()
+        }
+        if (pending.isNotEmpty()) {
+            onLine(pending.toString().trimEnd('\r'))
+        }
+        return exec.exitCode.await()
+    }
+
+    private fun normalizeArch(raw: String): String? = when (raw) {
+        "x86_64", "amd64" -> "amd64"
+        "aarch64", "arm64" -> "arm64"
+        else -> null
+    }
+
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+
+    private fun describe(t: Throwable): String =
+        t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
+
+    private suspend fun openSession(serverId: UUID): SshSession {
+        val server = serverRepository.getById(serverId)
+            ?: throw IllegalStateException("Server not found: $serverId")
+        val auth = resolveAuth(server)
+        val target = SshTarget(
+            host = server.host,
+            port = server.port,
+            username = server.username,
+            knownHostsPath = appContext.filesDir.absolutePath + "/known_hosts",
+        )
+        return sshClient.connect(target, auth)
+    }
+
+    private suspend fun resolveAuth(server: Server): SshAuth = when (server.authType) {
+        AuthType.PASSWORD -> throw IllegalStateException(
+            "Password auth isn't wired for install flow yet",
+        )
+        AuthType.KEY -> {
+            val keyId = server.keyPairId
+                ?: throw IllegalStateException("Server has no key assigned")
+            val keyPair = keyPairRepository.getById(keyId)
+                ?: throw IllegalStateException("Linked key not found")
+            val privatePem = try {
+                secretVault.load(keyPair.keystoreAlias)
+            } catch (t: VaultLockedException) {
+                throw IllegalStateException("Vault is locked", t)
+            } ?: throw IllegalStateException("Private key missing from vault")
+            SshAuth.PublicKey(privateKeyPem = privatePem, passphrase = null)
+        }
+    }
+}

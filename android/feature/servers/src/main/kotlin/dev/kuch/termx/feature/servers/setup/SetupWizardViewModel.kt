@@ -17,6 +17,8 @@ import dev.kuch.termx.core.domain.model.ServerGroup
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerGroupRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
+import dev.kuch.termx.core.domain.usecase.InstallCompanionUseCase
+import dev.kuch.termx.core.domain.usecase.InstallStep3State
 import dev.kuch.termx.feature.servers.TestResult
 import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
@@ -24,6 +26,7 @@ import dev.kuch.termx.libs.sshnative.SshException
 import dev.kuch.termx.libs.sshnative.SshTarget
 import dev.kuch.termx.libs.sshnative.crypto.SshKeyPairGenerator
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -60,12 +63,27 @@ class SetupWizardViewModel @Inject constructor(
     private val serverGroupRepository: ServerGroupRepository,
     private val secretVault: SecretVault,
     private val vaultLockState: VaultLockState,
+    private val installCompanion: InstallCompanionUseCase,
 ) : ViewModel() {
 
     private val sshClient: SshClient by lazy { SshClient() }
 
     private val _state = MutableStateFlow(SetupWizardUiState())
     val state: StateFlow<SetupWizardUiState> = _state.asStateFlow()
+
+    private val _installStep3State = MutableStateFlow<InstallStep3State>(InstallStep3State.Detecting)
+
+    /**
+     * State feed for step 3. Transitions through detect to ReadyToDownload
+     * (or AlreadyInstalled) on step enter, then Preview/Install on user taps.
+     */
+    val installStep3State: StateFlow<InstallStep3State> = _installStep3State.asStateFlow()
+
+    /** In-flight install job (detect/preview/install stages). Cancelled on retry. */
+    private var installJob: Job? = null
+
+    /** Cached from the ReadyToDownload transition so Preview can pick it up. */
+    private var cachedDownloadUrl: String? = null
 
     init {
         // Stream the key and group lists so step 1's dropdowns stay live
@@ -119,6 +137,12 @@ class SetupWizardViewModel @Inject constructor(
             1 -> if (snapshot.canAdvanceFromStep1) _state.update { it.copy(currentStep = 2) }
             2 -> if (snapshot.testResult is TestResult.Success) {
                 _state.update { it.copy(currentStep = 3) }
+                // Persist a row now so the install flow has a real serverId to
+                // open a session against. The row stays in Room even if the
+                // wizard is abandoned — acceptable trade-off vs. plumbing a
+                // synthetic id through InstallCompanionUseCase.
+                ensureDraftPersisted()
+                runCompanionDetect()
             }
             3 -> _state.update { it.copy(currentStep = 4) }
             4 -> Unit // handled by save()
@@ -231,7 +255,13 @@ class SetupWizardViewModel @Inject constructor(
         val s = _state.value
         viewModelScope.launch {
             val id = s.savedServerId ?: UUID.randomUUID()
-            val server = s.draft.toServer(id)
+            // Preserve any install-side updates (companionInstalled) already
+            // persisted by [runCompanionInstall] — re-upserting the raw draft
+            // would clobber that flag back to false.
+            val existing = serverRepository.getById(id)
+            val server = s.draft.toServer(id).copy(
+                companionInstalled = existing?.companionInstalled == true,
+            )
             serverRepository.upsert(server)
             _state.update { it.copy(savedServerId = id) }
 
@@ -244,6 +274,75 @@ class SetupWizardViewModel @Inject constructor(
                 _state.update { it.copy(currentStep = 5) }
             }
         }
+    }
+
+    // --- Step 3: companion install -------------------------------------------
+
+    /**
+     * Save the draft as a [Server] row so [installCompanion] has a stable
+     * `serverId` to resolve during the detect/preview/install stages. No-op
+     * when a row already exists (e.g. the user stepped back and forward).
+     */
+    private fun ensureDraftPersisted() {
+        val current = _state.value
+        if (current.savedServerId != null) return
+        val id = UUID.randomUUID()
+        val server = current.draft.toServer(id)
+        _state.update { it.copy(savedServerId = id) }
+        viewModelScope.launch {
+            runCatching { serverRepository.upsert(server) }
+        }
+    }
+
+    /** Launch detect: probes `termx --version`, then hits GitHub for the asset. */
+    fun runCompanionDetect() {
+        val id = _state.value.savedServerId ?: return
+        cachedDownloadUrl = null
+        installJob?.cancel()
+        installJob = viewModelScope.launch {
+            installCompanion.run(id, InstallCompanionUseCase.Stage.Detect).collect { state ->
+                if (state is InstallStep3State.ReadyToDownload) {
+                    cachedDownloadUrl = state.downloadUrl
+                }
+                _installStep3State.value = state
+            }
+        }
+    }
+
+    /** User tapped [Download + Preview]: download binary and parse dry-run JSON. */
+    fun runCompanionPreview() {
+        val id = _state.value.savedServerId ?: return
+        val url = cachedDownloadUrl ?: run {
+            _installStep3State.value = InstallStep3State.Error("No download URL cached; retry detection.")
+            return
+        }
+        installJob?.cancel()
+        installJob = viewModelScope.launch {
+            installCompanion
+                .run(
+                    id,
+                    InstallCompanionUseCase.Stage.Preview,
+                    InstallCompanionUseCase.Context(downloadUrl = url),
+                )
+                .collect { _installStep3State.value = it }
+        }
+    }
+
+    /** User tapped [Install]: run the non-dry-run install, stream log lines. */
+    fun runCompanionInstall() {
+        val id = _state.value.savedServerId ?: return
+        installJob?.cancel()
+        installJob = viewModelScope.launch {
+            installCompanion.run(id, InstallCompanionUseCase.Stage.Install).collect {
+                _installStep3State.value = it
+            }
+        }
+    }
+
+    /** [Next] on Success / [Skip] on any other state — advance to step 4. */
+    fun advanceFromCompanion() {
+        installJob?.cancel()
+        _state.update { it.copy(currentStep = 4) }
     }
 
     // --- Inline key generation (chosen over navigation round-trip) ----------

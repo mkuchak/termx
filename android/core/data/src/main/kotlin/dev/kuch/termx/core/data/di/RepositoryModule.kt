@@ -4,12 +4,14 @@ import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import dev.kuch.termx.core.data.remote.InstallCompanionUseCaseImpl
 import dev.kuch.termx.core.data.repository.KeyPairRepositoryImpl
 import dev.kuch.termx.core.data.repository.ServerGroupRepositoryImpl
 import dev.kuch.termx.core.data.repository.ServerRepositoryImpl
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerGroupRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
+import dev.kuch.termx.core.domain.usecase.InstallCompanionUseCase
 import javax.inject.Singleton
 
 /**
@@ -31,4 +33,10 @@ abstract class RepositoryModule {
     @Binds
     @Singleton
     abstract fun bindServerGroupRepository(impl: ServerGroupRepositoryImpl): ServerGroupRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindInstallCompanionUseCase(
+        impl: InstallCompanionUseCaseImpl,
+    ): InstallCompanionUseCase
 }

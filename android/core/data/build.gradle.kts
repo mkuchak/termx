@@ -41,4 +41,6 @@ dependencies {
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
+
+    implementation(libs.okhttp)
 }
