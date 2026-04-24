@@ -49,7 +49,7 @@ import dev.kuch.termx.core.domain.model.KeyAlgorithm
 /**
  * SAF-based import flow.
  *
- * 1. User taps "Choose file…" → system document picker opens with `*/*`.
+ * 1. User taps "Choose file…" → system document picker opens with any MIME type.
  * 2. Bytes read, a no-passphrase parse is attempted automatically.
  * 3. If the parser throws about a passphrase, the passphrase field is
  *    surfaced and we re-parse on demand.
