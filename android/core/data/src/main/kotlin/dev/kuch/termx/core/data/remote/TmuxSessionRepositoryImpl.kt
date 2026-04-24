@@ -304,7 +304,17 @@ class TmuxSessionRepositoryImpl @Inject constructor(
                 SshAuth.PublicKey(privateKeyPem = bytes, passphrase = null)
             }
             AuthType.PASSWORD -> {
-                val pw = passwordCache.get(serverId)
+                // Vault first (covers the saved-server cold-start path),
+                // then in-memory cache. A locked vault is treated as
+                // "missing" — we don't surface biometric from a poller;
+                // the terminal connect flow owns that UX.
+                val fromVault = server.passwordAlias?.let { alias ->
+                    runCatching { secretVault.load(alias) }
+                        .getOrNull()
+                        ?.let { bytes -> String(bytes, Charsets.UTF_8) }
+                }
+                val pw = fromVault
+                    ?: passwordCache.get(serverId)
                     ?: throw IllegalStateException(
                         "No password cached for this server. " +
                             "Open the terminal and enter your password to start a session.",

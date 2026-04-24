@@ -140,8 +140,16 @@ class SetupWizardViewModel @Inject constructor(
                 // open a session against. The row stays in Room even if the
                 // wizard is abandoned — acceptable trade-off vs. plumbing a
                 // synthetic id through InstallCompanionUseCase.
-                ensureDraftPersisted()
-                runCompanionDetect()
+                //
+                // Serialize the upsert with the detect call: [ensureDraftPersisted]
+                // used to launch its own coroutine which let [runCompanionDetect]
+                // fire a `serverRepository.getById` before Room had committed,
+                // producing a one-shot "Server not found: <uuid>" on first entry
+                // into Step 3.
+                viewModelScope.launch {
+                    ensureDraftPersisted()
+                    runCompanionDetect()
+                }
             }
             3 -> _state.update { it.copy(currentStep = 4) }
             4 -> Unit // handled by save()
@@ -258,16 +266,38 @@ class SetupWizardViewModel @Inject constructor(
             // persisted by [runCompanionInstall] — re-upserting the raw draft
             // would clobber that flag back to false.
             val existing = serverRepository.getById(id)
+
+            // Persist the SSH password to the Keystore-backed vault under
+            // alias `password-${id}` — mirrors `AddEditServerViewModel.save`.
+            // The in-memory cache was already seeded in
+            // `ensureDraftPersisted` but users who jump straight to step 4
+            // without walking through the detect step still need it set.
+            val shouldStorePassword = s.draft.authType == AuthType.PASSWORD &&
+                s.draft.password.isNotBlank()
+            val alias: String? = if (shouldStorePassword) "password-$id" else null
+            if (shouldStorePassword) {
+                try {
+                    secretVault.store(alias!!, s.draft.password.toByteArray(Charsets.UTF_8))
+                } catch (t: VaultLockedException) {
+                    Log.w(LOG_TAG, "vault locked; password survives in-memory only", t)
+                }
+                passwordCache.put(id, s.draft.password)
+            } else {
+                val priorAlias = existing?.passwordAlias
+                if (priorAlias != null) {
+                    runCatching { secretVault.delete(priorAlias) }
+                }
+            }
+
             val server = s.draft.toServer(id).copy(
                 companionInstalled = existing?.companionInstalled == true,
+                passwordAlias = alias,
             )
             serverRepository.upsert(server)
             _state.update { it.copy(savedServerId = id) }
 
             if (s.draft.authType == AuthType.PASSWORD) {
-                // Password storage is deferred (Task #23 follow-up — see
-                // AddEditServerViewModel.save for context). The row is saved;
-                // the user heads back to the list.
+                // Row + vault entry are live; hand control back to the list.
                 onDoneIfPasswordAuth(id)
             } else {
                 _state.update { it.copy(currentStep = 5) }
@@ -281,8 +311,14 @@ class SetupWizardViewModel @Inject constructor(
      * Save the draft as a [Server] row so [installCompanion] has a stable
      * `serverId` to resolve during the detect/preview/install stages. No-op
      * when a row already exists (e.g. the user stepped back and forward).
+     *
+     * Declared `suspend` so the caller can serialize it with the follow-up
+     * `installCompanion.run(...)` — an earlier version launched the upsert
+     * on its own coroutine and let Step 3's `runCompanionDetect` read the
+     * row before Room committed, producing a one-shot "Server not found:
+     * <uuid>" error on first entry into Step 3.
      */
-    private fun ensureDraftPersisted() {
+    private suspend fun ensureDraftPersisted() {
         val current = _state.value
         if (current.savedServerId != null) return
         val id = UUID.randomUUID()
@@ -293,9 +329,7 @@ class SetupWizardViewModel @Inject constructor(
         if (current.draft.authType == AuthType.PASSWORD && current.draft.password.isNotBlank()) {
             passwordCache.put(id, current.draft.password)
         }
-        viewModelScope.launch {
-            runCatching { serverRepository.upsert(server) }
-        }
+        runCatching { serverRepository.upsert(server) }
     }
 
     /**

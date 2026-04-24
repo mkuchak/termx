@@ -311,8 +311,7 @@ private fun AddEditServerSheetContent(
         if (state.authType == AuthType.PASSWORD) {
             Spacer(Modifier.height(6.dp))
             NoticeRow(
-                "Password storage requires vault unlock (coming in Phase 2.5). " +
-                    "You can still test now; on save the password isn't persisted yet.",
+                "Stored in the encrypted vault. Biometric will prompt on reconnect.",
             )
         }
 

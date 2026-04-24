@@ -36,6 +36,12 @@ data class AddEditServerUiState(
     val availableKeys: List<KeyPair> = emptyList(),
     val availableGroups: List<ServerGroup> = emptyList(),
     val isLoading: Boolean = false,
+    /**
+     * True in edit mode when the row has a `passwordAlias` but the vault
+     * was locked so we couldn't decrypt it. The UI renders a soft notice
+     * so the user knows why the password field is blank.
+     */
+    val passwordVaultLocked: Boolean = false,
 ) {
     /** True when the minimum set of fields needed to attempt a connection are present. */
     val canTestConnection: Boolean

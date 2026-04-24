@@ -402,7 +402,16 @@ class InstallCompanionUseCaseImpl @Inject constructor(
 
     private suspend fun resolveAuth(server: Server, passwordOverride: String?): SshAuth = when (server.authType) {
         AuthType.PASSWORD -> {
+            // Priority: in-memory draft override (wizard, pre-persist) →
+            // vault (saved server on cold start) → in-memory cache
+            // (password-typed-but-not-saved flows) → throw.
+            val fromVault = server.passwordAlias?.let { alias ->
+                runCatching { secretVault.load(alias) }
+                    .getOrNull()
+                    ?.let { bytes -> String(bytes, Charsets.UTF_8) }
+            }
             val pw = passwordOverride
+                ?: fromVault
                 ?: passwordCache.get(server.id)
                 ?: throw IllegalStateException(
                     "Password required. Open the terminal for this server and enter your password first.",

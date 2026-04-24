@@ -1,5 +1,6 @@
 package dev.kuch.termx.core.data.db.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -55,4 +56,5 @@ data class ServerEntity(
     val pingMs: Int?,
     val sortOrder: Int,
     val companionInstalled: Boolean,
+    @ColumnInfo(name = "password_alias") val passwordAlias: String? = null,
 )

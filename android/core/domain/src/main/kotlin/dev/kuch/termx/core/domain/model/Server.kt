@@ -18,6 +18,13 @@ data class Server(
     val username: String,
     val authType: AuthType,
     val keyPairId: UUID?,
+    /**
+     * Vault key for the SSH password. Null for key-auth; for password-auth,
+     * points at bytes stored under [dev.kuch.termx.core.data.vault.SecretVault]'s
+     * alias (UTF-8 encoded password). Wiped on delete. Never contains the
+     * plaintext.
+     */
+    val passwordAlias: String? = null,
     val groupId: UUID?,
     val useMosh: Boolean = true,
     val autoAttachTmux: Boolean = true,

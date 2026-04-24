@@ -28,5 +28,18 @@ val MIGRATION_1_2: Migration = object : Migration(1, 2) {
     }
 }
 
+/**
+ * v2 to v3: adds `password_alias` column to `servers`. The alias is a
+ * key into [dev.kuch.termx.core.data.vault.SecretVault] — actual bytes
+ * live in the Keystore-encrypted blob, never in Room. Existing rows are
+ * left with NULL; password-auth servers that pre-date this column get
+ * prompted for the password on next connect (same fallback as before).
+ */
+val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE servers ADD COLUMN password_alias TEXT")
+    }
+}
+
 /** Ordered list of every migration the database understands. */
-val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2)
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)

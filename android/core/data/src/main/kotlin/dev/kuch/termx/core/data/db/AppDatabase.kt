@@ -21,6 +21,8 @@ import dev.kuch.termx.core.data.db.entity.ServerGroupEntity
  *
  * - v1: initial — [ServerEntity], [KeyPairEntity], [ServerGroupEntity].
  * - v2: adds [CustomThemeEntity] for the Task #48 custom theme editor.
+ * - v3: adds `password_alias` column to `servers` so SSH passwords can
+ *   round-trip via [dev.kuch.termx.core.data.vault.SecretVault].
  */
 @Database(
     entities = [
@@ -29,7 +31,7 @@ import dev.kuch.termx.core.data.db.entity.ServerGroupEntity
         ServerGroupEntity::class,
         CustomThemeEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

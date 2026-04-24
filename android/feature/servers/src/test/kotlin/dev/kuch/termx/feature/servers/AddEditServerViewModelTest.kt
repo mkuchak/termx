@@ -1,9 +1,11 @@
 package dev.kuch.termx.feature.servers
 
+import dev.kuch.termx.core.data.prefs.PasswordCache
 import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.model.KeyAlgorithm
 import dev.kuch.termx.core.domain.model.KeyPair
 import dev.kuch.termx.feature.servers.fakes.FakeKeyPairRepository
+import dev.kuch.termx.feature.servers.fakes.FakeSecretVault
 import dev.kuch.termx.feature.servers.fakes.FakeServerGroupRepository
 import dev.kuch.termx.feature.servers.fakes.FakeServerRepository
 import dev.kuch.termx.feature.servers.fakes.FakeSshClient
@@ -26,12 +28,16 @@ import org.junit.Test
 /**
  * Unit tests for [AddEditServerViewModel].
  *
- * Covers two invariants:
+ * Covers three invariants:
  *
- *  - `save()` never writes the in-memory password field into the
- *    persisted [dev.kuch.termx.core.domain.model.Server] row. Password
- *    storage is deferred to a follow-up task; silently leaking the
- *    field here would be a spec regression.
+ *  - `save()` never writes the raw password into the persisted
+ *    [dev.kuch.termx.core.domain.model.Server] row's plaintext string
+ *    fields. The bytes live in [dev.kuch.termx.core.data.vault.SecretVault]
+ *    addressed by `passwordAlias` — leaking the plaintext into
+ *    `label`/`host`/etc. would be a spec regression.
+ *  - `save()` with password auth actually writes the password bytes to
+ *    the vault under alias `password-${id}` and seeds the in-memory
+ *    cache.
  *  - Every [SshException] subclass maps to a user-visible, non-generic
  *    TestResult.Error message. The strings are what users read after a
  *    failed Test connection — they must not surface stack traces.
@@ -51,21 +57,27 @@ class AddEditServerViewModelTest {
     private fun vm(
         servers: FakeServerRepository = FakeServerRepository(),
         keys: FakeKeyPairRepository = FakeKeyPairRepository(),
+        vault: FakeSecretVault = FakeSecretVault(),
+        passwordCache: PasswordCache = PasswordCache(),
         sshClient: FakeSshClient = FakeSshClient(),
     ): AddEditServerViewModel = AddEditServerViewModel(
         knownHostsPath = knownHosts,
         serverRepository = servers,
         keyPairRepository = keys,
         serverGroupRepository = FakeServerGroupRepository(),
+        secretVault = vault,
+        passwordCache = passwordCache,
         sshClient = sshClient,
     )
 
     // --- save() -----------------------------------------------------------
 
     @Test
-    fun `save with password auth persists row without storing the password`() = runTest {
+    fun `save with password auth stores password in vault and tags row with alias`() = runTest {
         val servers = FakeServerRepository()
-        val vm = vm(servers = servers)
+        val vault = FakeSecretVault()
+        val cache = PasswordCache()
+        val vm = vm(servers = servers, vault = vault, passwordCache = cache)
         vm.initialize(null)
         vm.onHostChange("example.test")
         vm.onUsernameChange("root")
@@ -78,9 +90,9 @@ class AddEditServerViewModelTest {
         assertEquals(id, persisted.id)
         assertEquals(AuthType.PASSWORD, persisted.authType)
         assertNull("password row must never carry a keyPairId", persisted.keyPairId)
-        // Spot-check that no field on Server holds the raw password.
-        // The data class has a fixed schema — a regression that sneaks
-        // the password into, say, `label` would fail here.
+        assertEquals("password-$id", persisted.passwordAlias)
+
+        // Raw plaintext must never appear in any persisted string field.
         val passwordLeakCandidates = listOf(
             persisted.label,
             persisted.host,
@@ -91,10 +103,18 @@ class AddEditServerViewModelTest {
             "password must not appear in any persisted string field",
             passwordLeakCandidates.any { it.contains("super-secret") },
         )
+
+        // Vault round-trip: the bytes are UTF-8 of the password.
+        val fromVault = vault.load("password-$id")
+        assertNotNull(fromVault)
+        assertEquals("super-secret", String(fromVault!!, Charsets.UTF_8))
+
+        // In-memory cache is seeded so any live terminal VM can reuse it.
+        assertEquals("super-secret", cache.get(id))
     }
 
     @Test
-    fun `save with key auth persists the selected keyPairId`() = runTest {
+    fun `save with key auth persists the selected keyPairId and no passwordAlias`() = runTest {
         val keyId = UUID.randomUUID()
         val keys = FakeKeyPairRepository().apply {
             put(
@@ -121,6 +141,7 @@ class AddEditServerViewModelTest {
         val persisted = servers.upserts.last()
         assertEquals(keyId, persisted.keyPairId)
         assertEquals(AuthType.KEY, persisted.authType)
+        assertNull("key-auth row must not carry a passwordAlias", persisted.passwordAlias)
     }
 
     // --- testConnection() error mapping ----------------------------------

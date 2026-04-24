@@ -23,6 +23,7 @@ fun ServerEntity.toDomain(): Server = Server(
     username = username,
     authType = AuthType.valueOf(authType),
     keyPairId = keyPairId,
+    passwordAlias = passwordAlias,
     groupId = groupId,
     useMosh = useMosh,
     autoAttachTmux = autoAttachTmux,
@@ -49,6 +50,7 @@ fun Server.toEntity(): ServerEntity = ServerEntity(
     pingMs = pingMs,
     sortOrder = sortOrder,
     companionInstalled = companionInstalled,
+    passwordAlias = passwordAlias,
 )
 
 fun KeyPairEntity.toDomain(): KeyPair = KeyPair(

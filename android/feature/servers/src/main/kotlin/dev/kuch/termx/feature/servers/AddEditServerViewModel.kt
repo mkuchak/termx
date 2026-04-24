@@ -5,6 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.kuch.termx.core.data.di.KnownHostsPath
+import dev.kuch.termx.core.data.prefs.PasswordCache
+import dev.kuch.termx.core.data.vault.SecretVault
+import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.model.Server
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
@@ -37,16 +40,17 @@ import javax.inject.Inject
  *    human strings for [TestResult.Error].
  *  - Build a [Server] from the form and upsert it via [ServerRepository].
  *
- * Password + key-auth test connection caveats:
+ * Password + key-auth save behaviour:
  *
- *  - Password auth: the test handshake works end-to-end (password is held in
- *    memory only), but the password is NOT persisted on save — Task #23 lands
- *    that after [dev.kuch.termx.core.data.vault.SecretVault] is wired.
- *  - Key auth: the private bytes live behind
- *    [dev.kuch.termx.core.data.vault.SecretVault], which Task #20 wires into
- *    the graph. Until that lands, tapping "Test connection" with auth=KEY
- *    reports a clear deferred-feature message instead of silently passing or
- *    failing with a misleading auth-rejected error.
+ *  - Password auth: the test handshake works end-to-end, and [save] persists
+ *    the password under alias `password-${id}` in [SecretVault] (UTF-8 bytes,
+ *    Keystore-wrapped AES-GCM). The in-memory [PasswordCache] is seeded too
+ *    so any live terminal ViewModel can reuse it without a fresh biometric
+ *    prompt this session.
+ *  - Key auth: the private bytes live behind [SecretVault]; pick-a-key here
+ *    just stores the keypair id on the row. Test connection with auth=KEY
+ *    reports a clear deferred-feature message until Task #23's key-auth test
+ *    flow lands.
  */
 @HiltViewModel
 class AddEditServerViewModel @Inject constructor(
@@ -54,6 +58,8 @@ class AddEditServerViewModel @Inject constructor(
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val serverGroupRepository: ServerGroupRepository,
+    private val secretVault: SecretVault,
+    private val passwordCache: PasswordCache,
     private val sshClient: SshClient,
 ) : ViewModel() {
 
@@ -86,6 +92,25 @@ class AddEditServerViewModel @Inject constructor(
             viewModelScope.launch {
                 val server = serverRepository.getById(serverId)
                 if (server != null) {
+                    // Try to decrypt the stored password for password-auth
+                    // rows. If the vault is locked we leave the field blank
+                    // and flag the state so the UI can nudge the user to
+                    // unlock before editing.
+                    var password = ""
+                    var vaultLocked = false
+                    val alias = server.passwordAlias
+                    if (server.authType == AuthType.PASSWORD && alias != null) {
+                        try {
+                            val bytes = secretVault.load(alias)
+                            if (bytes != null) {
+                                password = String(bytes, Charsets.UTF_8)
+                            }
+                        } catch (_: VaultLockedException) {
+                            vaultLocked = true
+                        } catch (t: Throwable) {
+                            Log.w(LOG_TAG, "failed to load password from vault", t)
+                        }
+                    }
                     _state.update {
                         it.copy(
                             id = server.id,
@@ -95,6 +120,8 @@ class AddEditServerViewModel @Inject constructor(
                             username = server.username,
                             authType = server.authType,
                             selectedKeyPairId = server.keyPairId,
+                            password = password,
+                            passwordVaultLocked = vaultLocked,
                             selectedGroupId = server.groupId,
                             useMosh = server.useMosh,
                             autoAttachTmux = server.autoAttachTmux,
@@ -212,9 +239,13 @@ class AddEditServerViewModel @Inject constructor(
     /**
      * Persist the current form as a new or updated [Server] row.
      *
-     * Secrets are NOT written here — password storage is deferred to Task #23
-     * (needs [dev.kuch.termx.core.data.vault.SecretVault]). Returns the row id
-     * so the caller can `onSaved(id)` and pop the sheet.
+     * For password-auth rows with a non-blank password, writes the bytes
+     * to [secretVault] under alias `password-${id}` and populates
+     * [passwordCache] so any live terminal VM can reuse it without
+     * re-prompting biometric. Switching back to key-auth (or clearing the
+     * password field) removes the prior alias from the vault.
+     *
+     * Returns the row id so the caller can `onSaved(id)` and pop the sheet.
      */
     suspend fun save(): UUID {
         val s = _state.value
@@ -226,6 +257,31 @@ class AddEditServerViewModel @Inject constructor(
         // the end of the model). Real reordering happens in Task #21.
         val existing = if (s.id != null) serverRepository.getById(s.id) else null
 
+        val priorAlias = existing?.passwordAlias
+        val shouldStorePassword = s.authType == AuthType.PASSWORD && s.password.isNotBlank()
+        val alias: String? = if (shouldStorePassword) "password-$id" else null
+
+        if (shouldStorePassword) {
+            try {
+                secretVault.store(alias!!, s.password.toByteArray(Charsets.UTF_8))
+                // Seed the in-memory cache so this session's already-live
+                // terminal ViewModels can reuse the password without a
+                // fresh biometric prompt on reconnect.
+                passwordCache.put(id, s.password)
+            } catch (t: VaultLockedException) {
+                Log.w(LOG_TAG, "vault locked; falling back to in-memory cache", t)
+                // Vault locked — fall back to the in-memory cache. The row
+                // still persists; the user will re-prompt on next cold
+                // start.
+                passwordCache.put(id, s.password)
+            }
+        } else if (priorAlias != null) {
+            // Auth type flipped away from password, or the password was
+            // cleared. Scrub the old alias to avoid orphaned vault entries.
+            runCatching { secretVault.delete(priorAlias) }
+            passwordCache.clear(id)
+        }
+
         val server = Server(
             id = id,
             label = label,
@@ -234,6 +290,7 @@ class AddEditServerViewModel @Inject constructor(
             username = s.username,
             authType = s.authType,
             keyPairId = if (s.authType == AuthType.KEY) s.selectedKeyPairId else null,
+            passwordAlias = alias,
             groupId = s.selectedGroupId,
             useMosh = s.useMosh,
             autoAttachTmux = s.autoAttachTmux,
@@ -246,17 +303,26 @@ class AddEditServerViewModel @Inject constructor(
 
         serverRepository.upsert(server)
 
-        // TODO(#23): when SecretVault lands, persist s.password here for
-        //   password-auth rows. For now, the password only survives as long
-        //   as the form is open — see the notice in AddEditServerSheet.
-
         return id
     }
 
-    /** Remove the server row being edited. No-op in add mode. */
+    /**
+     * Remove the server row being edited plus any vault + cache state it
+     * owned. No-op in add mode.
+     *
+     * The linked [dev.kuch.termx.core.domain.model.KeyPair] is intentionally
+     * left alone — a key may be shared across several servers, so key
+     * deletion is a separate operation on the Keys screen.
+     */
     suspend fun delete() {
         val id = _state.value.id ?: return
+        val existing = serverRepository.getById(id)
+        val alias = existing?.passwordAlias
         serverRepository.delete(id)
+        if (alias != null) {
+            runCatching { secretVault.delete(alias) }
+        }
+        passwordCache.clear(id)
     }
 
     private companion object {
