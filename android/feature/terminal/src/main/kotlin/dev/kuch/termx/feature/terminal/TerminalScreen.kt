@@ -164,6 +164,7 @@ fun TerminalScreen(
                         if (active != null) {
                             ConnectedPane(
                                 session = active,
+                                tmuxBacked = uiState.tmuxBacked,
                                 onWriteToPty = viewModel::writeToPty,
                                 viewModel = viewModel,
                             )
@@ -329,6 +330,7 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
 @Composable
 private fun ConnectedPane(
     session: RemoteTerminalSession,
+    tmuxBacked: Boolean,
     onWriteToPty: (ByteArray) -> Unit,
     viewModel: TerminalViewModel,
 ) {
@@ -366,6 +368,9 @@ private fun ConnectedPane(
             themeId = themeId,
             onFontSizeChanged = viewModel::onFontSizeChanged,
             onUrlDoubleTap = viewModel::onUrlDoubleTap,
+            tmuxBacked = tmuxBacked,
+            onStartCopyMode = viewModel::startCopyMode,
+            onEndCopyMode = viewModel::endCopyMode,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -472,6 +477,9 @@ private fun TerminalPane(
     themeId: String,
     onFontSizeChanged: (Int) -> Unit,
     onUrlDoubleTap: (String) -> Unit,
+    tmuxBacked: Boolean,
+    onStartCopyMode: () -> Unit,
+    onEndCopyMode: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Single pinch-zoom state bag per composable instance. Holds the
@@ -479,6 +487,16 @@ private fun TerminalPane(
     // DataStore on every frame — the persist happens once in
     // `onScaleEnd`.
     val pinchState = remember { PinchZoomState(fontSizeSp) }
+
+    // Task #28 — tmux-aware two-finger scrollback. The state bag holds
+    // the rolling per-pointer Y anchor so we can forward arrow keys as
+    // the user drags. Re-created per composition so a tab swap resets.
+    val tmuxScrollState = remember { TmuxScrollState() }
+    // Keep the latest [tmuxBacked] in a mutable holder so the
+    // onTouchListener (installed in `factory` once) always sees the
+    // current value without being recreated on every recomposition.
+    val tmuxBackedRef = remember { BooleanHolder(tmuxBacked) }
+    tmuxBackedRef.value = tmuxBacked
 
     AndroidView(
         modifier = modifier,
@@ -556,7 +574,26 @@ private fun TerminalPane(
                 // would starve single-finger moves if we returned from here.
                 scaleDetector.onTouchEvent(ev)
                 doubleTapDetector.onTouchEvent(ev)
-                view.onTouchEvent(ev)
+                // Task #28 — two-finger vertical scroll on a tmux-backed
+                // tab enters tmux copy-mode and forwards drag deltas as
+                // arrow keys. Consumes the event (doesn't forward to
+                // Termux's onTouchEvent) so the local ring-buffer scroll
+                // doesn't fight tmux's larger scrollback.
+                val consumedByTmux = if (tmuxBackedRef.value) {
+                    handleTmuxScrollGesture(
+                        ev = ev,
+                        scaleInProgress = scaleDetector.isInProgress,
+                        state = tmuxScrollState,
+                        onStart = onStartCopyMode,
+                        onEnd = onEndCopyMode,
+                        onWriteToPty = onWriteToPty,
+                    )
+                } else {
+                    false
+                }
+                if (!consumedByTmux) {
+                    view.onTouchEvent(ev)
+                }
                 true
             }
 
@@ -586,6 +623,117 @@ private fun TerminalPane(
 
 /** Live font-size cache for the pinch-zoom gesture. */
 private class PinchZoomState(var currentSp: Int)
+
+/**
+ * Mutable holder so the long-lived [android.view.View.OnTouchListener]
+ * installed once in the AndroidView factory always sees the current
+ * value of a Compose prop. Re-assigning the value in the outer body
+ * costs nothing (no recomposition).
+ */
+private class BooleanHolder(var value: Boolean)
+
+/**
+ * Per-tab rolling state for the Task #28 two-finger scroll gesture.
+ *
+ *  - [active]: `true` once we've seen a 2-pointer ACTION_MOVE that
+ *    crossed [TMUX_SCROLL_SLOP_PX] of vertical travel. Stays true until
+ *    the gesture ends (last pointer up or ACTION_CANCEL).
+ *  - [lastY]: average Y of the two pointers at the last frame we
+ *    emitted an arrow key for. Drag deltas smaller than
+ *    [TMUX_SCROLL_STEP_PX] are accumulated, not forwarded.
+ *  - [anchorY]: initial average Y on the first 2-pointer DOWN. Used
+ *    to decide "first drag direction" for the slop check.
+ */
+private class TmuxScrollState {
+    var active: Boolean = false
+    var anchorY: Float = 0f
+    var lastY: Float = 0f
+}
+
+/**
+ * Task #28 — handle a raw [MotionEvent] as part of the two-finger
+ * vertical-scroll gesture. Returns `true` when the event belongs to
+ * the gesture (and the caller should *not* forward it to
+ * [TerminalView.onTouchEvent]).
+ *
+ * Flow:
+ *  1. Two fingers land → remember anchor Y; don't enter copy-mode yet
+ *     (the user might be pinching).
+ *  2. As they drag vertically past [TMUX_SCROLL_SLOP_PX] without a
+ *     pinch, flip [TmuxScrollState.active], fire [onStart] so the VM
+ *     sends Ctrl-B `[`.
+ *  3. Each subsequent [TMUX_SCROLL_STEP_PX] of drag emits one arrow
+ *     key (up = scroll history up, down = scroll history down).
+ *  4. Pointer count drops to <2 or ACTION_CANCEL → fire [onEnd] so
+ *     the VM sends `q` to quit copy-mode.
+ */
+private fun handleTmuxScrollGesture(
+    ev: MotionEvent,
+    scaleInProgress: Boolean,
+    state: TmuxScrollState,
+    onStart: () -> Unit,
+    onEnd: () -> Unit,
+    onWriteToPty: (ByteArray) -> Unit,
+): Boolean {
+    val pointerCount = ev.pointerCount
+    when (ev.actionMasked) {
+        MotionEvent.ACTION_POINTER_DOWN -> {
+            if (pointerCount == 2) {
+                val avgY = (ev.getY(0) + ev.getY(1)) / 2f
+                state.anchorY = avgY
+                state.lastY = avgY
+                // Don't claim the event yet — the user might pinch, and
+                // the scale detector already saw the ACTION_POINTER_DOWN.
+            }
+            return false
+        }
+        MotionEvent.ACTION_MOVE -> {
+            if (scaleInProgress) {
+                // Pinch wins — abandon any in-progress scrollback and
+                // bail out of copy-mode if we entered it.
+                if (state.active) {
+                    state.active = false
+                    onEnd()
+                }
+                return false
+            }
+            if (pointerCount < 2) return state.active // still consume if active
+            val avgY = (ev.getY(0) + ev.getY(1)) / 2f
+            if (!state.active) {
+                if (kotlin.math.abs(avgY - state.anchorY) > TMUX_SCROLL_SLOP_PX) {
+                    state.active = true
+                    state.lastY = avgY
+                    onStart()
+                    return true
+                }
+                return false
+            }
+            val delta = avgY - state.lastY
+            val steps = (delta / TMUX_SCROLL_STEP_PX).toInt()
+            if (steps != 0) {
+                state.lastY += steps * TMUX_SCROLL_STEP_PX
+                val bytes = if (steps > 0) TerminalGestureHandler.ARROW_UP
+                else TerminalGestureHandler.ARROW_DOWN
+                repeat(kotlin.math.abs(steps)) { onWriteToPty(bytes) }
+            }
+            return true
+        }
+        MotionEvent.ACTION_POINTER_UP,
+        MotionEvent.ACTION_UP,
+        MotionEvent.ACTION_CANCEL -> {
+            if (state.active) {
+                state.active = false
+                onEnd()
+                return true
+            }
+            return false
+        }
+        else -> return state.active
+    }
+}
+
+private const val TMUX_SCROLL_SLOP_PX = 24f
+private const val TMUX_SCROLL_STEP_PX = 32f
 
 /**
  * Placeholder client for TerminalView. Task #17 adds real gesture

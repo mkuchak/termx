@@ -21,6 +21,16 @@ android {
 
     testOptions {
         unitTests.isReturnDefaultValues = true
+        unitTests.isIncludeAndroidResources = true
+    }
+
+    // Room's MigrationTestHelper reads the schema JSON emitted by KSP into
+    // `schemas/`. Expose that directory as an `assets` root so it's on the
+    // classpath of the Robolectric-powered unit test run.
+    sourceSets {
+        getByName("test") {
+            assets.srcDirs(files("$projectDir/schemas"))
+        }
     }
 }
 
@@ -51,4 +61,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
+    testImplementation(libs.androidx.room.testing)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.androidx.test.ext.junit)
 }

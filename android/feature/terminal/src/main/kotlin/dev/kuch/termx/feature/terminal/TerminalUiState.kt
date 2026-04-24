@@ -25,6 +25,9 @@ import java.util.UUID
  *    swipe-up-detach and kill-session affordances.
  *  - [tmuxMissing] surfaces the "we wanted tmux but it's not installed"
  *    banner from the auto-attach path (Task #25).
+ *  - [tmuxBacked] is `true` once the initial PTY successfully attached
+ *    to a tmux session (Task #28 gate for the copy-mode scrollback
+ *    gesture). Mutually exclusive with [tmuxMissing] in practice.
  *  - [error] is the connection-level failure message; reset on the
  *    next `connect()` attempt.
  */
@@ -34,6 +37,7 @@ data class TerminalUiState(
     val activeTabName: String? = null,
     val openTabs: Set<String> = emptySet(),
     val tmuxMissing: Boolean = false,
+    val tmuxBacked: Boolean = false,
     val error: String? = null,
     /**
      * When non-null, the UI should render a password prompt dialog. Set

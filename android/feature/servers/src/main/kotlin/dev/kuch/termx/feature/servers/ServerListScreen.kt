@@ -17,6 +17,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -209,6 +213,7 @@ fun ServerListScreen(
                         onToggleGroup = viewModel::onToggleGroupCollapse,
                         onMoveUp = viewModel::onMoveUp,
                         onMoveDown = viewModel::onMoveDown,
+                        onReorder = viewModel::onReorder,
                     )
                 }
             }
@@ -266,6 +271,22 @@ fun ServerListScreen(
     }
 }
 
+/**
+ * Task #53 — real drag-to-reorder.
+ *
+ * We render the full (grouped) list into a single [LazyColumn] and
+ * power the drag interactions with `sh.calvin.reorderable`. A local
+ * [displayBuckets] copy of [buckets] tracks the in-flight order during
+ * a drag: [rememberReorderableLazyListState]'s onMove callback swaps
+ * two servers in place (within the same group only — cross-group drag
+ * is a follow-up), and at drag-stop the final ordering is published
+ * to the ViewModel via [onReorder].
+ *
+ * Dragging is long-press activated (via `longPressDraggableHandle`) so
+ * the row's tap / swipe / overflow-button affordances all keep working.
+ * Haptic feedback fires on drag-start and drag-stop; item translation +
+ * a subtle shadow is handled by [ReorderableItem]'s default animation.
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ServerListBody(
@@ -279,16 +300,56 @@ private fun ServerListBody(
     onToggleGroup: (UUID) -> Unit,
     onMoveUp: (UUID) -> Unit,
     onMoveDown: (UUID) -> Unit,
+    onReorder: (UUID?, List<UUID>) -> Unit,
 ) {
     val listState = rememberLazyListState()
     val now = remember { Instant.now() }
+
+    // Local copy of the bucket list that the drag reorder mutates in
+    // place while a drag is in progress. The `remember(buckets)` key
+    // resets the local state whenever the upstream flow re-emits so
+    // edits / deletes / group changes still flow through.
+    var displayBuckets by remember(buckets) { mutableStateOf(buckets) }
+    // Track which bucket id the active drag belongs to, so we push
+    // the final order for that bucket (and only that one) to Room on
+    // drop. Null = no drag in progress.
+    var pendingReorderGroupId: UUID? by remember(buckets) { mutableStateOf(null) }
+
+    val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
+        // Find the bucket whose server list contains the dragged key.
+        val fromKey = from.key as? String ?: return@rememberReorderableLazyListState
+        val toKey = to.key as? String ?: return@rememberReorderableLazyListState
+        val fromId = runCatching { UUID.fromString(fromKey) }.getOrNull()
+            ?: return@rememberReorderableLazyListState
+        val toId = runCatching { UUID.fromString(toKey) }.getOrNull()
+            ?: return@rememberReorderableLazyListState
+        val sourceBucketIndex = displayBuckets.indexOfFirst { b ->
+            b.servers.any { it.id == fromId }
+        }
+        if (sourceBucketIndex < 0) return@rememberReorderableLazyListState
+        val sourceBucket = displayBuckets[sourceBucketIndex]
+        // Scope within-group only; reject the move if the target key
+        // lives in a different bucket.
+        val targetInSameBucket = sourceBucket.servers.any { it.id == toId }
+        if (!targetInSameBucket) return@rememberReorderableLazyListState
+        val newServers = sourceBucket.servers.toMutableList()
+        val fromIdx = newServers.indexOfFirst { it.id == fromId }
+        val toIdx = newServers.indexOfFirst { it.id == toId }
+        if (fromIdx < 0 || toIdx < 0 || fromIdx == toIdx) return@rememberReorderableLazyListState
+        newServers.add(toIdx, newServers.removeAt(fromIdx))
+        displayBuckets = displayBuckets.toMutableList().also {
+            it[sourceBucketIndex] = sourceBucket.copy(servers = newServers)
+        }
+        pendingReorderGroupId = sourceBucket.group?.id
+    }
+    val haptic = LocalHapticFeedback.current
 
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
         modifier = Modifier.fillMaxSize(),
     ) {
-        buckets.forEach { bucket ->
+        displayBuckets.forEach { bucket ->
             val headerName = bucket.group?.name ?: "Ungrouped"
             val count = bucket.servers.size
             stickyHeader(key = bucket.group?.id?.toString() ?: "__ungrouped__") {
@@ -302,23 +363,46 @@ private fun ServerListBody(
             if (!bucket.isCollapsed) {
                 items(
                     items = bucket.servers,
-                    key = { it.id },
+                    key = { it.id.toString() },
                 ) { server ->
                     val index = bucket.servers.indexOf(server)
-                    SwipeableServerCard(
-                        server = server,
-                        reorderMode = reorderMode,
-                        canMoveUp = index > 0,
-                        canMoveDown = index < bucket.servers.lastIndex,
-                        now = now,
-                        onTap = { onServerTap(server.id) },
-                        onEdit = { onEdit(server.id) },
-                        onDuplicate = { onDuplicate(server.id) },
-                        onDelete = { onDelete(server.id) },
-                        onMoveToGroup = { onMoveToGroupRequest(server.id) },
-                        onMoveUp = { onMoveUp(server.id) },
-                        onMoveDown = { onMoveDown(server.id) },
-                    )
+                    ReorderableItem(reorderableState, key = server.id.toString()) {
+                        val dragHandle = Modifier.longPressDraggableHandle(
+                            onDragStarted = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            },
+                            onDragStopped = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                val gid = pendingReorderGroupId
+                                pendingReorderGroupId = null
+                                // Compute the final ordered id list for
+                                // the bucket that was dragged — VM
+                                // persists `sortOrder = N` for position
+                                // N in a single Room transaction.
+                                val final = displayBuckets
+                                    .firstOrNull { b -> b.group?.id == gid }
+                                    ?.servers
+                                    ?.map { it.id }
+                                    .orEmpty()
+                                if (final.isNotEmpty()) onReorder(gid, final)
+                            },
+                        )
+                        SwipeableServerCard(
+                            server = server,
+                            reorderMode = reorderMode,
+                            canMoveUp = index > 0,
+                            canMoveDown = index < bucket.servers.lastIndex,
+                            now = now,
+                            onTap = { onServerTap(server.id) },
+                            onEdit = { onEdit(server.id) },
+                            onDuplicate = { onDuplicate(server.id) },
+                            onDelete = { onDelete(server.id) },
+                            onMoveToGroup = { onMoveToGroupRequest(server.id) },
+                            onMoveUp = { onMoveUp(server.id) },
+                            onMoveDown = { onMoveDown(server.id) },
+                            dragHandleModifier = dragHandle,
+                        )
+                    }
                 }
             }
         }
@@ -340,6 +424,7 @@ private fun SwipeableServerCard(
     onMoveToGroup: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
+    dragHandleModifier: Modifier = Modifier,
 ) {
     // In reorder mode the swipe would conflict with the up/down arrows, so
     // we skip the dismiss wrapper entirely — the user opted into arrow
@@ -401,6 +486,7 @@ private fun SwipeableServerCard(
             onMoveUp = onMoveUp,
             onMoveDown = onMoveDown,
             now = now,
+            modifier = dragHandleModifier,
         )
     }
 }

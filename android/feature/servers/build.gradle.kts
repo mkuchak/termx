@@ -42,6 +42,7 @@ dependencies {
     implementation(libs.compose.material.icons.extended)
     implementation(libs.navigation.compose)
     implementation(libs.kotlinx.datetime)
+    implementation(libs.reorderable)
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

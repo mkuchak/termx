@@ -20,6 +20,7 @@ import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
+import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
 import dev.kuch.termx.libs.sshnative.PtyChannel
 import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
@@ -127,6 +128,17 @@ class TerminalViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(TerminalUiState())
     val state: StateFlow<TerminalUiState> = _state.asStateFlow()
+
+    /**
+     * Task #28 — true between the two-finger scrollback gesture entering
+     * tmux `copy-mode` (prefix `[`) and the `q` keystroke that exits it.
+     * The gesture layer flips this on pointerDown, forwards drag deltas
+     * as arrow keys, then flips it off on pointerUp. Kept as a StateFlow
+     * so future UI (e.g. a "copy-mode" chip) can observe it without
+     * coupling to the gesture handler.
+     */
+    private val _inCopyMode = MutableStateFlow(false)
+    val inCopyMode: StateFlow<Boolean> = _inCopyMode.asStateFlow()
 
     /**
      * Currently-selected terminal font size in sp. Read eagerly so the
@@ -255,6 +267,7 @@ class TerminalViewModel @Inject constructor(
             activeTabName = tab.name,
             openTabs = tabs.keys.toSet(),
             tmuxMissing = tmuxMissing,
+            tmuxBacked = wantsTmux && tmuxAvailable,
             error = null,
         )
     }
@@ -505,6 +518,37 @@ class TerminalViewModel @Inject constructor(
         val target = SshTarget(host = host, port = port, username = user, knownHostsPath = knownHostsPath)
         val auth = SshAuth.PublicKey(privateKeyPem = keyBytes, passphrase = null)
         return target to auth
+    }
+
+    /**
+     * Task #28 — invoked by the two-finger scroll gesture on the first
+     * drag delta. Enters tmux `copy-mode` on the active PTY and flips
+     * [inCopyMode] so repeated drags don't re-enter. No-op if there's
+     * no active tab or we're already in copy-mode.
+     */
+    fun startCopyMode() {
+        if (_inCopyMode.value) return
+        val active = _state.value.activeTabName ?: return
+        val channel = tabs[active]?.pty ?: return
+        _inCopyMode.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            TerminalGestureHandler.enterTmuxCopyMode(channel)
+        }
+    }
+
+    /**
+     * Task #28 — invoked by the gesture's drag-end callback. Sends `q`
+     * to leave tmux `copy-mode` and clears [inCopyMode]. No-op if we
+     * weren't in copy-mode.
+     */
+    fun endCopyMode() {
+        if (!_inCopyMode.value) return
+        _inCopyMode.value = false
+        val active = _state.value.activeTabName ?: return
+        val channel = tabs[active]?.pty ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            TerminalGestureHandler.exitTmuxCopyMode(channel)
+        }
     }
 
     /**

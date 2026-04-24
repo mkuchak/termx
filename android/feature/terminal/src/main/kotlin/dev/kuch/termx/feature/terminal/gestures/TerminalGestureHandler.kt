@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
 import com.termux.view.TerminalView
+import dev.kuch.termx.libs.sshnative.PtyChannel
 
 /**
  * Pure utilities for Task #17's terminal gestures — font-size clamping
@@ -28,8 +29,41 @@ object TerminalGestureHandler {
         '.', ',', ')', ']', '}', '\'', '"', ';', ':',
     )
 
+    /**
+     * Tmux prefix key (Ctrl-B, assumes default binding) followed by `[` —
+     * the canonical sequence to enter tmux `copy-mode`. Task #28's
+     * two-finger scroll on a tmux-backed tab sends these bytes before
+     * forwarding drag deltas as arrow keys so the user can scrub tmux's
+     * scrollback without ever leaving the terminal surface.
+     */
+    private val TMUX_ENTER_COPY_MODE: ByteArray = byteArrayOf(0x02, '['.code.toByte())
+
+    /** Single `q` keystroke to exit tmux `copy-mode`. */
+    private val TMUX_EXIT_COPY_MODE: ByteArray = byteArrayOf('q'.code.toByte())
+
+    /** ANSI `ESC [ A` — cursor/arrow up. Used as tmux copy-mode scroll-up. */
+    val ARROW_UP: ByteArray = byteArrayOf(0x1b, '['.code.toByte(), 'A'.code.toByte())
+
+    /** ANSI `ESC [ B` — cursor/arrow down. Used as tmux copy-mode scroll-down. */
+    val ARROW_DOWN: ByteArray = byteArrayOf(0x1b, '['.code.toByte(), 'B'.code.toByte())
+
     /** Clamp a candidate font size (sp) into the supported range. */
     fun clampFontSize(sp: Int): Int = sp.coerceIn(MIN_SP, MAX_SP)
+
+    /**
+     * Send Ctrl-B `[` to [channel] to enter tmux copy-mode. Safe to call
+     * from a coroutine context; callers typically dispatch on Dispatchers.IO.
+     */
+    suspend fun enterTmuxCopyMode(channel: PtyChannel) {
+        runCatching { channel.write(TMUX_ENTER_COPY_MODE) }
+            .onFailure { t -> Log.w(LOG_TAG, "enterTmuxCopyMode failed", t) }
+    }
+
+    /** Send `q` to [channel] to exit tmux copy-mode. */
+    suspend fun exitTmuxCopyMode(channel: PtyChannel) {
+        runCatching { channel.write(TMUX_EXIT_COPY_MODE) }
+            .onFailure { t -> Log.w(LOG_TAG, "exitTmuxCopyMode failed", t) }
+    }
 
     /**
      * If the word under (x, y) on [view] parses as an http(s) URL, return
