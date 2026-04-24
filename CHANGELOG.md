@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.4](https://github.com/mkuchak/termx/compare/v0.3.3...v0.3.4) (2026-04-24)
+
+### Bug Fixes
+
+* **wizard+tmux:** prevent uncaught exceptions from crashing the Activity ([f2623c0](https://github.com/mkuchak/termx/commit/f2623c00927d27651b90cb25f675ff82644ef8e8))
+
 ## [0.3.3](https://github.com/mkuchak/termx/compare/v0.3.2...v0.3.3) (2026-04-24)
 
 ### Bug Fixes
