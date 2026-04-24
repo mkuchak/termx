@@ -9,15 +9,17 @@ import java.security.Security
 /**
  * Entry point to this module. Build one and call [connect] for each VPS.
  *
- * BouncyCastle is registered at provider position 1 on first instantiation
- * (no-op on subsequent calls) so Ed25519 keys and modern MAC/KEX algorithms
- * resolve against BC instead of the stock Android JCA provider.
+ * Android ships a stripped BouncyCastle pre-registered under the name `"BC"`
+ * that does not expose modern primitives like X25519 or Ed25519. We remove
+ * that stub and insert the full `bcprov-jdk18on` provider at position 1 so
+ * sshj's curve25519-sha256 KEX, Ed25519 host keys, and RFC 7748 X25519 key
+ * agreement all resolve. Safe to re-run: [Security.removeProvider] is a
+ * no-op when the provider name is absent.
  */
 class SshClient {
     init {
-        if (Security.getProvider(BouncyCastleProvider.PROVIDER_NAME) == null) {
-            Security.insertProviderAt(BouncyCastleProvider(), 1)
-        }
+        Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
+        Security.insertProviderAt(BouncyCastleProvider(), 1)
     }
 
     /**
