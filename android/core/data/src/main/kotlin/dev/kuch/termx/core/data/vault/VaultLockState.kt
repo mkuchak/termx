@@ -14,7 +14,7 @@ import javax.inject.Singleton
  * place that needs a paranoid-mode re-lock after a sensitive operation.
  *
  * Observed by:
- * - [KeystoreSecretVault] to gate store / load / delete calls.
+ * - [FileSystemSecretVault] to gate store / load / delete calls.
  * - The navigation layer (see `TermxNavHost`) to route to the unlock screen
  *   whenever state flips to [State.Locked].
  */

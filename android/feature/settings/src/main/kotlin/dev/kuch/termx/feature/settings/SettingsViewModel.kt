@@ -20,9 +20,9 @@ import kotlinx.coroutines.launch
  * [AppPreferences] — reads are [StateFlow]s, writes are fire-and-forget.
  *
  * Task #41 adds the Gemini API key surface: the key itself lives in the
- * Keystore-backed [GeminiApiKeyStore], never in the plain DataStore
- * alongside theme/font preferences. The UI only knows whether a key is
- * present and can issue "save" / "clear" verbs.
+ * sandboxed [GeminiApiKeyStore], never in the plain DataStore alongside
+ * theme/font preferences. The UI only knows whether a key is present
+ * and can issue "save" / "clear" verbs.
  */
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -65,8 +65,8 @@ class SettingsViewModel @Inject constructor(
     }
 
     /**
-     * Persist [key] into the Keystore-backed vault. Empty input is
-     * treated as "no key" — same effect as [clearGeminiKey].
+     * Persist [key] into the sandboxed vault. Empty input is treated as
+     * "no key" — same effect as [clearGeminiKey].
      */
     fun saveGeminiKey(key: String) {
         viewModelScope.launch {

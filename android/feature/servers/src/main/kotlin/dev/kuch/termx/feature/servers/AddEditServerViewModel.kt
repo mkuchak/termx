@@ -43,10 +43,10 @@ import javax.inject.Inject
  * Password + key-auth save behaviour:
  *
  *  - Password auth: the test handshake works end-to-end, and [save] persists
- *    the password under alias `password-${id}` in [SecretVault] (UTF-8 bytes,
- *    Keystore-wrapped AES-GCM). The in-memory [PasswordCache] is seeded too
- *    so any live terminal ViewModel can reuse it without a fresh biometric
- *    prompt this session.
+ *    the password under alias `password-${id}` in [SecretVault] (UTF-8 bytes
+ *    in the app's sandboxed, biometric-gated vault blob). The in-memory
+ *    [PasswordCache] is seeded too so any live terminal ViewModel can reuse
+ *    it without a fresh biometric prompt this session.
  *  - Key auth: the private bytes live behind [SecretVault]; pick-a-key here
  *    just stores the keypair id on the row. Test connection with auth=KEY
  *    reports a clear deferred-feature message until Task #23's key-auth test

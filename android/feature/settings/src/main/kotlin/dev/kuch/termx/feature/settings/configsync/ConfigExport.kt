@@ -57,10 +57,11 @@ data class ExportedGroup(
 
 /**
  * Key row as exported. [keystoreAlias] stays as a plain reference —
- * the private bytes live in the Android Keystore and cannot be
- * round-tripped through JSON by design. On import, rows with aliases
- * that don't resolve are flagged and the user is prompted to re-import
- * each private key manually.
+ * the private bytes live in the sandboxed vault and are deliberately
+ * NOT round-tripped through JSON (the export is intended to be safe
+ * to share across machines). On import, rows with aliases that don't
+ * resolve are flagged and the user is prompted to re-import each
+ * private key manually.
  */
 @Serializable
 data class ExportedKey(

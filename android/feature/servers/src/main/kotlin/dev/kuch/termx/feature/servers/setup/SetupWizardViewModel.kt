@@ -267,7 +267,7 @@ class SetupWizardViewModel @Inject constructor(
             // would clobber that flag back to false.
             val existing = serverRepository.getById(id)
 
-            // Persist the SSH password to the Keystore-backed vault under
+            // Persist the SSH password to the sandboxed vault under
             // alias `password-${id}` — mirrors `AddEditServerViewModel.save`.
             // The in-memory cache was already seeded in
             // `ensureDraftPersisted` but users who jump straight to step 4

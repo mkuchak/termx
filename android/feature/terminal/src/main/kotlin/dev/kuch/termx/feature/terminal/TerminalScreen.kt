@@ -928,7 +928,7 @@ private const val VOL_DOWN_PASSTHROUGH_MS = 500L
 /**
  * Prompts the user for a password when the server row uses password auth
  * but neither the vault nor the in-memory cache has a value. The entered
- * value is persisted to the device's Keystore-backed vault by
+ * value is persisted to the app's sandboxed vault by
  * [TerminalViewModel.submitPassword] so cold-start reconnects don't
  * re-prompt.
  */
@@ -945,7 +945,7 @@ private fun PasswordPromptDialog(
         title = { Text("Password for $serverLabel") },
         text = {
             Column {
-                Text("Saved to this device's Keystore-backed vault once you connect.")
+                Text("Saved to this app's private, biometric-gated vault once you connect.")
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     value = password,

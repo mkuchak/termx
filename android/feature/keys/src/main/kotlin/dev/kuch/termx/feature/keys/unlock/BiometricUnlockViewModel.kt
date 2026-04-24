@@ -26,22 +26,10 @@ import javax.inject.Inject
  * only flip [VaultLockState] on success so the rest of the app routes
  * off the unlock screen.
  *
- * ## Load-bearing invariant: no CryptoObject
- *
- * [authenticate] below is called WITHOUT a [BiometricPrompt.CryptoObject].
- * That works only because the current `KeystoreSecretVault` master key
- * (`MASTER_KEY_ALIAS_V2`) is built without `setUserAuthenticationRequired(true)`
- * — the app-level [VaultLockState] is the access gate, not the Keystore
- * key. If anyone ever re-introduces per-op user authentication on the
- * vault key (via `setUserAuthenticationParameters(...)` or
- * `setUserAuthenticationValidityDurationSeconds(-1)`), the next
- * `Cipher.init()` after this prompt will throw
- * `UserNotAuthenticatedException` — or, on some OEM Keystore provider
- * implementations, surface as an opaque NPE ("Attempt to get length of
- * null array") — and silently break save/load across the app. In that
- * case, this method must pass a CryptoObject whose cipher is bound to
- * the vault master key, and the vault itself must keep that Cipher
- * around until the operation completes.
+ * The vault is no longer backed by an Android Keystore key (see
+ * [FileSystemSecretVault] for why), so this prompt is a pure app-level
+ * gate — no [BiometricPrompt.CryptoObject] is needed and no Keystore
+ * operation is bound to the authentication result.
  */
 @HiltViewModel
 class BiometricUnlockViewModel @Inject constructor(

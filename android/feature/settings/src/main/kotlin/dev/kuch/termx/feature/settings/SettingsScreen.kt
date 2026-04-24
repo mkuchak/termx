@@ -67,7 +67,7 @@ import dev.kuch.termx.core.domain.theme.TerminalTheme
  *
  * Task #17 owns the font size section; Task #18 owns the theme section;
  * Task #41 owns the Gemini API key section. All settings persist via
- * [SettingsViewModel]. The Gemini API key goes through the Keystore-backed
+ * [SettingsViewModel]. The Gemini API key goes through the sandboxed
  * vault instead of DataStore.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -151,7 +151,7 @@ private fun GeminiApiKeySection(
                 text = if (present) {
                     "A key is saved. Replace it by pasting a new value and tapping Save."
                 } else {
-                    "Required for push-to-talk transcription. The key is stored in the device Keystore-backed vault."
+                    "Required for push-to-talk transcription. The key is stored in the app's private, biometric-gated vault."
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

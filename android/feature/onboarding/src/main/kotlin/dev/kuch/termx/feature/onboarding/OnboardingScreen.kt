@@ -175,14 +175,14 @@ private fun BiometricPage(
         }
         Spacer(Modifier.height(24.dp))
         Text(
-            text = "Your keys never leave the phone in plaintext.",
+            text = "Your keys never leave the phone.",
             style = MaterialTheme.typography.headlineSmall,
             textAlign = TextAlign.Center,
             fontWeight = FontWeight.SemiBold,
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "SSH private keys and saved passwords are encrypted under the Android Keystore and unlocked with your device biometric or credential. termx caches them in memory only while you're using the app.",
+            text = "SSH private keys, saved passwords and the Gemini API key live in a sandboxed file that only termx can read, behind a biometric / device-credential unlock.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
