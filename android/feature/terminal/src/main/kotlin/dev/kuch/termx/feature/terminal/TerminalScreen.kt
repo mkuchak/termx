@@ -67,6 +67,7 @@ import dev.kuch.termx.feature.terminal.sessions.SessionTabActionsMenu
 import dev.kuch.termx.feature.terminal.sessions.SessionTabBar
 import dev.kuch.termx.feature.terminal.sessions.SessionTabBarViewModel
 import dev.kuch.termx.feature.terminal.theme.ThemeBinder
+import dev.kuch.termx.feature.ptt.PttSurface
 import java.util.UUID
 import kotlinx.coroutines.launch
 
@@ -165,6 +166,17 @@ fun TerminalScreen(
                                 session = active,
                                 onWriteToPty = viewModel::writeToPty,
                                 viewModel = viewModel,
+                            )
+                            // Task #39/#42 — push-to-talk surface sits on
+                            // top of the terminal area. The FAB floats
+                            // bottom-right; transcript card expands full
+                            // width at the bottom while recording.
+                            PttSurface(
+                                onSend = { text, appendNewline ->
+                                    val payload = if (appendNewline) text + "\n" else text
+                                    viewModel.writeToPty(payload.toByteArray())
+                                },
+                                modifier = Modifier.fillMaxSize(),
                             )
                         } else {
                             ConnectingPane()
