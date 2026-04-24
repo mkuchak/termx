@@ -367,7 +367,11 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     private fun describe(t: Throwable): String =
         t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
 
-    private suspend fun openSession(serverId: UUID, passwordOverride: String?): SshSession {
+    private suspend fun openSession(
+        serverId: UUID,
+        passwordOverride: String?,
+        timeoutMillis: Long,
+    ): SshSession {
         val server = serverRepository.getById(serverId)
             ?: throw IllegalStateException("Server not found: $serverId")
         val auth = resolveAuth(server, passwordOverride)
@@ -377,7 +381,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
             username = server.username,
             knownHostsPath = knownHostsPath,
         )
-        return sshClient.connect(target, auth)
+        return sshClient.connect(target, auth, timeoutMillis)
     }
 
     private suspend fun resolveAuth(server: Server, passwordOverride: String?): SshAuth = when (server.authType) {
