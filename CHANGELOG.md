@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.4](https://github.com/mkuchak/termx/compare/v1.1.3...v1.1.4) (2026-04-24)
+
+### Bug Fixes
+
+* **vault:** don't crash save when legacy-key migration misbehaves ([159ffe0](https://github.com/mkuchak/termx/commit/159ffe0b43bfdadc84ab515a237bc5cdbcf04ca4))
+
 ## [1.1.3](https://github.com/mkuchak/termx/compare/v1.1.2...v1.1.3) (2026-04-24)
 
 ### Bug Fixes
