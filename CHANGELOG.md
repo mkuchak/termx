@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.2](https://github.com/mkuchak/termx/compare/v1.1.1...v1.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **terminal:** make keyboard toggle work on every tap ([3df64a6](https://github.com/mkuchak/termx/commit/3df64a6f437ff1a0f42f4e3fd98cfc779c76a4fb))
+
 ## [1.1.1](https://github.com/mkuchak/termx/compare/v1.1.0...v1.1.1) (2026-04-24)
 
 ### Bug Fixes
