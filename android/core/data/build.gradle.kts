@@ -18,6 +18,10 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 // Emit the Room schema JSON to `schemas/` on every successful compile.
@@ -44,4 +48,7 @@ dependencies {
     ksp(libs.hilt.compiler)
 
     implementation(libs.okhttp)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
 }

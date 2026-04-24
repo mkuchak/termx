@@ -1,11 +1,10 @@
 package dev.kuch.termx.feature.servers.setup
 
-import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.kuch.termx.core.data.di.KnownHostsPath
 import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockState
 import dev.kuch.termx.core.data.vault.VaultLockedException
@@ -57,16 +56,15 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class SetupWizardViewModel @Inject constructor(
-    @ApplicationContext private val appContext: Context,
+    @KnownHostsPath private val knownHostsPath: String,
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val serverGroupRepository: ServerGroupRepository,
     private val secretVault: SecretVault,
     private val vaultLockState: VaultLockState,
     private val installCompanion: InstallCompanionUseCase,
+    private val sshClient: SshClient,
 ) : ViewModel() {
-
-    private val sshClient: SshClient by lazy { SshClient() }
 
     private val _state = MutableStateFlow(SetupWizardUiState())
     val state: StateFlow<SetupWizardUiState> = _state.asStateFlow()
@@ -208,7 +206,7 @@ class SetupWizardViewModel @Inject constructor(
             host = s.draft.host,
             port = port,
             username = s.draft.username,
-            knownHostsPath = appContext.filesDir.absolutePath + "/known_hosts",
+            knownHostsPath = knownHostsPath,
         )
 
         return try {

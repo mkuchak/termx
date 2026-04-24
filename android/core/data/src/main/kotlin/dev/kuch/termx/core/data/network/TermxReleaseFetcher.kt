@@ -35,14 +35,17 @@ import okhttp3.Request
  *  goreleaser config doesn't break downstream UX overnight.
  */
 @Singleton
-class TermxReleaseFetcher @Inject constructor(private val http: OkHttpClient) {
+open class TermxReleaseFetcher @Inject constructor(private val http: OkHttpClient) {
 
     /**
      * Pulls the latest termxd-v\* release. [fallbackUrl] (if provided) is
      * returned as the single asset when the GitHub API call is unreachable —
      * useful for air-gapped lab setups that mirror the binary locally.
+     *
+     * `open` so JVM unit tests can return a canned release without hitting
+     * `api.github.com` (see `FakeTermxReleaseFetcher`).
      */
-    suspend fun fetchLatest(): ReleaseInfo = withContext(Dispatchers.IO) {
+    open suspend fun fetchLatest(): ReleaseInfo = withContext(Dispatchers.IO) {
         val req = Request.Builder()
             .url("https://api.github.com/repos/mkuchak/termx/releases?per_page=50")
             .header("Accept", "application/vnd.github+json")

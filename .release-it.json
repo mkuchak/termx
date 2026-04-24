@@ -15,6 +15,7 @@
     "tokenRef": "GITHUB_TOKEN"
   },
   "hooks": {
+    "before:init": "printf '\\n\\u26A0  Have you walked through docs/PRE_RELEASE_CHECKLIST.md on the latest debug APK?\\n    Press Enter to continue or Ctrl+C to abort.\\n' && read",
     "after:bump": "echo \"Pushing tag triggers CI — android-release.yml will build, sign, create GitHub Release with the APK.\""
   },
   "plugins": {

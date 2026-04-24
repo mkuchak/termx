@@ -1,8 +1,7 @@
 package dev.kuch.termx.core.data.remote
 
-import android.content.Context
-import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.network.TermxReleaseFetcher
+import dev.kuch.termx.core.data.di.KnownHostsPath
 import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
@@ -44,7 +43,7 @@ import kotlinx.coroutines.launch
  */
 @Singleton
 class InstallCompanionUseCaseImpl @Inject constructor(
-    @ApplicationContext private val appContext: Context,
+    @KnownHostsPath private val knownHostsPath: String,
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val secretVault: SecretVault,
@@ -333,7 +332,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
             host = server.host,
             port = server.port,
             username = server.username,
-            knownHostsPath = appContext.filesDir.absolutePath + "/known_hosts",
+            knownHostsPath = knownHostsPath,
         )
         return sshClient.connect(target, auth)
     }

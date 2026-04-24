@@ -1,11 +1,10 @@
 package dev.kuch.termx.feature.servers
 
-import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.kuch.termx.core.data.di.KnownHostsPath
 import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.model.Server
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
@@ -51,13 +50,12 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class AddEditServerViewModel @Inject constructor(
-    @ApplicationContext private val appContext: Context,
+    @KnownHostsPath private val knownHostsPath: String,
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val serverGroupRepository: ServerGroupRepository,
+    private val sshClient: SshClient,
 ) : ViewModel() {
-
-    private val sshClient: SshClient by lazy { SshClient() }
 
     private val _state = MutableStateFlow(AddEditServerUiState())
     val state: StateFlow<AddEditServerUiState> = _state.asStateFlow()
@@ -178,7 +176,7 @@ class AddEditServerViewModel @Inject constructor(
             host = s.host,
             port = port,
             username = s.username,
-            knownHostsPath = appContext.filesDir.absolutePath + "/known_hosts",
+            knownHostsPath = knownHostsPath,
         )
 
         return try {

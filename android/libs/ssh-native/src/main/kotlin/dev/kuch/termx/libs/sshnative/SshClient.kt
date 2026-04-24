@@ -16,7 +16,7 @@ import java.security.Security
  * agreement all resolve. Safe to re-run: [Security.removeProvider] is a
  * no-op when the provider name is absent.
  */
-class SshClient {
+open class SshClient {
     init {
         Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
         Security.insertProviderAt(BouncyCastleProvider(), 1)
@@ -30,8 +30,12 @@ class SshClient {
      * @throws SshException.HostKeyMismatch if known_hosts has a conflicting pin
      * @throws SshException.TimedOut if the combined connect+auth exceeds [timeoutMillis]
      * @throws SshException.Unknown for any other sshj failure
+     *
+     * `open` so JVM unit tests in downstream modules can subclass and
+     * return a pre-built fake [SshSession] without touching the real
+     * sshj transport (see `FakeSshClient` under `:core:data` tests).
      */
-    suspend fun connect(
+    open suspend fun connect(
         target: SshTarget,
         auth: SshAuth,
         timeoutMillis: Long = 10_000,

@@ -48,4 +48,7 @@ dependencies {
     implementation(libs.hilt.navigation.compose)
 
     implementation(libs.coroutines.android)
+
+    testImplementation(libs.junit)
+    testImplementation(libs.coroutines.test)
 }
