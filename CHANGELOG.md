@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.3](https://github.com/mkuchak/termx/compare/v0.3.2...v0.3.3) (2026-04-24)
+
+### Bug Fixes
+
+* **ci:** copy binaries from per-target subdirs before gh release create ([8c60e15](https://github.com/mkuchak/termx/commit/8c60e159e18079a265c18cbdb7095ebca3c93b5e))
+* **ci:** create local semver tag so GoReleaser accepts the override ([79d99bd](https://github.com/mkuchak/termx/commit/79d99bda3d188f0d9817c5ff81a48f727c0cba51))
+* **ci:** publish termxd release under termxd-v tag, not GoReleaser's semver override ([edb6656](https://github.com/mkuchak/termx/commit/edb6656e494d22c38a79b0fb37098f71d3727113))
+* **ci:** use release.disable=true so archives still land in dist root ([638d1b7](https://github.com/mkuchak/termx/commit/638d1b766bacd45bea5c56582691cce070d0277e))
+* **ssh-native:** remove deadlocking awaitClose from PTY/exec stream flows ([c7ea47b](https://github.com/mkuchak/termx/commit/c7ea47b8bf389286b66a77302b4fac1f91da8c84))
+* **wizard:** stage-aware SSH timeouts + concurrent stderr drain + SFTP op timeout ([0513c32](https://github.com/mkuchak/termx/commit/0513c322b4fbe27d06702374ca322de6ede575a5))
+
 ## [0.3.2](https://github.com/mkuchak/termx/compare/v0.3.1...v0.3.2) (2026-04-24)
 
 ### Bug Fixes
