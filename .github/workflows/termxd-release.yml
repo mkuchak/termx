@@ -24,13 +24,13 @@ jobs:
         id: ver
         run: echo "version=${GITHUB_REF_NAME#termxd-v}" >> "$GITHUB_OUTPUT"
 
-      - name: Create local semver tag for GoReleaser
+      - name: Create local semver tag for GoReleaser's {{ .Version }}
         # GoReleaser validates that GORELEASER_CURRENT_TAG points to an actual
-        # git tag on HEAD. The wire tag is `termxd-vX.Y.Z` but we want
-        # `.Version` to resolve to plain `X.Y.Z` in asset names, release body,
-        # and the `-X main.version=...` ldflag. Create a local (unpushed) tag
-        # `vX.Y.Z` so the validation passes. The real remote tag stays
-        # `termxd-vX.Y.Z` — nothing triggers android-release.yml.
+        # git tag on HEAD AND requires the tag to parse as semver. Our remote
+        # wire tag is `termxd-vX.Y.Z` which fails semver parsing; we also want
+        # `.Version` to resolve to clean `X.Y.Z` in ldflags + release metadata.
+        # Create a local (unpushed, CI-only) `vX.Y.Z` tag so the validation
+        # passes and the template strips the prefix naturally.
         run: |
           git config user.email "bot@github-actions"
           git config user.name "termxd-release-bot"
@@ -40,9 +40,26 @@ jobs:
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: release --clean --config .goreleaser.yaml
+          # --skip=publish keeps GoReleaser from creating the GitHub Release
+          # under its own (semver) tag name — we publish manually below under
+          # the real `termxd-vX.Y.Z` tag so the phone's filter
+          # (`tag_name.startsWith("termxd-v")`) finds it.
+          args: release --clean --skip=publish --config .goreleaser.yaml
           workdir: termxd
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Tag is termxd-vX.Y.Z; override so {{ .Version }} resolves to X.Y.Z.
           GORELEASER_CURRENT_TAG: v${{ steps.ver.outputs.version }}
+
+      - name: Publish GitHub Release under termxd-v tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd termxd/dist
+          ls -la
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "termxd v${{ steps.ver.outputs.version }}" \
+            --generate-notes \
+            --target "${GITHUB_SHA}" \
+            termx-linux-amd64 \
+            termx-linux-arm64 \
+            checksums.txt
