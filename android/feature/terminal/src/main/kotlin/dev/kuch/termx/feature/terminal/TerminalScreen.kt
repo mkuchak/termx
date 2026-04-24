@@ -1,11 +1,14 @@
 package dev.kuch.termx.feature.terminal
 
+import android.content.Context
 import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
+import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
 import androidx.compose.foundation.focusable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +46,8 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
@@ -121,6 +126,46 @@ fun TerminalScreen(
     var showNewSession by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // Hoisted reference to the currently-mounted [TerminalView] so the
+    // tap-to-focus handler here AND the keyboard-toggle button in the
+    // SessionTabBar can both target it. Assigned from the AndroidView
+    // factory block in [TerminalPane]; nulled on dispose.
+    val terminalViewRef = remember { mutableStateOf<TerminalView?>(null) }
+    val context = LocalContext.current
+    val imm = remember(context) {
+        context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+    }
+
+    // First-show-on-entry — once the SSH session reaches Connected the
+    // TerminalView is attached and ready. Request focus and pop the IME
+    // so the user can type immediately without an extra tap.
+    LaunchedEffect(uiState.status) {
+        if (uiState.status == TerminalUiState.Status.Connected) {
+            terminalViewRef.value?.let { v ->
+                v.requestFocus()
+                imm.showSoftInput(v, 0)
+            }
+        }
+    }
+
+    val showKeyboardOnTerminalTap: () -> Unit = {
+        terminalViewRef.value?.let { v ->
+            v.requestFocus()
+            imm.showSoftInput(v, 0)
+        }
+    }
+
+    val onToggleKeyboard: () -> Unit = {
+        terminalViewRef.value?.let { v ->
+            if (v.isFocused) {
+                imm.hideSoftInputFromWindow(v.windowToken, 0)
+            } else {
+                v.requestFocus()
+                imm.showSoftInput(v, 0)
+            }
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -135,6 +180,7 @@ fun TerminalScreen(
                     onNewSession = { showNewSession = true },
                     onLongPressTab = { menuForSession = it },
                     onSwipeUpTab = { viewModel.detachTab(it.name) },
+                    onToggleKeyboard = onToggleKeyboard,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 SessionTabActionsMenu(
@@ -167,6 +213,8 @@ fun TerminalScreen(
                                 tmuxBacked = uiState.tmuxBacked,
                                 onWriteToPty = viewModel::writeToPty,
                                 viewModel = viewModel,
+                                terminalViewRef = terminalViewRef,
+                                onTerminalTapShowKeyboard = showKeyboardOnTerminalTap,
                             )
                             // Task #39/#42 — push-to-talk surface sits on
                             // top of the terminal area. The FAB floats
@@ -333,6 +381,8 @@ private fun ConnectedPane(
     tmuxBacked: Boolean,
     onWriteToPty: (ByteArray) -> Unit,
     viewModel: TerminalViewModel,
+    terminalViewRef: androidx.compose.runtime.MutableState<TerminalView?>,
+    onTerminalTapShowKeyboard: () -> Unit,
 ) {
     val volState = remember { VolDownState() }
     val focusRequester = remember { FocusRequester() }
@@ -371,6 +421,8 @@ private fun ConnectedPane(
             tmuxBacked = tmuxBacked,
             onStartCopyMode = viewModel::startCopyMode,
             onEndCopyMode = viewModel::endCopyMode,
+            terminalViewRef = terminalViewRef,
+            onTap = onTerminalTapShowKeyboard,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -480,6 +532,8 @@ private fun TerminalPane(
     tmuxBacked: Boolean,
     onStartCopyMode: () -> Unit,
     onEndCopyMode: () -> Unit,
+    terminalViewRef: androidx.compose.runtime.MutableState<TerminalView?>,
+    onTap: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Single pinch-zoom state bag per composable instance. Holds the
@@ -498,8 +552,28 @@ private fun TerminalPane(
     val tmuxBackedRef = remember { BooleanHolder(tmuxBacked) }
     tmuxBackedRef.value = tmuxBacked
 
+    // Track the first time the view is attached so the caller's
+    // onTap handler can skip re-requesting focus if it's already
+    // focused. Also clears the hoisted ref on dispose so a stale
+    // reference doesn't point at a detached view.
+    DisposableEffect(Unit) {
+        onDispose {
+            terminalViewRef.value = null
+        }
+    }
+
+    Box(
+        modifier = modifier.pointerInput(Unit) {
+            // AndroidView swallows touches by default when the hosted
+            // View has its own onTouchListener — which ours does. This
+            // sibling pointer handler fires on a *completed* tap only,
+            // so single-finger selection/scroll/pinch still reach
+            // TerminalView. We don't consume; the View gets the tap too.
+            detectTapGestures(onTap = { onTap() })
+        },
+    ) {
     AndroidView(
-        modifier = modifier,
+        modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
             val view = TerminalView(ctx, null).apply {
                 setTerminalViewClient(MinimalTerminalViewClient)
@@ -598,6 +672,9 @@ private fun TerminalPane(
             }
 
             view.requestFocus()
+            // Hoist the ref so TerminalScreen's tap handler and the
+            // tab bar's keyboard-toggle button can both target it.
+            terminalViewRef.value = view
             view
         },
         update = { view ->
@@ -617,8 +694,13 @@ private fun TerminalPane(
             // Repaint the palette on every theme change. apply() is
             // cheap (~20 int writes + invalidate).
             ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
+
+            // Keep the hoisted ref in sync in case a new AndroidView
+            // instance was created (e.g. after a configuration change).
+            terminalViewRef.value = view
         },
     )
+    }
 }
 
 /** Live font-size cache for the pinch-zoom gesture. */
