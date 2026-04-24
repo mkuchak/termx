@@ -26,6 +26,9 @@ out/
 # VSCode
 .vscode/
 
+# Claude Code harness scratch
+.claude/
+
 # macOS
 .DS_Store
 
