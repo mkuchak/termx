@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.6](https://github.com/mkuchak/termx/compare/v1.1.5...v1.1.6) (2026-04-24)
+
+### Features
+
+* **mosh:** launch mosh-client under a pseudo-terminal (fixes tcgetattr) ([a964ce5](https://github.com/mkuchak/termx/commit/a964ce5c022eaabe1082148d64c0b18f6c29184f))
+
 ## [1.1.5](https://github.com/mkuchak/termx/compare/v1.1.4...v1.1.5) (2026-04-24)
 
 ### Bug Fixes
