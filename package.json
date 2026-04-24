@@ -1,7 +1,7 @@
 {
   "name": "termx-tooling",
   "private": true,
-  "version": "0.2.7",
+  "version": "0.3.0",
   "description": "Monorepo tooling for termx (Android SSH client designed for commanding Claude Code on a VPS)",
   "type": "module",
   "engines": {
