@@ -52,12 +52,31 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GORELEASER_CURRENT_TAG: v${{ steps.ver.outputs.version }}
 
+      - name: Stage artifacts for GitHub Release
+        # With archives[].format: binary, GoReleaser leaves the binary at
+        # dist/<target>/termx (e.g. dist/termx_linux_amd64_v1/termx) without
+        # copying into dist root. The subdir name includes the goamd64/goarm64
+        # variant which can drift between GoReleaser versions; use `find` to
+        # be resilient.
+        run: |
+          cd termxd/dist
+          amd_bin=$(find . -maxdepth 3 -path '*linux*amd64*/termx' -type f | head -1)
+          arm_bin=$(find . -maxdepth 3 -path '*linux*arm64*/termx' -type f | head -1)
+          if [ -z "$amd_bin" ] || [ -z "$arm_bin" ]; then
+            echo "missing build output; amd=$amd_bin arm=$arm_bin" >&2
+            ls -la
+            exit 1
+          fi
+          cp "$amd_bin" ./termx-linux-amd64
+          cp "$arm_bin" ./termx-linux-arm64
+          chmod +x termx-linux-amd64 termx-linux-arm64
+          file termx-linux-*
+
       - name: Publish GitHub Release under termxd-v tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           cd termxd/dist
-          ls -la
           gh release create "${GITHUB_REF_NAME}" \
             --title "termxd v${{ steps.ver.outputs.version }}" \
             --generate-notes \
