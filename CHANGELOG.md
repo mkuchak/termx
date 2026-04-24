@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.1](https://github.com/mkuchak/termx/compare/v0.3.0...v0.3.1) (2026-04-24)
+
+### Bug Fixes
+
+* **ssh-native:** replace Android's stripped BC with full bcprov at init ([d97c904](https://github.com/mkuchak/termx/commit/d97c9044217b6751391e9cd65b1c91023fe4a48c))
+
 ## [0.3.0](https://github.com/mkuchak/termx/compare/v0.2.7...v0.3.0) (2026-04-24)
 
 ### Features
