@@ -20,21 +20,20 @@ import javax.inject.Singleton
 private val Context.appPrefsDataStore by preferencesDataStore(name = "app_prefs")
 
 /**
- * User-visible app preferences. Currently surfaces the two knobs
- * Task #20 introduces:
+ * User-visible app preferences.
  *
  * - [paranoidMode]: when true, ask for biometric on every connect
  *   (referenced here, wired into the connect flow by Task #41).
  * - [autoLockMinutes]: how long the app can sit in background before
  *   [dev.kuch.termx.core.data.vault.VaultLifecycleObserver] re-locks.
  * - [fontSizeSp]: active terminal font size in density-independent
- *   pixels. Persisted by Task #17's pinch-to-zoom gesture and read by
- *   [dev.kuch.termx.feature.terminal.TerminalScreen] on first bind.
+ *   pixels. Persisted by Task #17's pinch-to-zoom gesture.
  * - [activeThemeId]: currently-selected [
- *   dev.kuch.termx.core.domain.theme.TerminalTheme] id. Shared by the
- *   Task #18 theme picker and the terminal's [
- *   dev.kuch.termx.feature.terminal.theme.ThemeBinder].
+ *   dev.kuch.termx.core.domain.theme.TerminalTheme] id.
  * - [pttMode]: last-used Push-to-talk mode (Task #42).
+ * - [onboardingComplete]: first-run gate (Task #46) — flips to true
+ *   when the 3-screen onboarding finishes (or the user skips), and
+ *   stays that way forever after.
  *
  * All I/O is coroutine-friendly — [Flow] for reads, `suspend` for writes.
  */
@@ -66,6 +65,15 @@ class AppPreferences @Inject constructor(
     val pttMode: Flow<String> =
         ds.data.map { it[KEY_PTT_MODE] ?: DEFAULT_PTT_MODE }
 
+    /**
+     * First-run gate consumed by [dev.kuch.termx.TermxNavHost]. Flips to
+     * true when the user finishes (or skips) the 3-screen onboarding
+     * shipped in Task #46; the flag is never cleared automatically so a
+     * factory-reset user gets the onboarding once and never again.
+     */
+    val onboardingComplete: Flow<Boolean> =
+        ds.data.map { it[KEY_ONBOARDING_COMPLETE] ?: DEFAULT_ONBOARDING_COMPLETE }
+
     suspend fun setParanoidMode(value: Boolean) {
         ds.edit { it[KEY_PARANOID_MODE] = value }
     }
@@ -87,12 +95,17 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_PTT_MODE] = normalised }
     }
 
+    suspend fun setOnboardingComplete(value: Boolean) {
+        ds.edit { it[KEY_ONBOARDING_COMPLETE] = value }
+    }
+
     private companion object {
         val KEY_PARANOID_MODE = booleanPreferencesKey("paranoid_mode_enabled")
         val KEY_AUTO_LOCK_MINUTES = intPreferencesKey("auto_lock_minutes")
         val KEY_FONT_SIZE_SP = intPreferencesKey("terminal_font_size_sp")
         val KEY_ACTIVE_THEME_ID = stringPreferencesKey("terminal_active_theme_id")
         val KEY_PTT_MODE = stringPreferencesKey("ptt_mode")
+        val KEY_ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         const val DEFAULT_PARANOID_MODE = false
         const val DEFAULT_AUTO_LOCK_MINUTES = 5
         const val DEFAULT_FONT_SIZE_SP = 14
@@ -102,5 +115,6 @@ class AppPreferences @Inject constructor(
         const val PTT_MODE_COMMAND = "command"
         const val PTT_MODE_TEXT = "text"
         const val DEFAULT_PTT_MODE = PTT_MODE_COMMAND
+        const val DEFAULT_ONBOARDING_COMPLETE = false
     }
 }
