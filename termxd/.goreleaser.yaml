@@ -36,6 +36,11 @@ git:
   prerelease_suffix: "-"
 
 release:
+  # Skip GoReleaser's GitHub Release creation — termxd-release.yml's final
+  # step does `gh release create` under the `termxd-vX.Y.Z` wire tag, which
+  # is what the phone-side TermxReleaseFetcher filter expects. Binaries are
+  # still archived into termxd/dist/ normally for that step to attach.
+  disable: true
   github:
     owner: mkuchak
     name: termx

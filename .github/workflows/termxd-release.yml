@@ -40,11 +40,13 @@ jobs:
         with:
           distribution: goreleaser
           version: '~> v2'
-          # --skip=publish keeps GoReleaser from creating the GitHub Release
-          # under its own (semver) tag name — we publish manually below under
-          # the real `termxd-vX.Y.Z` tag so the phone's filter
-          # (`tag_name.startsWith("termxd-v")`) finds it.
-          args: release --clean --skip=publish --config .goreleaser.yaml
+          # The .goreleaser.yaml has `release.disable: true` — we publish
+          # the GitHub Release manually below under the real `termxd-vX.Y.Z`
+          # tag (the phone's TermxReleaseFetcher filters on that prefix).
+          # Using `release.disable: true` rather than `--skip=publish` keeps
+          # the archive-copy step enabled so the binaries land in dist/ at
+          # their final `termx-linux-<arch>` names.
+          args: release --clean --config .goreleaser.yaml
           workdir: termxd
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
