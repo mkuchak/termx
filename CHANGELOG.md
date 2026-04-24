@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.7](https://github.com/mkuchak/termx/compare/v1.1.6...v1.1.7) (2026-04-24)
+
+### Bug Fixes
+
+* **auth:** stop nuking passwordAlias on blank-field edits + self-heal ([6ac4fab](https://github.com/mkuchak/termx/commit/6ac4fabbdcccddf3f5e2d5686b849008089cda8d))
+* **vault:** drop AndroidKeystore, store vault as plaintext JSON in filesDir ([9e2f724](https://github.com/mkuchak/termx/commit/9e2f724cfd563627d0cbd6fcba9912c6fcfee3c4))
+
 ## [1.1.6](https://github.com/mkuchak/termx/compare/v1.1.5...v1.1.6) (2026-04-24)
 
 ### Features
