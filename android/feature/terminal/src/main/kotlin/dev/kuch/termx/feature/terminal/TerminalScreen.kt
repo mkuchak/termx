@@ -13,11 +13,16 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -172,7 +177,7 @@ fun TerminalScreen(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
     ) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
             if (serverId != null) {
                 SessionTabBar(
                     sessions = sessionList,
@@ -182,7 +187,6 @@ fun TerminalScreen(
                     onNewSession = { showNewSession = true },
                     onLongPressTab = { menuForSession = it },
                     onSwipeUpTab = { viewModel.detachTab(it.name) },
-                    onToggleKeyboard = onToggleKeyboard,
                     modifier = Modifier.fillMaxWidth(),
                 )
                 SessionTabActionsMenu(
@@ -203,7 +207,14 @@ fun TerminalScreen(
                 )
             }
 
-            Box(modifier = Modifier.fillMaxWidth().weight(1f)) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .windowInsetsPadding(
+                        WindowInsets.ime.union(WindowInsets.navigationBars),
+                    ),
+            ) {
                 when (uiState.status) {
                     TerminalUiState.Status.Idle,
                     TerminalUiState.Status.Connecting -> ConnectingPane()
@@ -217,6 +228,7 @@ fun TerminalScreen(
                                 viewModel = viewModel,
                                 terminalViewRef = terminalViewRef,
                                 onTerminalTapShowKeyboard = showKeyboardOnTerminalTap,
+                                onToggleKeyboard = onToggleKeyboard,
                             )
                             // Task #39/#42 — push-to-talk surface sits on
                             // top of the terminal area. The FAB floats
@@ -385,6 +397,7 @@ private fun ConnectedPane(
     viewModel: TerminalViewModel,
     terminalViewRef: androidx.compose.runtime.MutableState<TerminalView?>,
     onTerminalTapShowKeyboard: () -> Unit,
+    onToggleKeyboard: () -> Unit,
 ) {
     val volState = remember { VolDownState() }
     val focusRequester = remember { FocusRequester() }
@@ -398,7 +411,6 @@ private fun ConnectedPane(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .imePadding()
             .focusRequester(focusRequester)
             .focusable()
             .onKeyEvent { event ->
@@ -431,6 +443,7 @@ private fun ConnectedPane(
         )
         ExtraKeysBar(
             onKey = onWriteToPty,
+            onToggleKeyboard = onToggleKeyboard,
             modifier = Modifier.fillMaxWidth(),
         )
     }

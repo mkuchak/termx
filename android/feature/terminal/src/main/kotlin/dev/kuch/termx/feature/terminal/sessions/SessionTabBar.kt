@@ -28,7 +28,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -78,7 +77,6 @@ fun SessionTabBar(
     onNewSession: () -> Unit,
     onLongPressTab: (TmuxSession) -> Unit,
     onSwipeUpTab: (TmuxSession) -> Unit = {},
-    onToggleKeyboard: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     Surface(
@@ -114,13 +112,6 @@ fun SessionTabBar(
                         onSwipeUp = { onSwipeUpTab(session) },
                     )
                 }
-            }
-            IconButton(onClick = onToggleKeyboard) {
-                Icon(
-                    imageVector = Icons.Default.Keyboard,
-                    contentDescription = "toggle keyboard",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
             }
             IconButton(onClick = onNewSession) {
                 Icon(

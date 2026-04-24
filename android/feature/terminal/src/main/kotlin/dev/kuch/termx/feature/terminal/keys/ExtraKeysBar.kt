@@ -18,9 +18,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -66,6 +71,7 @@ private const val LONG_PRESS_INITIAL_DELAY_MS = 400L
 fun ExtraKeysBar(
     onKey: (ByteArray) -> Unit,
     modifier: Modifier = Modifier,
+    onToggleKeyboard: () -> Unit = {},
     state: ExtraKeysState = rememberExtraKeysState(),
     layoutRow1: List<ExtraKey> = ExtraKeysLayout.ROW_1,
     layoutRow2: List<ExtraKey> = ExtraKeysLayout.ROW_2,
@@ -117,22 +123,40 @@ fun ExtraKeysBar(
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
         Column {
-            HorizontalPager(
-                state = pagerState,
+            Row(
                 modifier = Modifier.fillMaxWidth(),
-            ) { page ->
-                val row = if (page == 0) layoutRow1 else layoutRow2
-                KeyRow(
-                    keys = row,
-                    state = state,
-                    onTap = handleTap,
-                    onRepeatKey = { key ->
-                        // Used by arrow keys while held. Bypasses haptic per
-                        // repeat — only the initial press hapticks.
-                        val bytes = ExtraKeyBytes.encode(key, state.ctrlActive, state.altActive)
-                        if (bytes.isNotEmpty()) onKey(bytes)
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.weight(1f),
+                ) { page ->
+                    val row = if (page == 0) layoutRow1 else layoutRow2
+                    KeyRow(
+                        keys = row,
+                        state = state,
+                        onTap = handleTap,
+                        onRepeatKey = { key ->
+                            // Used by arrow keys while held. Bypasses haptic per
+                            // repeat — only the initial press hapticks.
+                            val bytes = ExtraKeyBytes.encode(key, state.ctrlActive, state.altActive)
+                            if (bytes.isNotEmpty()) onKey(bytes)
+                        },
+                    )
+                }
+                IconButton(
+                    onClick = {
+                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        onToggleKeyboard()
                     },
-                )
+                    modifier = Modifier.width(44.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Keyboard,
+                        contentDescription = "toggle keyboard",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             PageIndicator(
                 pageCount = 2,
