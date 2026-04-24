@@ -1,5 +1,6 @@
 package dev.kuch.termx.feature.servers
 
+import android.util.Log
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -84,6 +85,18 @@ fun AddEditServerSheet(
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showUntestedWarning by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+
+    val attemptSave: () -> Unit = {
+        scope.launch {
+            runCatching { viewModel.save() }
+                .onSuccess { id -> onSaved(id) }
+                .onFailure { t ->
+                    Log.e("AddEditServerSheet", "save failed", t)
+                    saveError = t.message ?: t.javaClass.simpleName
+                }
+        }
+    }
 
     LaunchedEffect(serverId) { viewModel.initialize(serverId) }
 
@@ -126,10 +139,7 @@ fun AddEditServerSheet(
                 if (untested) {
                     showUntestedWarning = true
                 } else {
-                    scope.launch {
-                        val id = viewModel.save()
-                        onSaved(id)
-                    }
+                    attemptSave()
                 }
             },
         )
@@ -173,14 +183,22 @@ fun AddEditServerSheet(
             confirmButton = {
                 TextButton(onClick = {
                     showUntestedWarning = false
-                    scope.launch {
-                        val id = viewModel.save()
-                        onSaved(id)
-                    }
+                    attemptSave()
                 }) { Text("Save") }
             },
             dismissButton = {
                 TextButton(onClick = { showUntestedWarning = false }) { Text("Go back") }
+            },
+        )
+    }
+
+    saveError?.let { message ->
+        AlertDialog(
+            onDismissRequest = { saveError = null },
+            title = { Text("Couldn't save server") },
+            text = { Text(message) },
+            confirmButton = {
+                TextButton(onClick = { saveError = null }) { Text("OK") }
             },
         )
     }

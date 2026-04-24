@@ -274,6 +274,14 @@ class AddEditServerViewModel @Inject constructor(
                 // still persists; the user will re-prompt on next cold
                 // start.
                 passwordCache.put(id, s.password)
+            } catch (t: Throwable) {
+                // Any other Keystore / IO failure (legacy-key migration
+                // edge cases, blob I/O, …) must not crash save(). Fall back
+                // to the in-memory cache so the current session works; the
+                // row persists and a subsequent save attempt will retry the
+                // vault write.
+                Log.e(LOG_TAG, "vault store failed; falling back to in-memory cache", t)
+                passwordCache.put(id, s.password)
             }
         } else if (priorAlias != null) {
             // Auth type flipped away from password, or the password was

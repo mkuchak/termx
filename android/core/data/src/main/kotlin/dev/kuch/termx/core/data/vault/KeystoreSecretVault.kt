@@ -73,6 +73,12 @@ class KeystoreSecretVault @Inject constructor(
         requireUnlocked()
         withContext(Dispatchers.IO) {
             mutex.withLock {
+                // Resolve (and migrate, if needed) the master key BEFORE
+                // reading the blob. Migration wipes vault.enc to avoid
+                // carrying forward entries encrypted under the legacy key;
+                // if we read the map first, we'd otherwise resurrect those
+                // stale entries in writeMap below.
+                getOrCreateMasterKey()
                 val map = readMap().toMutableMap()
                 map[alias] = encryptToBase64(secret)
                 writeMap(map)
@@ -84,6 +90,8 @@ class KeystoreSecretVault @Inject constructor(
         requireUnlocked()
         return withContext(Dispatchers.IO) {
             mutex.withLock {
+                // See store() for why the key resolves before the blob read.
+                getOrCreateMasterKey()
                 val encoded = readMap()[alias] ?: return@withLock null
                 decryptFromBase64(encoded)
             }
@@ -126,9 +134,11 @@ class KeystoreSecretVault @Inject constructor(
             // decrypt the existing blob without a CryptoObject-bound prompt
             // (and the unlock flow doesn't provide one), so wipe both the
             // key and the blob and start fresh. The user re-enters any
-            // saved secrets on next use.
-            keyStore.deleteEntry(MASTER_KEY_ALIAS)
-            blobFile.delete()
+            // saved secrets on next use. Both cleanup steps are wrapped
+            // defensively — generator.generateKey() below will overwrite
+            // the alias regardless, so a delete-entry failure isn't fatal.
+            runCatching { keyStore.deleteEntry(MASTER_KEY_ALIAS) }
+            runCatching { blobFile.delete() }
         }
 
         val generator = KeyGenerator.getInstance(

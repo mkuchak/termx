@@ -280,6 +280,11 @@ class SetupWizardViewModel @Inject constructor(
                     secretVault.store(alias!!, s.draft.password.toByteArray(Charsets.UTF_8))
                 } catch (t: VaultLockedException) {
                     Log.w(LOG_TAG, "vault locked; password survives in-memory only", t)
+                } catch (t: Throwable) {
+                    // Keystore hiccups (e.g. legacy-key migration edge cases)
+                    // must not crash setup — fall back to the in-memory cache
+                    // so the user can still finish the wizard.
+                    Log.e(LOG_TAG, "vault store failed; password survives in-memory only", t)
                 }
                 passwordCache.put(id, s.draft.password)
             } else {
