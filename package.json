@@ -9,7 +9,7 @@
   },
   "scripts": {
     "release:android": "GITHUB_TOKEN=$(gh auth token) release-it",
-    "release:termxd": "GITHUB_TOKEN=$(gh auth token) release-it --config .release-it.termxd.json"
+    "release:termxd": "cd termxd && GITHUB_TOKEN=$(gh auth token) release-it --config ../.release-it.termxd.json"
   },
   "devDependencies": {
     "@release-it/conventional-changelog": "^10.0.5",

@@ -36,8 +36,8 @@
           { "type": "build", "hidden": true }
         ]
       },
-      "path": "termxd",
-      "infile": "termxd/CHANGELOG.md"
+      "path": ".",
+      "infile": "CHANGELOG.md"
     }
   }
 }
