@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.5](https://github.com/mkuchak/termx/compare/v1.1.4...v1.1.5) (2026-04-24)
+
+### Bug Fixes
+
+* **auth:** persist prompted password + migration + CryptoObject invariant ([b915e44](https://github.com/mkuchak/termx/commit/b915e44cf7d1dd77844b02c07d3667ea6b175888))
+* **vault:** deterministic v2-alias migration + record lastConnected ([9c7226f](https://github.com/mkuchak/termx/commit/9c7226f3ec17883e580a08eeb5257eb8a7c420c9))
+
 ## [1.1.4](https://github.com/mkuchak/termx/compare/v1.1.3...v1.1.4) (2026-04-24)
 
 ### Bug Fixes
