@@ -5,6 +5,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import dagger.hilt.android.HiltAndroidApp
 import dev.kuch.termx.core.data.prefs.AppForegroundTracker
 import dev.kuch.termx.core.data.vault.VaultLifecycleObserver
+import dev.kuch.termx.notification.NotificationChannels
 import dev.kuch.termx.service.SessionServiceLauncher
 import javax.inject.Inject
 
@@ -26,12 +27,18 @@ class TermxApplication : Application() {
     @Inject lateinit var vaultLifecycleObserver: VaultLifecycleObserver
     @Inject lateinit var appForegroundTracker: AppForegroundTracker
     @Inject lateinit var sessionServiceLauncher: SessionServiceLauncher
+    @Inject lateinit var notificationChannels: NotificationChannels
 
     override fun onCreate() {
         super.onCreate()
         val lifecycle = ProcessLifecycleOwner.get().lifecycle
         lifecycle.addObserver(vaultLifecycleObserver)
         lifecycle.addObserver(appForegroundTracker)
+        // Channels must exist before anyone posts into them — Task #43's
+        // service also creates its `termx.service` channel lazily on
+        // first build, but the event router assumes these four are
+        // already registered.
+        notificationChannels.ensureAll()
         sessionServiceLauncher.start()
     }
 }

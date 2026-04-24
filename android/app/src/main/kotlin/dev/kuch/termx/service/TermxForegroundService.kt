@@ -10,6 +10,7 @@ import android.os.IBinder
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.kuch.termx.core.data.session.SessionRegistry
+import dev.kuch.termx.notification.EventNotificationRouter
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +45,7 @@ class TermxForegroundService : Service() {
 
     @Inject lateinit var sessionRegistry: SessionRegistry
     @Inject lateinit var notificationBuilder: TermxNotificationBuilder
+    @Inject lateinit var eventRouter: EventNotificationRouter
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var watcherJob: Job? = null
@@ -76,6 +78,10 @@ class TermxForegroundService : Service() {
                 nm.notify(FOREGROUND_ID, updated)
             }
         }
+
+        // Fan the EventStreamHub into the four user-facing channels.
+        // Tied to the service's own scope so it dies with the service.
+        eventRouter.start(serviceScope)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -89,6 +95,7 @@ class TermxForegroundService : Service() {
 
     override fun onDestroy() {
         watcherJob?.cancel()
+        eventRouter.stop()
         serviceScope.cancel()
         super.onDestroy()
     }

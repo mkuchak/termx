@@ -185,24 +185,32 @@ fun ServerListScreen(
                 .fillMaxSize()
                 .padding(padding),
         ) {
-            when (val s = uiState) {
-                ServerListUiState.Loading -> LoadingPane()
-                ServerListUiState.Empty -> EmptyPane(onAdd = { showAddPicker = true })
-                is ServerListUiState.Error -> ErrorPane(message = s.message)
-                is ServerListUiState.Loaded -> ServerListBody(
-                    buckets = s.groupsWithServers,
-                    reorderMode = reorderMode,
-                    onServerTap = onServerTap,
-                    onEdit = { id -> editingServerId = id.toString() },
-                    onDuplicate = viewModel::onDuplicate,
-                    onDelete = viewModel::onDelete,
-                    onMoveToGroupRequest = { id ->
-                        moveToGroupForServerId = id.toString()
-                    },
-                    onToggleGroup = viewModel::onToggleGroupCollapse,
-                    onMoveUp = viewModel::onMoveUp,
-                    onMoveDown = viewModel::onMoveDown,
-                )
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Task #45: nudge the user to exclude termx from Doze so
+                // background tails keep running with the screen off.
+                // Hoisted above the list so it's the first thing they see
+                // on a fresh install and so it never fights the list for
+                // focus.
+                BatteryOptimizationPrompt()
+                when (val s = uiState) {
+                    ServerListUiState.Loading -> LoadingPane()
+                    ServerListUiState.Empty -> EmptyPane(onAdd = { showAddPicker = true })
+                    is ServerListUiState.Error -> ErrorPane(message = s.message)
+                    is ServerListUiState.Loaded -> ServerListBody(
+                        buckets = s.groupsWithServers,
+                        reorderMode = reorderMode,
+                        onServerTap = onServerTap,
+                        onEdit = { id -> editingServerId = id.toString() },
+                        onDuplicate = viewModel::onDuplicate,
+                        onDelete = viewModel::onDelete,
+                        onMoveToGroupRequest = { id ->
+                            moveToGroupForServerId = id.toString()
+                        },
+                        onToggleGroup = viewModel::onToggleGroupCollapse,
+                        onMoveUp = viewModel::onMoveUp,
+                        onMoveDown = viewModel::onMoveDown,
+                    )
+                }
             }
         }
     }

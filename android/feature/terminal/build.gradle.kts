@@ -47,6 +47,7 @@ dependencies {
     implementation(project(":core:common"))
     implementation(project(":core:domain"))
     implementation(project(":core:data"))
+    implementation(project(":feature:ptt"))
     implementation(project(":libs:terminal-view"))
     implementation(project(":libs:ssh-native"))
 

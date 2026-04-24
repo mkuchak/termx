@@ -127,10 +127,12 @@ dependencies {
     implementation(project(":feature:servers"))
     implementation(project(":feature:terminal"))
     implementation(project(":feature:keys"))
+    implementation(project(":feature:onboarding"))
     implementation(project(":feature:ptt"))
     implementation(project(":feature:settings"))
     implementation(project(":libs:terminal-view"))
     implementation(project(":libs:ssh-native"))
+    implementation(project(":libs:companion"))
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.activity.compose)

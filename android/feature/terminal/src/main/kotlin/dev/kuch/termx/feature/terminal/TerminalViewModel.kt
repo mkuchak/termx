@@ -10,6 +10,9 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.PasswordCache
+import dev.kuch.termx.core.data.remote.EventStreamRepository
+import dev.kuch.termx.core.data.session.EventStreamHub
+import dev.kuch.termx.core.data.session.ReconnectBroker
 import dev.kuch.termx.core.data.session.SessionRegistry
 import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockedException
@@ -77,6 +80,9 @@ class TerminalViewModel @Inject constructor(
     private val passwordCache: PasswordCache,
     private val appPreferences: AppPreferences,
     private val sessionRegistry: SessionRegistry,
+    private val eventStreamHub: EventStreamHub,
+    private val eventStreamRepository: EventStreamRepository,
+    private val reconnectBroker: ReconnectBroker,
 ) : ViewModel() {
 
     init {
@@ -85,6 +91,18 @@ class TerminalViewModel @Inject constructor(
         viewModelScope.launch {
             sessionRegistry.disconnectAllRequest.collect {
                 disconnect()
+            }
+        }
+        // Notification "Reconnect" action posts into the broker. We act
+        // on a request only if the matching server id is ours — multiple
+        // TerminalViewModels listen simultaneously so the keyed check is
+        // how each one distinguishes its own request.
+        viewModelScope.launch {
+            reconnectBroker.requests.collect { serverId ->
+                if (serverId == currentServerRegistryId) {
+                    disconnect()
+                    connect(currentServerId)
+                }
             }
         }
     }
@@ -211,6 +229,16 @@ class TerminalViewModel @Inject constructor(
         val server = serverId?.let { serverRepository.getById(it) }
         currentServerRegistryId = server?.id ?: FALLBACK_SERVER_ID
         currentServerLabel = server?.label ?: "Test server"
+
+        // Publish the live session so `EventNotificationRouter` (and any
+        // future consumer) can tail `events.ndjson` without coordinating
+        // with this VM directly. Re-publishing is idempotent — hub state
+        // is keyed by server id so reconnecting replaces the prior entry.
+        eventStreamHub.publish(
+            serverId = currentServerRegistryId,
+            serverLabel = currentServerLabel,
+            client = eventStreamRepository.clientFor(session),
+        )
 
         val wantsTmux = server?.autoAttachTmux == true
         val tmuxAvailable = if (wantsTmux) probeTmux(session) else true
@@ -519,6 +547,10 @@ class TerminalViewModel @Inject constructor(
             sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
         }
         tabs.clear()
+        // Drop the hub entry before closing the session so any router
+        // subscriber cancels its collection first and doesn't get a
+        // transient exec failure on the way out.
+        eventStreamHub.unpublish(currentServerRegistryId)
         runCatching { sshSession?.close() }
         sshSession = null
         sshClient = null
