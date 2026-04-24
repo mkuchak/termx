@@ -26,11 +26,11 @@ class VaultLockState @Inject constructor() {
     private val _state = MutableStateFlow(State.Locked)
     val state: StateFlow<State> = _state.asStateFlow()
 
-    internal fun markUnlocking() {
+    fun markUnlocking() {
         _state.value = State.Unlocking
     }
 
-    internal fun markUnlocked() {
+    fun markUnlocked() {
         _state.value = State.Unlocked
     }
 

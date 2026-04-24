@@ -5,6 +5,21 @@ import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 
 /**
+ * Result of a one-shot remote command run via [TmuxSessionRepository.exec].
+ *
+ * The impl drains stdout/stderr into strings because all current callers
+ * (the tab bar's new/rename/kill actions in Task #26) only want to check
+ * exit code + surface stderr on failure. If we ever need streaming we'll
+ * add a parallel API — keeping this one dead-simple makes the call sites
+ * one-liners.
+ */
+data class ExecResult(
+    val exitCode: Int,
+    val stdout: String,
+    val stderr: String,
+)
+
+/**
  * Live view of the tmux sessions running on a given [dev.kuch.termx.core.domain.model.Server].
  *
  * Phase 3 (Task #25) implements this by polling `tmux ls` over SSH.
@@ -35,4 +50,16 @@ interface TmuxSessionRepository {
      * or throws if the server is unreachable / auth fails.
      */
     suspend fun refresh(serverId: UUID): List<TmuxSession>
+
+    /**
+     * Run an arbitrary shell [cmd] on [serverId] via the cached
+     * [dev.kuch.termx.libs.sshnative.SshSession]. Returns the captured
+     * stdout, stderr, and exit code.
+     *
+     * Task #26 uses this for the tab bar's tmux actions (new-session,
+     * rename-session, kill-session) so those helpers piggyback on the
+     * same transport the poller already owns instead of opening a second
+     * session per click.
+     */
+    suspend fun exec(serverId: UUID, cmd: String): ExecResult
 }

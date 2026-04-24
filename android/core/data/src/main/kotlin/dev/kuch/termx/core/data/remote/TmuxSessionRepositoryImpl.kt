@@ -6,6 +6,7 @@ import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.model.TmuxSession
+import dev.kuch.termx.core.domain.repository.ExecResult
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.core.domain.repository.TmuxSessionRepository
@@ -121,6 +122,22 @@ class TmuxSessionRepositoryImpl @Inject constructor(
         val cache = acquireCache(serverId)
         try {
             return cache.mutex.withLock { runTmuxPoll(serverId, cache) }
+        } finally {
+            releaseCache(serverId)
+        }
+    }
+
+    override suspend fun exec(serverId: UUID, cmd: String): ExecResult {
+        val cache = acquireCache(serverId)
+        try {
+            return cache.mutex.withLock {
+                cache.session.openExec(cmd).use { exec ->
+                    val out = readAll(exec.stdout)
+                    val err = readAll(exec.stderr)
+                    val code = exec.exitCode.await()
+                    ExecResult(exitCode = code, stdout = out, stderr = err)
+                }
+            }
         } finally {
             releaseCache(serverId)
         }
