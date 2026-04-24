@@ -1,8 +1,8 @@
 package dev.kuch.termx.core.data.vault
 
 import android.content.Context
-import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -18,6 +18,7 @@ import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,11 +28,17 @@ import android.util.Base64 as AndroidBase64
  * Real [SecretVault] implementation backed by:
  *
  * 1. An Android Keystore AES-256-GCM symmetric master key stored under
- *    alias [MASTER_KEY_ALIAS] that requires user authentication per use.
- *    On API 30+ we pin to BIOMETRIC_STRONG | DEVICE_CREDENTIAL via
- *    [KeyGenParameterSpec.Builder.setUserAuthenticationParameters]. On
- *    API 28-29 we fall back to `setUserAuthenticationValidityDurationSeconds(-1)`
- *    which maps to the same "auth-required every op" behaviour.
+ *    alias [MASTER_KEY_ALIAS]. The key is hardware-backed and bound to
+ *    this device/install, but does NOT require per-operation user
+ *    authentication — the app-level [VaultLockState] (biometric prompt
+ *    on launch + auto-lock timer) is the access gate. An earlier spec
+ *    used `setUserAuthenticationParameters(0, …)` / `-1` validity which
+ *    demands a CryptoObject-bound prompt per op; our unlock flow doesn't
+ *    use a CryptoObject, and some devices surfaced that as an opaque
+ *    "Attempt to get length of null array" NPE from deep in the Keystore
+ *    provider. Legacy keys of that shape are auto-migrated in
+ *    [getOrCreateMasterKey] (wipe key + vault blob and regenerate; the
+ *    old entries are unrecoverable without auth).
  *
  * 2. A single blob file `filesDir/vault.enc` holding a JSON map from
  *    opaque alias → base64(iv || ciphertext_with_gcm_tag). A fresh
@@ -112,36 +119,44 @@ class KeystoreSecretVault @Inject constructor(
 
     private fun getOrCreateMasterKey(): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE_PROVIDER).apply { load(null) }
-        (keyStore.getKey(MASTER_KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        val existing = keyStore.getKey(MASTER_KEY_ALIAS, null) as? SecretKey
+        if (existing != null) {
+            if (!requiresMigration(existing)) return existing
+            // Legacy key created with per-op user-authentication. We can't
+            // decrypt the existing blob without a CryptoObject-bound prompt
+            // (and the unlock flow doesn't provide one), so wipe both the
+            // key and the blob and start fresh. The user re-enters any
+            // saved secrets on next use.
+            keyStore.deleteEntry(MASTER_KEY_ALIAS)
+            blobFile.delete()
+        }
 
         val generator = KeyGenerator.getInstance(
             KeyProperties.KEY_ALGORITHM_AES,
             KEYSTORE_PROVIDER,
         )
 
-        val specBuilder = KeyGenParameterSpec.Builder(
+        val spec = KeyGenParameterSpec.Builder(
             MASTER_KEY_ALIAS,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
             .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
             .setKeySize(256)
-            .setUserAuthenticationRequired(true)
-            .setInvalidatedByBiometricEnrollment(true)
+            .build()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            @Suppress("NewApi")
-            specBuilder.setUserAuthenticationParameters(
-                0,
-                KeyProperties.AUTH_BIOMETRIC_STRONG or KeyProperties.AUTH_DEVICE_CREDENTIAL,
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            specBuilder.setUserAuthenticationValidityDurationSeconds(-1)
-        }
-
-        generator.init(specBuilder.build())
+        generator.init(spec)
         return generator.generateKey()
+    }
+
+    private fun requiresMigration(key: SecretKey): Boolean = try {
+        val factory = SecretKeyFactory.getInstance(key.algorithm, KEYSTORE_PROVIDER)
+        val info = factory.getKeySpec(key, KeyInfo::class.java) as KeyInfo
+        info.isUserAuthenticationRequired
+    } catch (_: Throwable) {
+        // If introspection fails, err on the side of migrating — a
+        // broken legacy key is worse than a fresh one.
+        true
     }
 
     // --- Crypto -------------------------------------------------------------
