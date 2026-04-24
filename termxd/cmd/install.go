@@ -25,6 +25,18 @@ import (
 const shellHooksScript = `#!/usr/bin/env sh
 # termx shell hooks — sourced by bash/zsh rc files.
 # Invokes $HOME/.local/bin/termx _preexec / _precmd around each command.
+#
+# Design notes (learned the hard way):
+#  * Background calls use a subshell wrapper — "( cmd & )" instead of
+#    "cmd &" — so the job lives in a throwaway subshell's table and the
+#    parent interactive shell never prints "[1] Done ..." notifications.
+#  * The bash DEBUG trap is NOT installed at source time. If it were,
+#    every statement remaining in .bashrc (case, PROMPT_COMMAND=..., the
+#    default Ubuntu PATH checks) would fire the trap and background a
+#    termx call. Instead we schedule trap installation via a one-shot
+#    PROMPT_COMMAND entry that arms the trap on the FIRST prompt and
+#    removes itself — by that time, rc sourcing is complete and only
+#    real user commands will hit the trap.
 
 _termx_bin="$HOME/.local/bin/termx"
 
@@ -32,33 +44,45 @@ if [ -n "$ZSH_VERSION" ]; then
     autoload -Uz add-zsh-hook
     _termx_preexec() {
         local cmd="$1"
-        "$_termx_bin" _preexec "$(printf '%s' "$cmd" | base64 | tr -d '\n')" >/dev/null 2>&1 &
+        ( "$_termx_bin" _preexec "$(printf '%s' "$cmd" | base64 | tr -d '\n')" >/dev/null 2>&1 & )
     }
     _termx_precmd() {
         local ec=$?
-        "$_termx_bin" _precmd "$ec" >/dev/null 2>&1 &
+        ( "$_termx_bin" _precmd "$ec" >/dev/null 2>&1 & )
     }
     add-zsh-hook preexec _termx_preexec
     add-zsh-hook precmd  _termx_precmd
 elif [ -n "$BASH_VERSION" ]; then
-    # Bash: DEBUG trap fires before every command; PROMPT_COMMAND fires before each prompt (after cmd).
-    _termx_in_preexec=0
+    _termx_in_precmd=0
+
     _termx_preexec() {
-        if [ -n "$BASH_COMMAND" ] && [ "$BASH_COMMAND" != "_termx_precmd" ] && [ "$_termx_in_preexec" = "0" ]; then
-            _termx_in_preexec=1
-            "$_termx_bin" _preexec "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')" >/dev/null 2>&1 &
-            _termx_in_preexec=0
-        fi
+        # Skip the precmd call itself (it fires via PROMPT_COMMAND with
+        # DEBUG trap still active) and any command issued from within
+        # precmd.
+        [ "$BASH_COMMAND" = "_termx_precmd" ] && return
+        [ "$_termx_in_precmd" = "1" ] && return
+        [ -z "$BASH_COMMAND" ] && return
+        ( "$_termx_bin" _preexec "$(printf '%s' "$BASH_COMMAND" | base64 | tr -d '\n')" >/dev/null 2>&1 & )
     }
+
     _termx_precmd() {
         local ec=$?
-        "$_termx_bin" _precmd "$ec" >/dev/null 2>&1 &
+        _termx_in_precmd=1
+        ( "$_termx_bin" _precmd "$ec" >/dev/null 2>&1 & )
+        _termx_in_precmd=0
     }
-    trap '_termx_preexec' DEBUG
-    # Prepend (don't clobber) PROMPT_COMMAND
+
+    # One-shot arm: install the DEBUG trap at the first prompt, then
+    # remove ourselves from PROMPT_COMMAND so this never runs again.
+    _termx_arm_debug_trap() {
+        trap '_termx_preexec' DEBUG
+        PROMPT_COMMAND=$(printf '%s' "$PROMPT_COMMAND" | sed 's/_termx_arm_debug_trap;//')
+    }
+
+    # Prepend arm + precmd to PROMPT_COMMAND, once.
     case ";$PROMPT_COMMAND;" in
         *";_termx_precmd;"*) : ;;
-        *) PROMPT_COMMAND="_termx_precmd;$PROMPT_COMMAND" ;;
+        *) PROMPT_COMMAND="_termx_arm_debug_trap;_termx_precmd;$PROMPT_COMMAND" ;;
     esac
 fi
 `
