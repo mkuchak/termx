@@ -128,4 +128,4 @@ on the latest debug APK against a real VPS.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE). Copyright (c) 2026 Matheus Kuchak.
+MIT. See [`LICENSE`](LICENSE). Copyright (c) 2026 Marcos Kuchak.
