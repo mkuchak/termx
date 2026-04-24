@@ -20,7 +20,6 @@ import dev.kuch.termx.feature.keys.KeyListScreen
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
 import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.servers.setup.SetupWizardScreen
-import dev.kuch.termx.feature.settings.SettingsScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
 import java.util.UUID
 import javax.inject.Inject
@@ -96,11 +95,6 @@ fun TermxNavHost() {
                     navController.popBackStack(Routes.Servers, inclusive = false)
                 },
                 onCancel = { navController.popBackStack() },
-            )
-        }
-        composable(Routes.Settings) {
-            SettingsScreen(
-                onBack = { navController.popBackStack() },
             )
         }
         composable(
