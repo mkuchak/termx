@@ -294,13 +294,28 @@ class SetupWizardViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Pull the one-shot password the user typed in Step 1 when the draft
+     * uses password auth. `null` otherwise — `Server` doesn't persist
+     * passwords so the install use-case has no other source, and key-auth
+     * servers don't need one.
+     */
+    private fun passwordOverrideForInstall(): String? {
+        val draft = _state.value.draft
+        return draft.password.takeIf { draft.authType == AuthType.PASSWORD && it.isNotBlank() }
+    }
+
     /** Launch detect: probes `termx --version`, then hits GitHub for the asset. */
     fun runCompanionDetect() {
         val id = _state.value.savedServerId ?: return
         cachedDownloadUrl = null
         installJob?.cancel()
         installJob = viewModelScope.launch {
-            installCompanion.run(id, InstallCompanionUseCase.Stage.Detect).collect { state ->
+            installCompanion.run(
+                id,
+                InstallCompanionUseCase.Stage.Detect,
+                InstallCompanionUseCase.Context(passwordOverride = passwordOverrideForInstall()),
+            ).collect { state ->
                 if (state is InstallStep3State.ReadyToDownload) {
                     cachedDownloadUrl = state.downloadUrl
                 }
@@ -322,7 +337,10 @@ class SetupWizardViewModel @Inject constructor(
                 .run(
                     id,
                     InstallCompanionUseCase.Stage.Preview,
-                    InstallCompanionUseCase.Context(downloadUrl = url),
+                    InstallCompanionUseCase.Context(
+                        downloadUrl = url,
+                        passwordOverride = passwordOverrideForInstall(),
+                    ),
                 )
                 .collect { _installStep3State.value = it }
         }
@@ -333,7 +351,11 @@ class SetupWizardViewModel @Inject constructor(
         val id = _state.value.savedServerId ?: return
         installJob?.cancel()
         installJob = viewModelScope.launch {
-            installCompanion.run(id, InstallCompanionUseCase.Stage.Install).collect {
+            installCompanion.run(
+                id,
+                InstallCompanionUseCase.Stage.Install,
+                InstallCompanionUseCase.Context(passwordOverride = passwordOverrideForInstall()),
+            ).collect {
                 _installStep3State.value = it
             }
         }

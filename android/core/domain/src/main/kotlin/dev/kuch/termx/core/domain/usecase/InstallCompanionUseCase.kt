@@ -44,5 +44,14 @@ interface InstallCompanionUseCase {
 
     data class Context(
         val downloadUrl: String? = null,
+        /**
+         * One-shot password used when the server's [AuthType] is `PASSWORD`.
+         * Passwords are not yet persisted in Room (see `Server` — `keyPairId`
+         * is the only stored secret reference), so the wizard passes the
+         * user-entered value through here. `null` when the server uses key
+         * auth or when the caller has no password to offer (in which case a
+         * `PASSWORD` server will error out cleanly in the impl).
+         */
+        val passwordOverride: String? = null,
     )
 }

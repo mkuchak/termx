@@ -58,9 +58,9 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         context: InstallCompanionUseCase.Context,
     ): Flow<InstallStep3State> = flow {
         when (stage) {
-            Stage.Detect -> runDetect(serverId)
-            Stage.Preview -> runPreview(serverId, context.downloadUrl)
-            Stage.Install -> runInstall(serverId)
+            Stage.Detect -> runDetect(serverId, context.passwordOverride)
+            Stage.Preview -> runPreview(serverId, context.downloadUrl, context.passwordOverride)
+            Stage.Install -> runInstall(serverId, context.passwordOverride)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -68,10 +68,11 @@ class InstallCompanionUseCaseImpl @Inject constructor(
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runDetect(
         serverId: UUID,
+        passwordOverride: String?,
     ) {
         emit(InstallStep3State.Detecting)
         val session = try {
-            openSession(serverId)
+            openSession(serverId, passwordOverride)
         } catch (t: Throwable) {
             emit(InstallStep3State.Error(describe(t)))
             return
@@ -126,6 +127,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runPreview(
         serverId: UUID,
         downloadUrl: String?,
+        passwordOverride: String?,
     ) {
         if (downloadUrl.isNullOrBlank()) {
             emit(InstallStep3State.Error("Missing download URL"))
@@ -134,7 +136,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         emit(InstallStep3State.Downloading("Downloading ${downloadUrl.substringAfterLast('/')}..."))
 
         val session = try {
-            openSession(serverId)
+            openSession(serverId, passwordOverride)
         } catch (t: Throwable) {
             emit(InstallStep3State.Error(describe(t)))
             return
@@ -186,12 +188,13 @@ class InstallCompanionUseCaseImpl @Inject constructor(
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runInstall(
         serverId: UUID,
+        passwordOverride: String?,
     ) {
         val log = mutableListOf<String>()
         emit(InstallStep3State.Installing(log.toList()))
 
         val session = try {
-            openSession(serverId)
+            openSession(serverId, passwordOverride)
         } catch (t: Throwable) {
             emit(InstallStep3State.Error(describe(t), log = log.toList()))
             return
@@ -322,10 +325,10 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     private fun describe(t: Throwable): String =
         t.message?.takeIf { it.isNotBlank() } ?: t.javaClass.simpleName
 
-    private suspend fun openSession(serverId: UUID): SshSession {
+    private suspend fun openSession(serverId: UUID, passwordOverride: String?): SshSession {
         val server = serverRepository.getById(serverId)
             ?: throw IllegalStateException("Server not found: $serverId")
-        val auth = resolveAuth(server)
+        val auth = resolveAuth(server, passwordOverride)
         val target = SshTarget(
             host = server.host,
             port = server.port,
@@ -335,10 +338,17 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         return sshClient.connect(target, auth)
     }
 
-    private suspend fun resolveAuth(server: Server): SshAuth = when (server.authType) {
-        AuthType.PASSWORD -> throw IllegalStateException(
-            "Password auth isn't wired for install flow yet",
-        )
+    private suspend fun resolveAuth(server: Server, passwordOverride: String?): SshAuth = when (server.authType) {
+        AuthType.PASSWORD -> {
+            val pw = passwordOverride
+                ?: throw IllegalStateException(
+                    "Password required. Passwords aren't persisted yet; re-enter via the wizard.",
+                )
+            if (pw.isBlank()) {
+                throw IllegalStateException("Password is blank")
+            }
+            SshAuth.Password(pw)
+        }
         AuthType.KEY -> {
             val keyId = server.keyPairId
                 ?: throw IllegalStateException("Server has no key assigned")
