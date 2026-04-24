@@ -112,11 +112,26 @@ internal class MoshClientImpl(
             return@withContext null
         }
         try {
+            // Extract the bundled minimal terminfo tree so ncurses'
+            // setupterm() can resolve `xterm-256color`/`xterm`/`vt100`/
+            // `dumb`. Stock Android has no /usr/share/terminfo, which
+            // is why mosh-client used to exit in <100 ms with a silent
+            // "Cannot find termcap entry" write to stderr.
+            val terminfoDir = TerminfoInstaller.ensureInstalled(context)
             val pb = ProcessBuilder(moshBin.absolutePath, host, port.toString())
-                .redirectErrorStream(true)
-            pb.environment()["MOSH_KEY"] = key
-            pb.environment()["LD_LIBRARY_PATH"] = binDir
-            pb.environment()["TERM"] = "xterm-256color"
+                // Keep stderr separate so MoshSessionImpl can capture
+                // startup errors without feeding them into the emulator
+                // as terminal bytes.
+                .redirectErrorStream(false)
+            pb.environment().apply {
+                put("TERMINFO", terminfoDir.absolutePath)
+                put("TERM", "xterm-256color")
+                put("MOSH_KEY", key)
+                put("LD_LIBRARY_PATH", binDir)
+                put("HOME", context.filesDir.absolutePath)
+                put("LANG", "en_US.UTF-8")
+                put("LC_ALL", "en_US.UTF-8")
+            }
             val proc = pb.start()
             MoshSessionImpl(proc)
         } catch (t: Throwable) {

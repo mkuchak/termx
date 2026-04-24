@@ -1,6 +1,7 @@
 package dev.kuch.termx.libs.sshnative
 
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * A live mosh session backed by a local mosh-client child process.
@@ -25,5 +26,34 @@ interface MoshSession : AutoCloseable {
     /** Send SIGWINCH to the mosh-client PID so it refreshes its terminal size. */
     suspend fun resize(cols: Int, rows: Int)
 
+    /**
+     * Latest diagnostic snapshot of the mosh-client child process.
+     *
+     * `exitCode` is `null` while the process is still running and
+     * flips to the integer status once it terminates. `head` is the
+     * first ~1 KB of merged stdout+stderr captured at the time the
+     * process exited — intended for remote debugging without requiring
+     * logcat access. While the process is live, `head` is an empty
+     * string.
+     *
+     * UI code watches this to distinguish "mosh exited immediately
+     * with an error message" from a normal tear-down and surfaces a
+     * human-readable reason to the user.
+     */
+    val diagnostic: StateFlow<MoshDiagnostic>
+
     override fun close()
 }
+
+/**
+ * Snapshot of the mosh-client child process lifecycle + a head of its
+ * merged output, used to explain why a mosh session terminated without
+ * ever producing terminal output.
+ *
+ * See `MoshSession.diagnostic`.
+ */
+data class MoshDiagnostic(
+    val exitCode: Int?,
+    val elapsedMs: Long,
+    val head: String,
+)

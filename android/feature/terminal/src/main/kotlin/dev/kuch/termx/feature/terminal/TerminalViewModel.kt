@@ -557,6 +557,23 @@ class TerminalViewModel @Inject constructor(
                 }
             }.onFailure { t -> Log.w(LOG_TAG, "mosh output ended for $tabName", t) }
             emulator.onRemoteSessionClosed()
+            // mosh-client stdout EOF ⇒ the child process either exited
+            // cleanly (user typed `exit` on the remote) or died during
+            // startup. Distinguish via the diagnostic snapshot: a
+            // non-zero code within the early-exit window means we
+            // should tell the user *why* rather than silently dropping
+            // them on a useless Reconnect button.
+            val diag = session.diagnostic.value
+            if (diag.exitCode != null && diag.exitCode != 0 && diag.elapsedMs < MOSH_EARLY_EXIT_WINDOW_MS) {
+                val reason = extractReadableReason(diag.head)
+                _state.value = _state.value.copy(
+                    status = TerminalUiState.Status.Disconnected,
+                    error = "mosh-client exited after ${diag.elapsedMs}ms (exit ${diag.exitCode}): $reason",
+                    activeSession = null,
+                    activeTabName = null,
+                    openTabs = emptySet(),
+                )
+            }
         }
 
         val tab = SessionPty(
@@ -575,6 +592,27 @@ class TerminalViewModel @Inject constructor(
             tabName = tab.name,
         )
         return tab
+    }
+
+    /**
+     * Pull the most useful single line out of mosh-client's captured
+     * stderr head. ncurses prints `Error opening terminal: ...` or the
+     * classic `Cannot find termcap entry for ...`; mosh itself prints
+     * things like `mosh-client: ...`. We prefer a line matching any of
+     * those markers, falling back to the first non-empty line, then to
+     * a size-capped flattened form.
+     */
+    private fun extractReadableReason(head: String): String {
+        if (head.isBlank()) return "no output captured"
+        val lines = head.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+        val preferred = lines.firstOrNull { line ->
+            line.contains("termcap", ignoreCase = true) ||
+                line.contains("terminal", ignoreCase = true) ||
+                line.startsWith("mosh", ignoreCase = true) ||
+                line.contains("error", ignoreCase = true)
+        }
+        val best = preferred ?: lines.firstOrNull() ?: head.replace('\n', ' ').trim()
+        return best.take(200)
     }
 
     /**
@@ -615,9 +653,22 @@ class TerminalViewModel @Inject constructor(
                     SshAuth.PublicKey(privateKeyPem = bytes, passphrase = null)
                 }
                 AuthType.PASSWORD -> {
-                    val cached = passwordCache.get(server.id)
+                    // Vault first, in-memory cache second. Vault wins so a
+                    // cold-start reconnect uses the persisted password; the
+                    // cache only matters for unsaved wizard drafts or
+                    // password-entered-but-not-yet-saved flows.
+                    // VaultLockedException is treated as "missing" — the
+                    // PasswordRequiredException path re-prompts, and the
+                    // app's biometric unlock flow handles the rest.
+                    val fromVault = server.passwordAlias?.let { alias ->
+                        runCatching { secretVault.load(alias) }
+                            .getOrNull()
+                            ?.let { bytes -> String(bytes, Charsets.UTF_8) }
+                    }
+                    val password = fromVault
+                        ?: passwordCache.get(server.id)
                         ?: throw PasswordRequiredException(server.id, server.label)
-                    SshAuth.Password(cached)
+                    SshAuth.Password(password)
                 }
             }
             return target to auth
@@ -774,6 +825,14 @@ class TerminalViewModel @Inject constructor(
          * covers a fresh VPS cold-start plus firewall pinhole-probe.
          */
         const val MOSH_HANDSHAKE_TIMEOUT_MS: Long = 8_000L
+
+        /**
+         * Window within which a mosh-client exit is treated as a
+         * startup failure rather than a normal user-initiated exit.
+         * Matches the companion in `MoshSessionImpl` so the log and
+         * the UI post-mortem agree on what counts as "immediate".
+         */
+        const val MOSH_EARLY_EXIT_WINDOW_MS: Long = 2_000L
 
         /**
          * Stable sentinel UUID for BuildConfig test-server connections
