@@ -154,6 +154,26 @@ class EventStreamClient(
     }
 
     /**
+     * One-shot read of `~/.termx/diffs/<diffId>.json`.
+     *
+     * Returned bytes are the raw JSON payload termxd's PostToolUse hook
+     * wrote; the caller deserializes into a diff view model. Not folded
+     * into a typed `Diff` model here because the phone's diff viewer
+     * tolerates missing/extra fields independently of the event-stream
+     * schema cadence.
+     */
+    suspend fun loadDiff(diffId: String): ByteArray = withContext(Dispatchers.IO) {
+        val home = resolveHomeDir()
+        val path = "$home/.termx/diffs/$diffId.json"
+        val sftp = session.openSftp()
+        try {
+            sftp.read(path)
+        } finally {
+            runCatching { sftp.close() }
+        }
+    }
+
+    /**
      * Drop a [CompanionCommand] into `~/.termx/commands/<id>.json`.
      *
      * Writes are atomic from the reader's point of view: the payload

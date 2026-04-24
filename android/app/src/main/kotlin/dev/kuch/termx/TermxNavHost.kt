@@ -22,6 +22,8 @@ import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.servers.setup.SetupWizardScreen
 import dev.kuch.termx.feature.settings.SettingsScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
+import dev.kuch.termx.feature.terminal.diff.DiffViewerScreen
+import dev.kuch.termx.feature.terminal.permission.PermissionDialogHost
 import dev.kuch.termx.service.NotificationPermissionRequester
 import java.util.UUID
 import javax.inject.Inject
@@ -170,7 +172,34 @@ fun TermxNavHost() {
                 },
             )
         }
+        composable(
+            route = Routes.DiffViewerPattern,
+            arguments = listOf(
+                navArgument(Routes.ArgDiffId) { type = NavType.StringType },
+                navArgument(Routes.ArgServerId) { type = NavType.StringType },
+            ),
+        ) { backStackEntry ->
+            val serverIdArg = backStackEntry.arguments
+                ?.getString(Routes.ArgServerId)
+                ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            DiffViewerScreen(
+                onBack = { navController.popBackStack() },
+                onOpenTerminal = {
+                    if (serverIdArg != null) {
+                        navController.navigate(Routes.terminalRoute(serverIdArg)) {
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
+                },
+            )
+        }
     }
+
+    // Permission dialog is mounted as a sibling under the root composable
+    // so it follows the user across any screen in the NavHost.
+    PermissionDialogHost()
 }
 
 /**
@@ -193,9 +222,12 @@ private object Routes {
     const val Unlock = "unlock"
     const val ArgServerId = "serverId"
     const val ArgKeyId = "id"
+    const val ArgDiffId = "diffId"
     const val TerminalPattern = "terminal/{$ArgServerId}"
     const val KeyDetailPattern = "keys/{$ArgKeyId}"
+    const val DiffViewerPattern = "diff/{$ArgDiffId}/{$ArgServerId}"
 
     fun terminalRoute(id: UUID): String = "terminal/$id"
     fun keyDetailRoute(id: UUID): String = "keys/$id"
+    fun diffViewerRoute(diffId: String, serverId: UUID): String = "diff/$diffId/$serverId"
 }

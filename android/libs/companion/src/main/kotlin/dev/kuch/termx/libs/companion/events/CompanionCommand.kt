@@ -66,4 +66,22 @@ sealed class CompanionCommand {
         val session: String,
         val text: String,
     ) : CompanionCommand()
+
+    /**
+     * Append [pattern] to the VPS's `~/.termx/allowlist.txt` so subsequent
+     * tool calls matching the pattern auto-approve without roundtripping
+     * to the phone. Consumed by the Phase 5 "Always approve" button on
+     * the permission dialog.
+     *
+     * [pattern] is a Go-compatible regex matched against
+     * `<tool_name>|<command-or-path>` by `termx _hook-pretooluse`. The
+     * UI is expected to escape / sanity-check before sending; we deliberately
+     * do not gate here so power users can craft custom rules.
+     */
+    @Serializable
+    @SerialName("update_allowlist")
+    data class UpdateAllowlist(
+        override val id: String,
+        val pattern: String,
+    ) : CompanionCommand()
 }

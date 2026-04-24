@@ -47,22 +47,8 @@ func hookCmds() []*cobra.Command {
 		newOnWindowUnlinkedCmd(),
 		newPreexecCmd(),
 		newPrecmdCmd(),
-		// Placeholders for P5.1 / P5.3 — kept here so the subcommand
-		// names remain reserved by a single registrar.
-		newStubCmd("_hook-pretooluse", "5.1"),
-		newStubCmd("_hook-posttooluse", "5.3"),
-	}
-}
-
-func newStubCmd(use, phase string) *cobra.Command {
-	return &cobra.Command{
-		Use:    use,
-		Short:  "internal hook (stub)",
-		Hidden: true,
-		Args:   cobra.ArbitraryArgs,
-		Run: func(cmd *cobra.Command, _ []string) {
-			cmd.Printf("TODO: implement in Phase %s\n", phase)
-		},
+		newHookPreToolUseCmd(),
+		newHookPostToolUseCmd(),
 	}
 }
 
