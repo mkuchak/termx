@@ -8,7 +8,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
@@ -70,14 +69,14 @@ internal class ExecChannelImpl(
 
     private fun streamFlow(stream: InputStream): Flow<ByteArray> = channelFlow {
         val buf = ByteArray(8 * 1024)
-        try {
-            while (!closed) {
-                val n = runCatching { stream.read(buf) }.getOrElse { -1 }
-                if (n <= 0) break
-                trySend(buf.copyOf(n))
-            }
-        } finally {
-            awaitClose { /* upstream close handled via [close] */ }
+        while (!closed) {
+            val n = runCatching { stream.read(buf) }.getOrElse { -1 }
+            if (n <= 0) break
+            trySend(buf.copyOf(n))
         }
+        // Producer returns → channelFlow auto-closes the channel and the
+        // collector terminates. Downstream cancel is already covered by
+        // trySend throwing CancellationException; underlying stream close
+        // happens in ExecChannelImpl.close().
     }.flowOn(Dispatchers.IO)
 }

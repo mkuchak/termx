@@ -25,7 +25,6 @@ class ExecChannelTest {
         server.stop()
     }
 
-    @org.junit.Ignore("MINA embedded-sshd timing-flaky under runTest; see Task #52")
     @Test
     fun `exec exits with exit code 7`() = runTest {
         val session = SshClient().connect(

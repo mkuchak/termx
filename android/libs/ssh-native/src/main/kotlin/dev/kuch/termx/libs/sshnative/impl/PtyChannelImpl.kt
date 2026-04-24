@@ -2,7 +2,6 @@ package dev.kuch.termx.libs.sshnative.impl
 
 import dev.kuch.termx.libs.sshnative.PtyChannel
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
@@ -45,19 +44,16 @@ internal class PtyChannelImpl(
 
     override val output: Flow<ByteArray> = channelFlow {
         val buffer = ByteArray(8 * 1024)
-        try {
-            while (!closed) {
-                val n = runCatching { input.read(buffer) }.getOrElse { -1 }
-                if (n <= 0) break
-                trySend(buffer.copyOf(n))
-            }
-        } finally {
-            awaitClose {
-                // Collector scope cancelled → close the underlying channel so
-                // the session can reclaim the channel slot.
-                runCatching { close() }
-            }
+        while (!closed) {
+            val n = runCatching { input.read(buffer) }.getOrElse { -1 }
+            if (n <= 0) break
+            trySend(buffer.copyOf(n))
         }
+        // Natural termination: EOF on the shell's stdout → producer returns →
+        // channel auto-closes → collector completes. Downstream cancel is
+        // covered by trySend throwing CancellationException. The underlying
+        // shell is closed via [close], invoked from TerminalViewModel's
+        // disposal path.
     }.flowOn(Dispatchers.IO)
 
     override suspend fun write(bytes: ByteArray) = withContext(Dispatchers.IO) {

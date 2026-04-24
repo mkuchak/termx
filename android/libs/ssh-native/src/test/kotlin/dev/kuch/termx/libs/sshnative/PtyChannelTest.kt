@@ -26,7 +26,6 @@ class PtyChannelTest {
         server.stop()
     }
 
-    @org.junit.Ignore("MINA embedded-sshd timing-flaky under runTest; see Task #52")
     @Test
     fun `shell output flow terminates after exit`() = runTest {
         val session = SshClient().connect(
