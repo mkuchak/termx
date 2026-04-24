@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.1](https://github.com/mkuchak/termx/compare/v1.1.0...v1.1.1) (2026-04-24)
+
+### Bug Fixes
+
+* **terminal:** pad status + nav bar insets and move keyboard toggle ([dad814a](https://github.com/mkuchak/termx/commit/dad814a4e1a83e71d716f96a9594a0d4245e6436))
+
 ## [1.1.0](https://github.com/mkuchak/termx/compare/v1.0.0...v1.1.0) (2026-04-24)
 
 ### Features
