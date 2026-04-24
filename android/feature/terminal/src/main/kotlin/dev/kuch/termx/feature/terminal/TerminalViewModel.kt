@@ -235,12 +235,26 @@ class TerminalViewModel @Inject constructor(
 
     /**
      * Invoked by the terminal's password prompt dialog. Caches the
-     * password in-memory for this process's lifetime and retries
-     * [connect] for the same server.
+     * password in-memory for this process's lifetime, persists it into
+     * the vault under the server's existing alias (best-effort — a
+     * locked/failing vault just leaves the in-memory copy as before),
+     * and retries [connect] for the same server.
+     *
+     * Persisting here — not only in the Add/Edit sheet — is what stops
+     * the "app asks for the password on every restart" case. Without
+     * this call the password lives only in [PasswordCache], which dies
+     * with the process; the prompt then fires again on every cold
+     * start even though the user already answered it yesterday.
      */
     fun submitPassword(serverId: UUID, password: String) {
         passwordCache.put(serverId, password)
         _state.value = _state.value.copy(awaitingPassword = null)
+        viewModelScope.launch(Dispatchers.IO) {
+            val alias = runCatching { serverRepository.getById(serverId)?.passwordAlias }
+                .getOrNull() ?: return@launch
+            runCatching { secretVault.store(alias, password.toByteArray(Charsets.UTF_8)) }
+                .onFailure { Log.w(LOG_TAG, "persisting prompted password failed", it) }
+        }
         connect(serverId)
     }
 

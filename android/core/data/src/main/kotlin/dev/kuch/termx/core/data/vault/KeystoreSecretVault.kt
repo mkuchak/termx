@@ -3,6 +3,7 @@ package dev.kuch.termx.core.data.vault
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.Log
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -142,7 +143,14 @@ class KeystoreSecretVault @Inject constructor(
         // there, this is a clean install.
         if (keyStore.containsAlias(MASTER_KEY_ALIAS_V1)) {
             runCatching { keyStore.deleteEntry(MASTER_KEY_ALIAS_V1) }
-            runCatching { blobFile.delete() }
+                .onFailure { Log.w(LOG_TAG, "deleteEntry(v1) during migration failed", it) }
+            // Verify the wipe actually happened — a silent failure would
+            // leave readMap() below deserializing the legacy v1-encrypted
+            // JSON and resurrecting stale entries into the new v2 blob
+            // (which would then reject them on load).
+            if (blobFile.exists() && !blobFile.delete()) {
+                Log.w(LOG_TAG, "blobFile.delete() during migration failed; stale entries may persist")
+            }
         }
 
         val generator = KeyGenerator.getInstance(
@@ -212,6 +220,8 @@ class KeystoreSecretVault @Inject constructor(
     }
 
     private companion object {
+        const val LOG_TAG = "KeystoreSecretVault"
+
         /** Legacy alias — created with setUserAuthenticationRequired(true). */
         const val MASTER_KEY_ALIAS_V1 = "dev.kuch.termx.vault-master"
 
