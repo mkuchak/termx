@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -132,8 +133,7 @@ class TmuxSessionRepositoryImpl @Inject constructor(
         try {
             return cache.mutex.withLock {
                 cache.session.openExec(cmd).use { exec ->
-                    val out = readAll(exec.stdout)
-                    val err = readAll(exec.stderr)
+                    val (out, err) = drainBoth(exec)
                     val code = exec.exitCode.await()
                     ExecResult(exitCode = code, stdout = out, stderr = err)
                 }
@@ -145,7 +145,7 @@ class TmuxSessionRepositoryImpl @Inject constructor(
 
     private suspend fun runTmuxPoll(serverId: UUID, cache: Cache): List<TmuxSession> {
         val lsOutput = cache.session.openExec(LS_COMMAND).use { exec ->
-            val stdout = readAll(exec.stdout)
+            val (stdout, _) = drainBoth(exec)
             val exit = exec.exitCode.await()
             if (exit == 127) {
                 throw TmuxError.TmuxNotFound(serverId)
@@ -163,7 +163,7 @@ class TmuxSessionRepositoryImpl @Inject constructor(
         // Claude detection: one exec for *all* panes across all sessions.
         val panesOutput = runCatching {
             cache.session.openExec(PANES_COMMAND).use { exec ->
-                val stdout = readAll(exec.stdout)
+                val (stdout, _) = drainBoth(exec)
                 exec.exitCode.await()
                 stdout
             }
@@ -283,11 +283,28 @@ class TmuxSessionRepositoryImpl @Inject constructor(
         sshClient.connect(target, auth)
     }
 
-    private suspend fun readAll(flow: Flow<ByteArray>): String {
-        val buf = StringBuilder()
-        flow.collect { chunk -> buf.append(String(chunk, Charsets.UTF_8)) }
-        return buf.toString()
-    }
+    /**
+     * Drain an [ExecChannel]'s stdout AND stderr concurrently, returning both
+     * as UTF-8 strings. sshj gives each stream its own flow-control window;
+     * a sequential drain (stdout to EOF, then stderr) can wedge the remote
+     * process if it writes enough stderr to fill that window before its stdout
+     * closes. All poll commands redirect stderr with `2>/dev/null` today,
+     * but this keeps the contract safe regardless of caller hygiene.
+     */
+    private suspend fun drainBoth(exec: dev.kuch.termx.libs.sshnative.ExecChannel): Pair<String, String> =
+        coroutineScope {
+            val out = StringBuilder()
+            val err = StringBuilder()
+            val stdoutJob = launch {
+                exec.stdout.collect { chunk -> out.append(String(chunk, Charsets.UTF_8)) }
+            }
+            val stderrJob = launch {
+                exec.stderr.collect { chunk -> err.append(String(chunk, Charsets.UTF_8)) }
+            }
+            stdoutJob.join()
+            stderrJob.join()
+            out.toString() to err.toString()
+        }
 
     private companion object {
         const val FOREGROUND_POLL_MS = 30_000L

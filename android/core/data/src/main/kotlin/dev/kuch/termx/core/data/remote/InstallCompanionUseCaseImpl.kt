@@ -63,6 +63,25 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         }
     }.flowOn(Dispatchers.IO)
 
+    // sshj's `client.timeout` is the transport-level idle read timeout — a
+    // channel read that sits silent longer than this raises SocketTimeoutException
+    // and tears the session down. Detect is a couple of short execs (~ms),
+    // Preview curls a binary and runs `termx install --dry-run` (seconds), but
+    // Install runs `termx install --install-deps` which shells out to apt-get
+    // and routinely sits silent for minutes. We tune per stage to avoid
+    // aborting a successful install mid-flight; DNS/handshake uses the same
+    // budget which is harmless.
+    private val detectTimeoutMillis = 15_000L
+    private val previewTimeoutMillis = 120_000L
+    private val installTimeoutMillis = 600_000L
+
+    // Single SFTP operation (stat/exists/read/write) ceiling. Defensive:
+    // sshj blocks on the subsystem's socket, and Thread.interrupt doesn't
+    // always propagate from coroutine cancellation.
+    private companion object {
+        const val SFTP_OP_TIMEOUT_MS = 15_000L
+    }
+
     // --- Stage: detect ------------------------------------------------------
 
     private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.runDetect(
@@ -71,7 +90,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     ) {
         emit(InstallStep3State.Detecting)
         val session = try {
-            openSession(serverId, passwordOverride)
+            openSession(serverId, passwordOverride, detectTimeoutMillis)
         } catch (t: Throwable) {
             emit(InstallStep3State.Error(describe(t)))
             return
@@ -135,7 +154,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         emit(InstallStep3State.Downloading("Downloading ${downloadUrl.substringAfterLast('/')}..."))
 
         val session = try {
-            openSession(serverId, passwordOverride)
+            openSession(serverId, passwordOverride, previewTimeoutMillis)
         } catch (t: Throwable) {
             emit(InstallStep3State.Error(describe(t)))
             return
@@ -193,7 +212,7 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         emit(InstallStep3State.Installing(log.toList()))
 
         val session = try {
-            openSession(serverId, passwordOverride)
+            openSession(serverId, passwordOverride, installTimeoutMillis)
         } catch (t: Throwable) {
             emit(InstallStep3State.Error(describe(t), log = log.toList()))
             return
@@ -218,12 +237,18 @@ class InstallCompanionUseCaseImpl @Inject constructor(
             // Sanity check: the install_binary step should have produced
             // ~/.termx/events.ndjson. If missing, something went wrong
             // despite a zero exit code.
+            //
+            // Wrap the SFTP `exists` call in a withTimeout — sshj's blocking
+            // I/O doesn't always respond to coroutine cancellation, so a sick
+            // server mid-SFTP would otherwise stall the wizard indefinitely.
             val eventsCheck = try {
                 val sftp = session.openSftp()
                 try {
                     val home = execCapture(session, "printf %s \"\$HOME\"").trim()
                     val candidate = if (home.isNotBlank()) "$home/.termx/events.ndjson" else "~/.termx/events.ndjson"
-                    sftp.exists(candidate)
+                    kotlinx.coroutines.withTimeout(SFTP_OP_TIMEOUT_MS) {
+                        sftp.exists(candidate)
+                    }
                 } finally {
                     runCatching { sftp.close() }
                 }
@@ -257,7 +282,20 @@ class InstallCompanionUseCaseImpl @Inject constructor(
         val exec = session.openExec(command)
         return try {
             val buf = StringBuilder()
-            exec.stdout.collect { chunk -> buf.append(String(chunk, Charsets.UTF_8)) }
+            // Drain stdout AND stderr concurrently. sshj gives each stream its
+            // own flow-control window (~2 MB default); if we only read stdout,
+            // a remote command that writes enough to stderr can block
+            // indefinitely waiting for a read on the other stream, which
+            // parks stdout EOF forever. Most callers today redirect with
+            // `2>/dev/null`, but the draining is cheap and kills the hazard.
+            coroutineScope {
+                val stdoutJob = launch {
+                    exec.stdout.collect { chunk -> buf.append(String(chunk, Charsets.UTF_8)) }
+                }
+                val stderrJob = launch { exec.stderr.collect { /* drain, discard */ } }
+                stdoutJob.join()
+                stderrJob.join()
+            }
             exec.exitCode.await()
             buf.toString()
         } finally {
@@ -268,8 +306,13 @@ class InstallCompanionUseCaseImpl @Inject constructor(
     private suspend fun execDiscard(session: SshSession, command: String): Int {
         val exec = session.openExec(command)
         return try {
-            exec.stdout.collect { /* drain */ }
-            exec.stderr.collect { /* drain */ }
+            // Same concurrent-drain rationale as [execCapture].
+            coroutineScope {
+                val stdoutJob = launch { exec.stdout.collect { /* drain */ } }
+                val stderrJob = launch { exec.stderr.collect { /* drain */ } }
+                stdoutJob.join()
+                stderrJob.join()
+            }
             exec.exitCode.await()
         } finally {
             runCatching { exec.close() }
