@@ -1,7 +1,9 @@
 package dev.kuch.termx.feature.terminal
 
+import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.widget.FrameLayout
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
@@ -35,12 +37,16 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.view.GestureDetectorCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.termux.terminal.RemoteTerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.kuch.termx.core.domain.model.TmuxSession
+import dev.kuch.termx.core.domain.theme.BuiltInThemes
+import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
+import dev.kuch.termx.feature.terminal.gestures.UrlTapConfirmDialog
 import dev.kuch.termx.feature.terminal.keys.ExtraKey
 import dev.kuch.termx.feature.terminal.keys.ExtraKeyBytes
 import dev.kuch.termx.feature.terminal.keys.ExtraKeysBar
@@ -50,6 +56,7 @@ import dev.kuch.termx.feature.terminal.sessions.RenameSessionDialog
 import dev.kuch.termx.feature.terminal.sessions.SessionTabActionsMenu
 import dev.kuch.termx.feature.terminal.sessions.SessionTabBar
 import dev.kuch.termx.feature.terminal.sessions.SessionTabBarViewModel
+import dev.kuch.termx.feature.terminal.theme.ThemeBinder
 import java.util.UUID
 import kotlinx.coroutines.launch
 
@@ -147,6 +154,7 @@ fun TerminalScreen(
                             ConnectedPane(
                                 session = active,
                                 onWriteToPty = viewModel::writeToPty,
+                                viewModel = viewModel,
                             )
                         } else {
                             ConnectingPane()
@@ -224,6 +232,14 @@ fun TerminalScreen(
             onDismiss = { killTarget = null },
         )
     }
+
+    val pendingUrl = uiState.pendingUrlTap
+    if (pendingUrl != null) {
+        UrlTapConfirmDialog(
+            url = pendingUrl,
+            onDismiss = { viewModel.onUrlTapDismissed() },
+        )
+    }
 }
 
 @Composable
@@ -284,9 +300,12 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
 private fun ConnectedPane(
     session: RemoteTerminalSession,
     onWriteToPty: (ByteArray) -> Unit,
+    viewModel: TerminalViewModel,
 ) {
     val volState = remember { VolDownState() }
     val focusRequester = remember { FocusRequester() }
+    val fontSizeSp by viewModel.fontSizeSp.collectAsStateWithLifecycle()
+    val themeId by viewModel.activeThemeId.collectAsStateWithLifecycle()
 
     LaunchedEffect(Unit) {
         runCatching { focusRequester.requestFocus() }
@@ -313,6 +332,10 @@ private fun ConnectedPane(
             session = session,
             volState = volState,
             onWriteToPty = onWriteToPty,
+            fontSizeSp = fontSizeSp,
+            themeId = themeId,
+            onFontSizeChanged = viewModel::onFontSizeChanged,
+            onUrlDoubleTap = viewModel::onUrlDoubleTap,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f),
@@ -415,14 +438,24 @@ private fun TerminalPane(
     session: RemoteTerminalSession,
     volState: VolDownState,
     onWriteToPty: (ByteArray) -> Unit,
+    fontSizeSp: Int,
+    themeId: String,
+    onFontSizeChanged: (Int) -> Unit,
+    onUrlDoubleTap: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Single pinch-zoom state bag per composable instance. Holds the
+    // "live" sp during a scale gesture so we don't have to ping
+    // DataStore on every frame — the persist happens once in
+    // `onScaleEnd`.
+    val pinchState = remember { PinchZoomState(fontSizeSp) }
+
     AndroidView(
         modifier = modifier,
         factory = { ctx ->
             val view = TerminalView(ctx, null).apply {
                 setTerminalViewClient(MinimalTerminalViewClient)
-                setTextSize(DEFAULT_TERMINAL_TEXT_SIZE_SP)
+                setTextSize(pinchState.currentSp)
                 setBackgroundColor(android.graphics.Color.BLACK)
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -442,17 +475,87 @@ private fun TerminalPane(
                 }
             }
             view.attachSession(session)
+
+            // Paint the initial theme before the first frame so the
+            // user never sees the Termux default palette flash.
+            ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
+
+            // Scale-gesture detector for pinch-to-zoom. Runs ahead of
+            // TerminalView's own onTouchEvent so two fingers never
+            // accidentally trigger a selection — but we still forward
+            // events downstream so single-finger selection + scroll
+            // keep working.
+            val scaleDetector = ScaleGestureDetector(
+                ctx,
+                object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+                    override fun onScale(detector: ScaleGestureDetector): Boolean {
+                        val next = TerminalGestureHandler.clampFontSize(
+                            (pinchState.currentSp * detector.scaleFactor).toInt(),
+                        )
+                        if (next != pinchState.currentSp) {
+                            pinchState.currentSp = next
+                            view.setTextSize(next)
+                        }
+                        return true
+                    }
+
+                    override fun onScaleEnd(detector: ScaleGestureDetector) {
+                        onFontSizeChanged(pinchState.currentSp)
+                    }
+                },
+            )
+
+            val doubleTapDetector = GestureDetectorCompat(
+                ctx,
+                object : GestureDetector.SimpleOnGestureListener() {
+                    override fun onDoubleTap(e: MotionEvent): Boolean {
+                        val url = TerminalGestureHandler.extractUrlAt(view, e.x, e.y)
+                            ?: return false
+                        onUrlDoubleTap(url)
+                        return true
+                    }
+                },
+            )
+
+            view.setOnTouchListener { _, ev ->
+                // Feed both detectors first so pinch + double-tap win
+                // when they apply; otherwise fall through to Termux's
+                // native onTouchEvent for single-finger selection, scroll,
+                // fling, etc. We deliberately don't consume on match —
+                // scaleDetector returns true for in-progress scales, which
+                // would starve single-finger moves if we returned from here.
+                scaleDetector.onTouchEvent(ev)
+                doubleTapDetector.onTouchEvent(ev)
+                view.onTouchEvent(ev)
+                true
+            }
+
             view.requestFocus()
             view
         },
         update = { view ->
             if (view.currentSession !== session) {
                 view.attachSession(session)
+                ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
                 view.requestFocus()
             }
+
+            // Font size may have changed out-of-band (Settings slider
+            // wrote DataStore while another tab was active).
+            if (pinchState.currentSp != fontSizeSp) {
+                pinchState.currentSp = fontSizeSp
+                view.setTextSize(fontSizeSp)
+            }
+
+            // Repaint the palette on every theme change. apply() is
+            // cheap (~20 int writes + invalidate).
+            ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
         },
     )
 }
+
+/** Live font-size cache for the pinch-zoom gesture. */
+private class PinchZoomState(var currentSp: Int)
 
 /**
  * Placeholder client for TerminalView. Task #17 adds real gesture
@@ -489,5 +592,4 @@ private object MinimalTerminalViewClient : TerminalViewClient {
     }
 }
 
-private const val DEFAULT_TERMINAL_TEXT_SIZE_SP = 14
 private const val VOL_DOWN_PASSTHROUGH_MS = 500L

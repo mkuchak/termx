@@ -34,6 +34,13 @@ data class TerminalUiState(
     val openTabs: Set<String> = emptySet(),
     val tmuxMissing: Boolean = false,
     val error: String? = null,
+    /**
+     * URL pending a confirmation dialog (Task #17 double-tap). Set by
+     * [TerminalViewModel.onUrlDoubleTap]; cleared by
+     * [TerminalViewModel.onUrlTapConfirmed] or
+     * [TerminalViewModel.onUrlTapDismissed].
+     */
+    val pendingUrlTap: String? = null,
 ) {
     enum class Status { Idle, Connecting, Connected, Disconnected }
 }

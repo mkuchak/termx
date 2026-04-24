@@ -8,6 +8,7 @@ import androidx.lifecycle.viewModelScope
 import com.termux.terminal.RemoteTerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.vault.SecretVault
 import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
@@ -27,8 +28,10 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
@@ -59,6 +62,7 @@ class TerminalViewModel @Inject constructor(
     private val serverRepository: ServerRepository,
     private val keyPairRepository: KeyPairRepository,
     private val secretVault: SecretVault,
+    private val appPreferences: AppPreferences,
 ) : ViewModel() {
 
     /**
@@ -75,6 +79,21 @@ class TerminalViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(TerminalUiState())
     val state: StateFlow<TerminalUiState> = _state.asStateFlow()
+
+    /**
+     * Currently-selected terminal font size in sp. Read eagerly so the
+     * first composition of [dev.kuch.termx.feature.terminal.TerminalScreen]
+     * doesn't flicker from the Room/DataStore default of 14.
+     */
+    val fontSizeSp: StateFlow<Int> = appPreferences.fontSizeSp
+        .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_FONT_SIZE_SP)
+
+    /**
+     * Currently-selected theme id. Task #18 theme picker writes; this
+     * flow drives the live repaint in `TerminalScreen`.
+     */
+    val activeThemeId: StateFlow<String> = appPreferences.activeThemeId
+        .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_THEME_ID)
 
     private var currentServerId: UUID? = null
     private var sshClient: SshClient? = null
@@ -231,6 +250,42 @@ class TerminalViewModel @Inject constructor(
     fun clearError() {
         if (_state.value.error != null) {
             _state.value = _state.value.copy(error = null)
+        }
+    }
+
+    /**
+     * Task #17 pinch-to-zoom persistence. Called from the TerminalView
+     * scale-gesture `onScaleEnd` callback so a single gesture produces
+     * exactly one DataStore write.
+     */
+    fun onFontSizeChanged(sp: Int) {
+        viewModelScope.launch {
+            runCatching { appPreferences.setFontSizeSp(sp) }
+                .onFailure { Log.w(LOG_TAG, "persist font size failed", it) }
+        }
+    }
+
+    /** Queue a URL confirmation dialog for the next recomposition. */
+    fun onUrlDoubleTap(url: String) {
+        _state.value = _state.value.copy(pendingUrlTap = url)
+    }
+
+    /** Dismiss the URL dialog (user hit Cancel or the system scrim). */
+    fun onUrlTapDismissed() {
+        if (_state.value.pendingUrlTap != null) {
+            _state.value = _state.value.copy(pendingUrlTap = null)
+        }
+    }
+
+    /**
+     * Clear the pending-URL state once the composable has launched the
+     * browser intent. The intent firing itself is done in
+     * [dev.kuch.termx.feature.terminal.gestures.UrlTapConfirmDialog] —
+     * the VM just owns the one-shot "open tap" state.
+     */
+    fun onUrlTapConfirmed() {
+        if (_state.value.pendingUrlTap != null) {
+            _state.value = _state.value.copy(pendingUrlTap = null)
         }
     }
 
@@ -416,5 +471,7 @@ class TerminalViewModel @Inject constructor(
         const val DEFAULT_TAB = "shell"
         const val INITIAL_COLS = 80
         const val INITIAL_ROWS = 24
+        const val DEFAULT_FONT_SIZE_SP = 14
+        const val DEFAULT_THEME_ID = "dracula"
     }
 }
