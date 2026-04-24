@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/mkuchak/termx/compare/v0.3.1...v0.3.2) (2026-04-24)
+
+### Bug Fixes
+
+* **release:** guard pre-release checklist prompt against non-interactive stdin ([b90e47f](https://github.com/mkuchak/termx/commit/b90e47fa4124c6a283f5df877fa2c93271948c41))
+* **wizard:** wire password auth through termxd install flow ([bfa4364](https://github.com/mkuchak/termx/commit/bfa4364cb80f88cca83adbf07ac7e6456dc0d901))
+
 ## [0.3.1](https://github.com/mkuchak/termx/compare/v0.3.0...v0.3.1) (2026-04-24)
 
 ### Bug Fixes
