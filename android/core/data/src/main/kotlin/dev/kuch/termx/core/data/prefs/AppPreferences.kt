@@ -107,7 +107,19 @@ class AppPreferences @Inject constructor(
         val KEY_PTT_MODE = stringPreferencesKey("ptt_mode")
         val KEY_ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         const val DEFAULT_PARANOID_MODE = false
-        const val DEFAULT_AUTO_LOCK_MINUTES = 5
+
+        /**
+         * Default auto-lock idle threshold, in minutes. Bumped from 5
+         * to 1440 (24 h) in v1.1.8: the previous value tripped on
+         * casual app-switching ("step away to copy a Gemini key from
+         * a browser tab"), then returning users found the vault
+         * locked and their next save / password persist silently
+         * dropped. The phone's own lock screen remains the real
+         * boundary against device theft; this timer is a soft
+         * deterrent against an unattended-and-unlocked phone, and
+         * 24 h is enough idleness to call that scenario.
+         */
+        const val DEFAULT_AUTO_LOCK_MINUTES = 1440
         const val DEFAULT_FONT_SIZE_SP = 14
         const val DEFAULT_ACTIVE_THEME_ID = "dracula"
         const val MIN_FONT_SIZE_SP = 8

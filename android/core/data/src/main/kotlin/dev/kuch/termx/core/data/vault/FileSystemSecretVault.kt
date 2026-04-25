@@ -98,7 +98,15 @@ class FileSystemSecretVault @Inject constructor(
         lockState.state.value == VaultLockState.State.Unlocked
 
     override suspend fun store(alias: String, secret: ByteArray) {
-        requireUnlocked()
+        // No lock-state gate on writes. The vault file is plaintext on
+        // disk; refusing to write while "Locked" doesn't protect any
+        // secret — it only causes the auto-lock timer to silently kill
+        // legitimate persists when it fires at an awkward moment (the
+        // user backgrounds the app to copy a Gemini key from AI Studio,
+        // returns >5 min later, taps Save, gets "Vault is locked"). The
+        // VaultLockState lock screen still gates the UI surface via
+        // NavHost — that's what actually keeps a casual onlooker from
+        // reading vault.json through the app.
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 ensureLegacyCleanup()
@@ -110,6 +118,11 @@ class FileSystemSecretVault @Inject constructor(
     }
 
     override suspend fun load(alias: String): ByteArray? {
+        // Reads stay gated as defence-in-depth: NavHost normally
+        // redirects to the unlock screen before any caller reaches a
+        // load() site, but a future background path (notification
+        // action, broadcast receiver, …) shouldn't be able to silently
+        // pull plaintext out of a locked vault.
         requireUnlocked()
         return withContext(Dispatchers.IO) {
             mutex.withLock {
@@ -123,7 +136,7 @@ class FileSystemSecretVault @Inject constructor(
     }
 
     override suspend fun delete(alias: String) {
-        requireUnlocked()
+        // No lock-state gate — same reasoning as store().
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 ensureLegacyCleanup()
