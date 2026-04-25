@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.9](https://github.com/mkuchak/termx/compare/v1.1.8...v1.1.9) (2026-04-25)
+
+### Features
+
+* **ptt:** per-language transcribe/translate + retry + context ([0044083](https://github.com/mkuchak/termx/commit/00440839b923e6df862f9cff3702b742f0c470c5))
+
+### Bug Fixes
+
+* **ptt:** hold-to-record actually holds + reject silent-audio hallucinations ([431b3f6](https://github.com/mkuchak/termx/commit/431b3f69428f8c03242c734e627ac33cbba24af2))
+
 ## [1.1.8](https://github.com/mkuchak/termx/compare/v1.1.7...v1.1.8) (2026-04-25)
 
 ### Bug Fixes
