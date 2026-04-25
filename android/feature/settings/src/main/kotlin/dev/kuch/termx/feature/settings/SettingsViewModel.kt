@@ -37,18 +37,34 @@ class SettingsViewModel @Inject constructor(
         refreshGeminiKeyPresence()
     }
 
+    /**
+     * `combine` only has typed overloads up to 5 flows; collapse the
+     * three PTT-language flows into a Triple first so we stay inside
+     * the 5-arg form rather than reaching for the vararg
+     * `Array<Any?>` overload (which would force casts on every field).
+     */
+    private val pttLanguageFlow = combine(
+        appPreferences.pttSourceLanguage,
+        appPreferences.pttTargetLanguage,
+        appPreferences.pttContext,
+    ) { source, target, context -> Triple(source, target, context) }
+
     val state: StateFlow<SettingsUiState> = combine(
         appPreferences.fontSizeSp,
         appPreferences.activeThemeId,
         geminiKeySaved,
         geminiSaveStatus,
-    ) { fontSp, themeId, keySaved, saveStatus ->
+        pttLanguageFlow,
+    ) { fontSp, themeId, keySaved, saveStatus, ptt ->
         SettingsUiState(
             fontSizeSp = fontSp,
             activeThemeId = themeId,
             themes = BuiltInThemes.all,
             geminiKeyPresent = keySaved,
             geminiSaveStatus = saveStatus,
+            pttSourceLanguage = ptt.first,
+            pttTargetLanguage = ptt.second,
+            pttContext = ptt.third,
         )
     }.stateIn(
         viewModelScope,
@@ -103,6 +119,18 @@ class SettingsViewModel @Inject constructor(
         geminiSaveStatus.value = null
     }
 
+    fun setPttSourceLanguage(code: String) {
+        viewModelScope.launch { appPreferences.setPttSourceLanguage(code) }
+    }
+
+    fun setPttTargetLanguage(code: String) {
+        viewModelScope.launch { appPreferences.setPttTargetLanguage(code) }
+    }
+
+    fun setPttContext(value: String) {
+        viewModelScope.launch { appPreferences.setPttContext(value) }
+    }
+
     private fun refreshGeminiKeyPresence() {
         viewModelScope.launch {
             val present = runCatching { geminiApiKeyStore.exists() }.getOrDefault(false)
@@ -117,4 +145,7 @@ data class SettingsUiState(
     val themes: List<TerminalTheme> = BuiltInThemes.all,
     val geminiKeyPresent: Boolean = false,
     val geminiSaveStatus: String? = null,
+    val pttSourceLanguage: String = "en-US",
+    val pttTargetLanguage: String = "en-US",
+    val pttContext: String = "",
 )

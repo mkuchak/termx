@@ -47,9 +47,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -83,6 +84,8 @@ fun PttSurface(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val mode by viewModel.mode.collectAsStateWithLifecycle()
+    val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
+    val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val haptics = LocalHapticFeedback.current
 
@@ -150,35 +153,62 @@ fun PttSurface(
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp, bottom = 80.dp),
         ) {
-            Surface(
-                modifier = Modifier
-                    .size(64.dp)
-                    .clip(CircleShape)
-                    .pointerInput(Unit) {
-                        awaitEachGesture(
-                            onDown = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Surface(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(CircleShape)
+                        .pointerInput(Unit) {
+                            // The FAB sits above an AndroidView-wrapped Termux
+                            // TerminalView whose own onTouchEvent runs an active
+                            // GestureDetector. The v1.1.9 fix consumed the
+                            // first-down so the underlying view never sees the
+                            // press; waitForUpOrCancellation() then gives us a
+                            // clean release-vs-cancel signal. Cancel = silent
+                            // abort; release = transcribe. Treating cancel as
+                            // release used to fire stopRecordingAndTranscribe()
+                            // mid-press, which is what produced the v1.1.8
+                            // "FAB auto-released and hallucinated a transcript"
+                            // bug.
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                down.consume()
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 tryStart()
-                            },
-                            onUp = {
-                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                viewModel.stopRecordingAndTranscribe()
-                            },
-                            onCancel = { viewModel.cancelRecording() },
-                        )
-                    },
-                color = MaterialTheme.colorScheme.primary,
-                shape = CircleShape,
-                shadowElevation = 6.dp,
-            ) {
-                Box(
-                    contentAlignment = Alignment.Center,
-                    modifier = Modifier.fillMaxSize(),
+                                val up = waitForUpOrCancellation()
+                                if (up != null) {
+                                    up.consume()
+                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    viewModel.stopRecordingAndTranscribe()
+                                } else {
+                                    viewModel.cancelRecording()
+                                }
+                            }
+                        },
+                    color = MaterialTheme.colorScheme.primary,
+                    shape = CircleShape,
+                    shadowElevation = 6.dp,
                 ) {
-                    Icon(
-                        imageVector = Icons.Filled.Mic,
-                        contentDescription = "Push to talk",
-                        tint = MaterialTheme.colorScheme.onPrimary,
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Mic,
+                            contentDescription = "Push to talk",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
+                }
+                if (sourceLanguage != targetLanguage) {
+                    Spacer(Modifier.height(4.dp))
+                    val label =
+                        "${sourceLanguage.substringBefore('-').uppercase()} → " +
+                            targetLanguage.substringBefore('-').uppercase()
+                    Text(
+                        text = label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -213,7 +243,10 @@ private fun PttStatusCard(
                     onModeChange = onModeChange,
                     onCancel = onCancel,
                 )
-                PttState.Transcribing -> TranscribingBody()
+                is PttState.Transcribing -> TranscribingBody(
+                    attempt = state.attempt,
+                    maxAttempts = state.maxAttempts,
+                )
                 is PttState.Ready -> ReadyBody(
                     text = state.text,
                     mode = mode,
@@ -252,11 +285,12 @@ private fun RecordingBody(
 }
 
 @Composable
-private fun TranscribingBody() {
+private fun TranscribingBody(attempt: Int, maxAttempts: Int) {
+    val label = if (attempt > 1) "Retrying… ($attempt/$maxAttempts)" else "Transcribing…"
     Row(verticalAlignment = Alignment.CenterVertically) {
         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         Spacer(Modifier.width(12.dp))
-        Text("Transcribing…", style = MaterialTheme.typography.bodyMedium)
+        Text(label, style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -372,60 +406,6 @@ private fun WaveformBars(amplitudes: List<Int>) {
                     .clip(RoundedCornerShape(2.dp))
                     .background(MaterialTheme.colorScheme.primary),
             )
-        }
-    }
-}
-
-/**
- * Gesture helper: wait for a pointer-down on this composable, fire
- * [onDown], then wait for all pointers to release (fires [onUp]) or
- * cancellation (fires [onCancel]). Loops forever so the FAB can be
- * pressed repeatedly.
- *
- * Three load-bearing details:
- *
- * 1. We **consume** the first-down event. The FAB sits on top of an
- *    AndroidView-wrapped Termux `TerminalView` whose `onTouchEvent`
- *    runs an active `GestureDetector` for pinch / scroll / long-press.
- *    Without consuming, Compose's AndroidView interop forwards the
- *    press to the TerminalView, its detector eventually claims the
- *    pointer, and Compose dispatches a `PointerEventType.Cancel` to
- *    this scope — which the previous implementation treated as a
- *    release, prematurely calling `stopRecordingAndTranscribe()` while
- *    the user's finger was still on the screen.
- *
- * 2. We track `wasCancelled` from real `PointerEventType.Cancel`
- *    events instead of leaving it as a hardcoded false. A cancel
- *    triggers [onCancel] (silent abort); a real release triggers
- *    [onUp] (transcribe).
- *
- * 3. We consume every change on every event until release. That keeps
- *    a downstream pointer-input from re-claiming our pointer mid-press
- *    if the AndroidView decides a few frames into the gesture that
- *    "this is actually a scroll."
- */
-private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.awaitEachGesture(
-    onDown: () -> Unit,
-    onUp: () -> Unit,
-    onCancel: () -> Unit,
-) {
-    awaitPointerEventScope {
-        while (true) {
-            val firstDown = awaitFirstDown(requireUnconsumed = false)
-            firstDown.consume()
-            onDown()
-            var wasCancelled = false
-            while (true) {
-                val event = awaitPointerEvent()
-                if (event.type == PointerEventType.Cancel) {
-                    wasCancelled = true
-                }
-                event.changes.forEach { it.consume() }
-                if (event.changes.all { !it.pressed }) {
-                    if (wasCancelled) onCancel() else onUp()
-                    break
-                }
-            }
         }
     }
 }

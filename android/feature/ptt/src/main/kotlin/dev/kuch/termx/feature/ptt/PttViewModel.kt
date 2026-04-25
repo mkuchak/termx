@@ -62,6 +62,30 @@ class PttViewModel @Inject constructor(
             PttMode.Command,
         )
 
+    /** BCP-47 source locale ("en-US"); driven by Settings. */
+    val sourceLanguage: StateFlow<String> = appPreferences.pttSourceLanguage
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            "en-US",
+        )
+
+    /** BCP-47 target locale; equal to [sourceLanguage] = transcribe-only. */
+    val targetLanguage: StateFlow<String> = appPreferences.pttTargetLanguage
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            "en-US",
+        )
+
+    /** Optional domain-context hints appended to every prompt. */
+    val context: StateFlow<String> = appPreferences.pttContext
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            "",
+        )
+
     private var activeRecordingFile: File? = null
     private var transcribeJob: Job? = null
 
@@ -108,7 +132,7 @@ class PttViewModel @Inject constructor(
             return
         }
 
-        _state.value = PttState.Transcribing
+        _state.value = PttState.Transcribing(attempt = 1, maxAttempts = GeminiClient.MAX_ATTEMPTS)
         transcribeJob?.cancel()
         transcribeJob = viewModelScope.launch {
             runCatching {
@@ -117,7 +141,19 @@ class PttViewModel @Inject constructor(
                     throw GeminiException("Add your Gemini API key in Settings to use push-to-talk.")
                 }
                 withContext(Dispatchers.IO) {
-                    geminiClient.transcribe(key, captured.file)
+                    geminiClient.transcribe(
+                        apiKey = key,
+                        audioFile = captured.file,
+                        sourceLanguage = sourceLanguage.value,
+                        targetLanguage = targetLanguage.value,
+                        context = context.value,
+                        onAttempt = { attempt ->
+                            _state.value = PttState.Transcribing(
+                                attempt = attempt,
+                                maxAttempts = GeminiClient.MAX_ATTEMPTS,
+                            )
+                        },
+                    )
                 }
             }.onSuccess { text ->
                 // Gemini, when handed silent / room-tone audio, will
@@ -224,7 +260,15 @@ class PttViewModel @Inject constructor(
 sealed interface PttState {
     data object Idle : PttState
     data class Recording(val amplitudes: List<Int>) : PttState
-    data object Transcribing : PttState
+
+    /**
+     * Awaiting Gemini's response. [attempt] is 1-based and increments
+     * when the retry loop in [GeminiClient.transcribe] reissues the
+     * call after a transient failure; the FAB caption uses it to
+     * render "Transcribing…" on attempt 1 and "Retrying… (N/M)" on
+     * attempts ≥2.
+     */
+    data class Transcribing(val attempt: Int, val maxAttempts: Int) : PttState
     data class Ready(val text: String, val mode: PttMode) : PttState
     data class Error(val message: String) : PttState
 }

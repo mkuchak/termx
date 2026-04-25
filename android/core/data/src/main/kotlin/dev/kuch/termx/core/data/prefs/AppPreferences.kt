@@ -66,6 +66,35 @@ class AppPreferences @Inject constructor(
         ds.data.map { it[KEY_PTT_MODE] ?: DEFAULT_PTT_MODE }
 
     /**
+     * Push-to-talk source language as a BCP-47 locale code (e.g.
+     * `"en-US"`, `"pt-BR"`). Drives the language Gemini is told the
+     * audio is spoken in. Defaults to American English so a fresh
+     * install transcribes English without further setup.
+     */
+    val pttSourceLanguage: Flow<String> =
+        ds.data.map { it[KEY_PTT_SOURCE_LANGUAGE] ?: DEFAULT_PTT_LANGUAGE }
+
+    /**
+     * Push-to-talk target language as a BCP-47 locale code. When equal
+     * to [pttSourceLanguage] the prompt is transcribe-only; when
+     * different, Gemini translates from source to target. Defaults to
+     * the same as the source so the new feature is invisible until the
+     * user opts in.
+     */
+    val pttTargetLanguage: Flow<String> =
+        ds.data.map { it[KEY_PTT_TARGET_LANGUAGE] ?: DEFAULT_PTT_LANGUAGE }
+
+    /**
+     * Optional free-text "domain context" appended to every
+     * push-to-talk prompt. Lets the user prime Gemini with technical
+     * jargon ("kubectl, systemctl, k9s") so transcripts spell their
+     * tooling correctly. Empty by default; consumers should treat
+     * blanks as "no context, omit the appendix".
+     */
+    val pttContext: Flow<String> =
+        ds.data.map { it[KEY_PTT_CONTEXT] ?: DEFAULT_PTT_CONTEXT }
+
+    /**
      * First-run gate consumed by [dev.kuch.termx.TermxNavHost]. Flips to
      * true when the user finishes (or skips) the 3-screen onboarding
      * shipped in Task #46; the flag is never cleared automatically so a
@@ -95,6 +124,18 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_PTT_MODE] = normalised }
     }
 
+    suspend fun setPttSourceLanguage(value: String) {
+        ds.edit { it[KEY_PTT_SOURCE_LANGUAGE] = value }
+    }
+
+    suspend fun setPttTargetLanguage(value: String) {
+        ds.edit { it[KEY_PTT_TARGET_LANGUAGE] = value }
+    }
+
+    suspend fun setPttContext(value: String) {
+        ds.edit { it[KEY_PTT_CONTEXT] = value }
+    }
+
     suspend fun setOnboardingComplete(value: Boolean) {
         ds.edit { it[KEY_ONBOARDING_COMPLETE] = value }
     }
@@ -105,6 +146,9 @@ class AppPreferences @Inject constructor(
         val KEY_FONT_SIZE_SP = intPreferencesKey("terminal_font_size_sp")
         val KEY_ACTIVE_THEME_ID = stringPreferencesKey("terminal_active_theme_id")
         val KEY_PTT_MODE = stringPreferencesKey("ptt_mode")
+        val KEY_PTT_SOURCE_LANGUAGE = stringPreferencesKey("ptt_source_language")
+        val KEY_PTT_TARGET_LANGUAGE = stringPreferencesKey("ptt_target_language")
+        val KEY_PTT_CONTEXT = stringPreferencesKey("ptt_context")
         val KEY_ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         const val DEFAULT_PARANOID_MODE = false
 
@@ -127,6 +171,17 @@ class AppPreferences @Inject constructor(
         const val PTT_MODE_COMMAND = "command"
         const val PTT_MODE_TEXT = "text"
         const val DEFAULT_PTT_MODE = PTT_MODE_COMMAND
+
+        /**
+         * Default source/target locale code for the PTT pickers. Kept
+         * here (not delegated to PttLanguage in :core:domain) because
+         * :core:data sits below :core:domain in the module graph in
+         * spirit even though Gradle currently allows the import — this
+         * one literal duplication avoids dragging the catalogue into
+         * the prefs layer.
+         */
+        const val DEFAULT_PTT_LANGUAGE = "en-US"
+        const val DEFAULT_PTT_CONTEXT = ""
         const val DEFAULT_ONBOARDING_COMPLETE = false
     }
 }

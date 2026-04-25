@@ -27,7 +27,12 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -60,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import dev.kuch.termx.core.domain.ptt.PttLanguage
 import dev.kuch.termx.core.domain.theme.TerminalTheme
 
 /**
@@ -114,6 +120,16 @@ fun SettingsScreen(
                     present = state.geminiKeyPresent,
                     onSave = viewModel::saveGeminiKey,
                     onClear = viewModel::clearGeminiKey,
+                )
+            }
+            item {
+                PttLanguageSection(
+                    sourceLanguage = state.pttSourceLanguage,
+                    targetLanguage = state.pttTargetLanguage,
+                    context = state.pttContext,
+                    onSourceChange = viewModel::setPttSourceLanguage,
+                    onTargetChange = viewModel::setPttTargetLanguage,
+                    onContextChange = viewModel::setPttContext,
                 )
             }
             item { SectionHeader("Theme") }
@@ -206,6 +222,128 @@ private fun GeminiApiKeySection(
 }
 
 private const val GEMINI_API_KEY_URL = "https://aistudio.google.com/apikey"
+
+/**
+ * Push-to-talk language card. Two stacked dropdowns drive the source
+ * (`Speak in`) and target (`Transcribe to`) locales fed into Gemini's
+ * prompt; equal codes select the transcribe-only template, different
+ * codes select the translate template. The textarea below is an
+ * optional free-text "domain hints" appendix appended to every
+ * prompt — useful for priming the model with technical jargon
+ * (`kubectl, systemctl, k9s`).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PttLanguageSection(
+    sourceLanguage: String,
+    targetLanguage: String,
+    context: String,
+    onSourceChange: (String) -> Unit,
+    onTargetChange: (String) -> Unit,
+    onContextChange: (String) -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            SectionHeader("Push-to-talk language")
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Pick the language you'll speak and the language Gemini should output.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+            LanguageDropdown(
+                label = "Speak in",
+                selected = sourceLanguage,
+                onSelect = onSourceChange,
+            )
+            Spacer(Modifier.height(8.dp))
+            LanguageDropdown(
+                label = "Transcribe to",
+                selected = targetLanguage,
+                onSelect = onTargetChange,
+            )
+            Spacer(Modifier.height(12.dp))
+            Text(
+                text = pttModeCaption(sourceLanguage, targetLanguage),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Medium,
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                text = "Optional context",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Spacer(Modifier.height(4.dp))
+            OutlinedTextField(
+                value = context,
+                onValueChange = onContextChange,
+                placeholder = { Text("e.g. kubectl, systemctl, k9s, my server names") },
+                singleLine = false,
+                minLines = 3,
+                maxLines = 5,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "Helps Gemini recognize jargon and proper nouns.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LanguageDropdown(
+    label: String,
+    selected: String,
+    onSelect: (String) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = expanded,
+        onExpandedChange = { expanded = !expanded },
+    ) {
+        OutlinedTextField(
+            value = PttLanguage.displayLabel(selected),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text(label) },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
+            modifier = Modifier
+                .fillMaxWidth()
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable),
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+        ) {
+            PttLanguage.codes.forEach { code ->
+                DropdownMenuItem(
+                    text = { Text(PttLanguage.displayLabel(code)) },
+                    onClick = {
+                        onSelect(code)
+                        expanded = false
+                    },
+                )
+            }
+        }
+    }
+}
+
+private fun pttModeCaption(source: String, target: String): String {
+    val sourceLabel = PttLanguage.displayLabel(source)
+    val targetLabel = PttLanguage.displayLabel(target)
+    val sourceFull = PttLanguage.fullName[source] ?: sourceLabel
+    return if (source == target) {
+        "Transcribe $sourceFull"
+    } else {
+        "Translate $sourceLabel → $targetLabel"
+    }
+}
 
 @Composable
 private fun SectionHeader(text: String) {
