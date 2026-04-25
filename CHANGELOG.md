@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.8](https://github.com/mkuchak/termx/compare/v1.1.7...v1.1.8) (2026-04-25)
+
+### Bug Fixes
+
+* **vault:** drop write-side lock gate + bump auto-lock default to 24h ([5c06525](https://github.com/mkuchak/termx/commit/5c0652527419a5fad6c5d72ee788aa8f9b056d21))
+
 ## [1.1.7](https://github.com/mkuchak/termx/compare/v1.1.6...v1.1.7) (2026-04-24)
 
 ### Bug Fixes
