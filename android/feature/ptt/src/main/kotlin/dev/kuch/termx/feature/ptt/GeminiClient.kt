@@ -166,14 +166,24 @@ class GeminiClient @Inject constructor(
         const val TIMEOUT_SECONDS = 30L
 
         /**
-         * Instruction sent alongside the inline audio. The reference
-         * `github.com/mkuchak/push-to-talk` renderer asks for a faithful
-         * transcription; we also want filler words removed because the
-         * transcript is shell-bound — "um run tests" must become "run tests".
+         * Instruction sent alongside the inline audio. We want filler
+         * words removed because the transcript is shell-bound —
+         * "um run tests" must become "run tests".
+         *
+         * Also: instruct the model to emit a literal NO_SPEECH sentinel
+         * when handed silent / room-tone audio. Without this guard,
+         * Gemini will fabricate a plausible-sounding transcript ("The
+         * first thing that comes to mind…") because the prompt asks
+         * for one — better to surface "no speech detected" than to
+         * inject hallucinated text into the user's PTY.
          */
         const val PROMPT =
-            "Transcribe this audio and clean up filler words, stutters, " +
-                "false starts. Return ONLY the cleaned transcript. " +
+            "Transcribe the speech in this audio and clean up filler words, " +
+                "stutters, and false starts. " +
+                "If the audio contains no intelligible speech (silence, " +
+                "room tone, or background noise only), return the literal " +
+                "text NO_SPEECH and nothing else. " +
+                "Otherwise return ONLY the cleaned transcript. " +
                 "No preamble, no quotes, no commentary."
 
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()

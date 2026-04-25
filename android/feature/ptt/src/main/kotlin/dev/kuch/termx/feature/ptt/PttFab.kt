@@ -49,6 +49,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -380,6 +381,28 @@ private fun WaveformBars(amplitudes: List<Int>) {
  * [onDown], then wait for all pointers to release (fires [onUp]) or
  * cancellation (fires [onCancel]). Loops forever so the FAB can be
  * pressed repeatedly.
+ *
+ * Three load-bearing details:
+ *
+ * 1. We **consume** the first-down event. The FAB sits on top of an
+ *    AndroidView-wrapped Termux `TerminalView` whose `onTouchEvent`
+ *    runs an active `GestureDetector` for pinch / scroll / long-press.
+ *    Without consuming, Compose's AndroidView interop forwards the
+ *    press to the TerminalView, its detector eventually claims the
+ *    pointer, and Compose dispatches a `PointerEventType.Cancel` to
+ *    this scope — which the previous implementation treated as a
+ *    release, prematurely calling `stopRecordingAndTranscribe()` while
+ *    the user's finger was still on the screen.
+ *
+ * 2. We track `wasCancelled` from real `PointerEventType.Cancel`
+ *    events instead of leaving it as a hardcoded false. A cancel
+ *    triggers [onCancel] (silent abort); a real release triggers
+ *    [onUp] (transcribe).
+ *
+ * 3. We consume every change on every event until release. That keeps
+ *    a downstream pointer-input from re-claiming our pointer mid-press
+ *    if the AndroidView decides a few frames into the gesture that
+ *    "this is actually a scroll."
  */
 private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.awaitEachGesture(
     onDown: () -> Unit,
@@ -388,13 +411,18 @@ private suspend fun androidx.compose.ui.input.pointer.PointerInputScope.awaitEac
 ) {
     awaitPointerEventScope {
         while (true) {
-            awaitFirstDown(requireUnconsumed = false)
+            val firstDown = awaitFirstDown(requireUnconsumed = false)
+            firstDown.consume()
             onDown()
-            val cancelled = false
+            var wasCancelled = false
             while (true) {
                 val event = awaitPointerEvent()
+                if (event.type == PointerEventType.Cancel) {
+                    wasCancelled = true
+                }
+                event.changes.forEach { it.consume() }
                 if (event.changes.all { !it.pressed }) {
-                    if (!cancelled) onUp() else onCancel()
+                    if (wasCancelled) onCancel() else onUp()
                     break
                 }
             }

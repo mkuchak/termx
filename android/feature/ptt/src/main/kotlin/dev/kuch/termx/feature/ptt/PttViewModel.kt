@@ -120,7 +120,18 @@ class PttViewModel @Inject constructor(
                     geminiClient.transcribe(key, captured.file)
                 }
             }.onSuccess { text ->
-                _state.value = PttState.Ready(text = text, mode = mode.value)
+                // Gemini, when handed silent / room-tone audio, will
+                // happily fabricate a plausible-sounding transcript
+                // (the prompt asks for one, so it produces one). We
+                // instruct it to emit the literal NO_SPEECH sentinel
+                // when there's nothing intelligible — bail with a
+                // friendly error instead of injecting hallucinated
+                // text into the user's PTY.
+                if (text.trim().equals(NO_SPEECH_SENTINEL, ignoreCase = true)) {
+                    _state.value = PttState.Error("No speech detected — try again.")
+                } else {
+                    _state.value = PttState.Ready(text = text, mode = mode.value)
+                }
             }.onFailure { t ->
                 Log.w(LOG_TAG, "transcription failed", t)
                 _state.value = PttState.Error(t.message ?: "Transcription failed")
@@ -175,7 +186,30 @@ class PttViewModel @Inject constructor(
 
     companion object {
         private const val LOG_TAG = "PttViewModel"
-        private const val MIN_USEFUL_DURATION_MS = 250L
+
+        /**
+         * Floor on a recording's duration before we'll spend a Gemini
+         * API call on it. Set to 1.5 s because:
+         *  - Genuine speech recordings are typically multi-second.
+         *  - Anything sub-second is almost always either an accidental
+         *    tap or a gesture-cancel race (see PttFab.awaitEachGesture).
+         *  - Below this floor, MediaRecorder produces buffered
+         *    room-tone with no actual speech, and Gemini cheerfully
+         *    fabricates plausible-sounding transcripts when handed
+         *    silence — wasting an API call AND polluting the user's
+         *    PTY with hallucinated text.
+         *
+         * Was 250 ms, which only caught the "MediaRecorder returned
+         * null / 0-byte" case and missed sub-second-but-non-empty
+         * recordings entirely.
+         */
+        private const val MIN_USEFUL_DURATION_MS = 1500L
+
+        /**
+         * Sentinel Gemini is instructed to return when the audio
+         * contains no intelligible speech — see GeminiClient.PROMPT.
+         */
+        internal const val NO_SPEECH_SENTINEL = "NO_SPEECH"
     }
 }
 
