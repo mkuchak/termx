@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.14](https://github.com/mkuchak/termx/compare/v1.1.13...v1.1.14) (2026-04-26)
+
+### Bug Fixes
+
+* **terminal:** sticky CTRL/ALT reaches commitText letters + Send hex Toast ([b0d9303](https://github.com/mkuchak/termx/commit/b0d9303681262a07d28c59e1bc53c54cd99afa1b))
+
 ## [1.1.13](https://github.com/mkuchak/termx/compare/v1.1.12...v1.1.13) (2026-04-26)
 
 ### Features
