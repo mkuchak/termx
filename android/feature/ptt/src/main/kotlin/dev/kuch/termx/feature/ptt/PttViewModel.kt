@@ -197,6 +197,23 @@ class PttViewModel @Inject constructor(
         _state.value = PttState.Idle
     }
 
+    /**
+     * Open the editable transcript card with an empty draft so the user
+     * can type a command instead of speaking it. The compose card and
+     * the PTT card are the same composable — `requestFocus = true`
+     * tells [ReadyBody] to auto-focus the field (and pop the IME) the
+     * moment it appears, distinguishing this entry from the
+     * post-Gemini one which deliberately doesn't auto-focus.
+     *
+     * No-op when PTT is busy with anything else: never clobber an
+     * active recording / in-flight Gemini call / existing transcript
+     * the user might still want.
+     */
+    fun composeText() {
+        if (_state.value != PttState.Idle) return
+        _state.value = PttState.Ready(text = "", requestFocus = true)
+    }
+
     override fun onCleared() {
         transcribeJob?.cancel()
         runCatching { audioRecorder.cancel() }
@@ -253,6 +270,15 @@ sealed interface PttState {
      * attempts ≥2.
      */
     data class Transcribing(val attempt: Int, val maxAttempts: Int) : PttState
-    data class Ready(val text: String) : PttState
+
+    /**
+     * Editable transcript waiting for Insert / Send / Cancel.
+     *
+     * @param requestFocus `true` when the field should auto-focus on
+     *   appearance (compose-text long-press path); `false` for the
+     *   post-Gemini path where auto-focus would be friction since the
+     *   common case is "tap Send."
+     */
+    data class Ready(val text: String, val requestFocus: Boolean = false) : PttState
     data class Error(val message: String) : PttState
 }

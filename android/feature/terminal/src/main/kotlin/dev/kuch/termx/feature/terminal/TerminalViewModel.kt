@@ -38,9 +38,13 @@ import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -147,6 +151,25 @@ class TerminalViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(TerminalUiState())
     val state: StateFlow<TerminalUiState> = _state.asStateFlow()
+
+    /**
+     * Transient PTY-write failures surfaced to the UI as a snackbar.
+     * Pre-v1.1.13 these were swallowed by `runCatching` in
+     * [writeToPty] — the user's keystrokes vanished into a stale SSH
+     * connection with no feedback. Now we emit a one-line message
+     * here; TerminalScreen collects + shows snackbar with a
+     * "Reconnect" action.
+     *
+     * `extraBufferCapacity = 1` + DROP_OLDEST so a flurry of failures
+     * coalesces into one snackbar instead of stacking, and we never
+     * suspend the IO coroutine just to deliver an error.
+     */
+    private val _writeErrors = MutableSharedFlow<String>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val writeErrors: SharedFlow<String> = _writeErrors.asSharedFlow()
 
     /**
      * Task #28 — true between the two-finger scrollback gesture entering
@@ -785,7 +808,13 @@ class TerminalViewModel @Inject constructor(
             runCatching {
                 tab.pty?.write(bytes)
                 tab.moshSession?.write(bytes)
-            }.onFailure { Log.w(LOG_TAG, "pty write failed", it) }
+            }.onFailure { t ->
+                Log.w(LOG_TAG, "pty write failed", t)
+                // Best-effort UI signal: don't suspend here, just emit.
+                _writeErrors.tryEmit(
+                    "Send failed — connection may have dropped.",
+                )
+            }
         }
     }
 

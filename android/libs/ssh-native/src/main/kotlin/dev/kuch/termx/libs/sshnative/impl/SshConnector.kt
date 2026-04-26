@@ -17,6 +17,17 @@ import java.io.InputStreamReader
  * surface (`SshClient.kt`) stays free of `net.schmizz` imports.
  */
 internal object SshConnector {
+    /**
+     * SSH-level keepalive interval in seconds. Without this, a phone
+     * that backgrounds the app (or switches Wi-Fi → cellular) silently
+     * keeps a half-open TCP socket — the next write succeeds locally
+     * but never reaches the server. Symptom: PTT Send and extra-keys
+     * presses do nothing until the user restarts the app. Issue 2B,
+     * v1.1.13. 30s detects a dead session within ~30-60s while costing
+     * a single tiny packet per interval.
+     */
+    private const val KEEPALIVE_INTERVAL_SECONDS = 30
+
     fun open(target: SshTarget, auth: SshAuth, timeoutMillis: Long): SshSession {
         val client = SSHClient(DefaultConfig())
         try {
@@ -29,6 +40,7 @@ internal object SshConnector {
             client.addHostKeyVerifier(PromiscuousVerifier())
 
             client.connect(target.host, target.port)
+            client.connection.keepAlive.keepAliveInterval = KEEPALIVE_INTERVAL_SECONDS
 
             when (auth) {
                 is SshAuth.Password -> client.authPassword(target.username, auth.value)

@@ -96,13 +96,21 @@ internal class MoshSessionImpl(
     }.flowOn(Dispatchers.IO)
 
     override suspend fun write(bytes: ByteArray): Unit = withContext(Dispatchers.IO) {
+        // We used to swallow IOException here and only log it. That made
+        // the symptom from v1.1.12 invisible: when the mosh-client pipe
+        // breaks (process exit, broken UDP path), writes silently
+        // disappear and the user wonders why their PTT Send did nothing.
+        // Surface failures so the caller can react (snackbar +
+        // reconnect). Issue 2A, v1.1.13.
         try {
             outputStream.write(bytes)
             outputStream.flush()
         } catch (t: IOException) {
             Log.w(LOG_TAG, "mosh stdin write failed", t)
+            throw t
         } catch (t: Throwable) {
             Log.w(LOG_TAG, "mosh stdin write unexpected error", t)
+            throw t
         }
     }
 

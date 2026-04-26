@@ -39,6 +39,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -46,6 +47,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -278,6 +281,7 @@ private fun PttStatusCard(
                 )
                 is PttState.Ready -> ReadyBody(
                     text = state.text,
+                    requestFocus = state.requestFocus,
                     onCancel = onCancel,
                     onSend = onSend,
                 )
@@ -336,11 +340,20 @@ private fun TranscribingBody(attempt: Int, maxAttempts: Int) {
 @Composable
 private fun ReadyBody(
     text: String,
+    requestFocus: Boolean,
     onCancel: () -> Unit,
     onSend: (text: String, appendNewline: Boolean) -> Unit,
 ) {
     var draft by remember(text) { mutableStateOf(text) }
     val canSend = draft.isNotBlank()
+    val focusRequester = remember { FocusRequester() }
+
+    // Compose-text long-press path enters Ready with requestFocus=true
+    // so the IME pops immediately. The post-Gemini path leaves it false
+    // because the common case there is "tap Send," not "edit."
+    LaunchedEffect(requestFocus) {
+        if (requestFocus) focusRequester.requestFocus()
+    }
 
     Text(
         text = "Transcript",
@@ -350,7 +363,9 @@ private fun ReadyBody(
     OutlinedTextField(
         value = draft,
         onValueChange = { draft = it },
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .focusRequester(focusRequester),
         textStyle = MaterialTheme.typography.bodyMedium,
         singleLine = false,
         maxLines = 5,

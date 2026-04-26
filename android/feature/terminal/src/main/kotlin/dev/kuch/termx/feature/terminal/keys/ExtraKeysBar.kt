@@ -8,6 +8,7 @@ import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -25,7 +26,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -72,6 +72,7 @@ fun ExtraKeysBar(
     onKey: (ByteArray) -> Unit,
     modifier: Modifier = Modifier,
     onToggleKeyboard: () -> Unit = {},
+    onComposeText: () -> Unit = {},
     state: ExtraKeysState = rememberExtraKeysState(),
     layoutRow1: List<ExtraKey> = ExtraKeysLayout.ROW_1,
     layoutRow2: List<ExtraKey> = ExtraKeysLayout.ROW_2,
@@ -144,12 +145,26 @@ fun ExtraKeysBar(
                         },
                     )
                 }
-                IconButton(
-                    onClick = {
-                        view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        onToggleKeyboard()
-                    },
-                    modifier = Modifier.width(44.dp),
+                // Tap toggles the IME; long-press opens an empty PTT
+                // compose card so the user can type a command in a
+                // friendlier text field than the raw terminal. The
+                // long-press handler is a no-op when PTT is busy with
+                // anything other than Idle (see PttViewModel.composeText).
+                Box(
+                    modifier = Modifier
+                        .width(44.dp)
+                        .height(40.dp)
+                        .combinedClickable(
+                            onClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                onToggleKeyboard()
+                            },
+                            onLongClick = {
+                                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                onComposeText()
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         imageVector = Icons.Default.Keyboard,

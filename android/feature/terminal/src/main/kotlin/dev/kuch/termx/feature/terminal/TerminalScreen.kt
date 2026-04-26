@@ -32,6 +32,10 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -111,6 +115,12 @@ fun TerminalScreen(
     viewModel: TerminalViewModel = hiltViewModel(),
     tabBarViewModel: SessionTabBarViewModel = hiltViewModel(),
 ) {
+    // Share the PTT view-model instance with PttSurface (which grabs
+    // its own via hiltViewModel() too — same NavBackStackEntry → same
+    // VM). We need a handle here so the keyboard chip's long-press
+    // gesture (Issue 1, v1.1.13) can hop into the compose-text card
+    // without coupling ExtraKeysBar to :feature:ptt.
+    val pttViewModel: dev.kuch.termx.feature.ptt.PttViewModel = hiltViewModel()
     val uiState by viewModel.state.collectAsStateWithLifecycle()
     val activityFlashes by tabBarViewModel.activityFlashes.collectAsStateWithLifecycle()
     val sessionsFlow = remember(serverId) {
@@ -181,11 +191,29 @@ fun TerminalScreen(
         }
     }
 
+    // PTY-write-failure snackbar host. The TerminalViewModel surfaces
+    // silent send failures here (Issue 2A, v1.1.13); tapping
+    // "Reconnect" re-establishes the SSH session for the active server.
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(serverId, snackbarHostState) {
+        viewModel.writeErrors.collect { msg ->
+            val result = snackbarHostState.showSnackbar(
+                message = msg,
+                actionLabel = "Reconnect",
+                duration = SnackbarDuration.Short,
+            )
+            if (result == SnackbarResult.ActionPerformed && serverId != null) {
+                viewModel.connect(serverId)
+            }
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
     ) {
-        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
             if (serverId != null) {
                 SessionTabBar(
                     sessions = sessionList,
@@ -237,6 +265,7 @@ fun TerminalScreen(
                                 terminalViewRef = terminalViewRef,
                                 onTerminalTapShowKeyboard = showKeyboardOnTerminalTap,
                                 onToggleKeyboard = onToggleKeyboard,
+                                onComposeText = pttViewModel::composeText,
                             )
                             // Task #39/#42 — push-to-talk surface sits on
                             // top of the terminal area. The FAB floats
@@ -275,6 +304,15 @@ fun TerminalScreen(
                     }
                 }
             }
+        }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .windowInsetsPadding(
+                        WindowInsets.ime.union(WindowInsets.navigationBars),
+                    ),
+            )
         }
     }
 
@@ -415,11 +453,18 @@ private fun ConnectedPane(
     terminalViewRef: androidx.compose.runtime.MutableState<TerminalView?>,
     onTerminalTapShowKeyboard: () -> Unit,
     onToggleKeyboard: () -> Unit,
+    onComposeText: () -> Unit,
 ) {
     val volState = remember { VolDownState() }
     val focusRequester = remember { FocusRequester() }
     val fontSizeSp by viewModel.fontSizeSp.collectAsStateWithLifecycle()
     val themeId by viewModel.activeThemeId.collectAsStateWithLifecycle()
+    // Hoisted out of ExtraKeysBar so the IME-key path below can read
+    // the sticky CTRL/ALT state. Without this hoist, tapping CTRL on
+    // the bar then typing 'c' on the Android keyboard sends a plain
+    // 'c' — the bar's local state never reaches TerminalView's key
+    // handler. Issue 3, v1.1.13.
+    val extraKeysState = dev.kuch.termx.feature.terminal.keys.rememberExtraKeysState()
 
     LaunchedEffect(Unit) {
         runCatching { focusRequester.requestFocus() }
@@ -437,6 +482,7 @@ private fun ConnectedPane(
                     isDown = event.type == KeyEventType.KeyDown,
                     isUp = event.type == KeyEventType.KeyUp,
                     state = volState,
+                    extraKeysState = extraKeysState,
                     onWriteToPty = onWriteToPty,
                 )
             },
@@ -444,6 +490,7 @@ private fun ConnectedPane(
         TerminalPane(
             session = session,
             volState = volState,
+            extraKeysState = extraKeysState,
             onWriteToPty = onWriteToPty,
             fontSizeSp = fontSizeSp,
             themeId = themeId,
@@ -461,6 +508,8 @@ private fun ConnectedPane(
         ExtraKeysBar(
             onKey = onWriteToPty,
             onToggleKeyboard = onToggleKeyboard,
+            onComposeText = onComposeText,
+            state = extraKeysState,
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -495,6 +544,7 @@ private fun handleVolDownAwareKey(
     isDown: Boolean,
     isUp: Boolean,
     state: VolDownState,
+    extraKeysState: dev.kuch.termx.feature.terminal.keys.ExtraKeysState,
     onWriteToPty: (ByteArray) -> Unit,
 ): Boolean {
     if (keyCode == KeyEvent.KEYCODE_VOLUME_DOWN) {
@@ -519,6 +569,25 @@ private fun handleVolDownAwareKey(
             val bytes = ExtraKeyBytes.encode(extra, ctrl = true, alt = false)
             onWriteToPty(bytes)
             state.consumedAsModifier = true
+            return true
+        }
+    }
+    // Sticky CTRL/ALT from the extra-keys bar applies to the next IME
+    // (or hardware) key press too. Without this branch, the bar's
+    // sticky state is functionally only useful for keys tapped on the
+    // bar itself — there's no a-z chip, so Ctrl+letter never worked.
+    // Issue 3, v1.1.13. Only fires on the down event; the up event is
+    // unmodified so the terminal doesn't see a phantom release.
+    if (isDown && (extraKeysState.ctrlActive || extraKeysState.altActive)) {
+        val extra = extraKeyFromNativeKeyCode(keyCode, native)
+        if (extra != null) {
+            val bytes = ExtraKeyBytes.encode(
+                extra,
+                ctrl = extraKeysState.ctrlActive,
+                alt = extraKeysState.altActive,
+            )
+            if (bytes.isNotEmpty()) onWriteToPty(bytes)
+            extraKeysState.resetOneShots()
             return true
         }
     }
@@ -556,6 +625,7 @@ private fun extraKeyFromNativeKeyCode(keyCode: Int, event: KeyEvent): ExtraKey? 
 private fun TerminalPane(
     session: TerminalSession,
     volState: VolDownState,
+    extraKeysState: dev.kuch.termx.feature.terminal.keys.ExtraKeysState,
     onWriteToPty: (ByteArray) -> Unit,
     fontSizeSp: Int,
     themeId: String,
@@ -631,6 +701,7 @@ private fun TerminalPane(
                         isDown = ev.action == KeyEvent.ACTION_DOWN,
                         isUp = ev.action == KeyEvent.ACTION_UP,
                         state = volState,
+                        extraKeysState = extraKeysState,
                         onWriteToPty = onWriteToPty,
                     )
                 }
