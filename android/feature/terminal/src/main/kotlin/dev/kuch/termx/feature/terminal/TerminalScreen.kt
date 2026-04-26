@@ -244,7 +244,16 @@ fun TerminalScreen(
                             // width at the bottom while recording.
                             PttSurface(
                                 onSend = { text, appendNewline ->
-                                    val payload = if (appendNewline) text + "\n" else text
+                                    // PTYs interpret Enter as CR (0x0D), not
+                                    // LF (0x0A). Matches ExtraKeyBytes.Enter
+                                    // and what every real terminal sends. LF
+                                    // often renders as a literal newline glyph
+                                    // instead of submitting the line in
+                                    // raw-mode shells over tmux/mosh.
+                                    // Normalise any embedded breaks the user
+                                    // typed in the editable transcript too.
+                                    val normalized = text.replace('\n', '\r')
+                                    val payload = if (appendNewline) "$normalized\r" else normalized
                                     viewModel.writeToPty(payload.toByteArray())
                                 },
                                 modifier = Modifier.fillMaxSize(),
