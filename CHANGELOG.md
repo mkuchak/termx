@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.10](https://github.com/mkuchak/termx/compare/v1.1.9...v1.1.10) (2026-04-26)
+
+### Bug Fixes
+
+* **ptt:** keep FAB rendered through Recording so the gesture survives ([3467716](https://github.com/mkuchak/termx/commit/3467716d2bb1dbb775769a4bfdfec85508ff724d))
+
 ## [1.1.9](https://github.com/mkuchak/termx/compare/v1.1.8...v1.1.9) (2026-04-25)
 
 ### Features
