@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.15](https://github.com/mkuchak/termx/compare/v1.1.14...v1.1.15) (2026-04-26)
+
+### Bug Fixes
+
+* **terminal:** keyboard chip tap toggles IME again ([d793538](https://github.com/mkuchak/termx/commit/d793538ad00d720bcd815176f9ca3da9f662b440))
+
 ## [1.1.14](https://github.com/mkuchak/termx/compare/v1.1.13...v1.1.14) (2026-04-26)
 
 ### Bug Fixes
