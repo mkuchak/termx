@@ -8,9 +8,9 @@ import android.view.HapticFeedbackConstants
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -147,23 +147,30 @@ fun ExtraKeysBar(
                 }
                 // Tap toggles the IME; long-press opens an empty PTT
                 // compose card so the user can type a command in a
-                // friendlier text field than the raw terminal. The
-                // long-press handler is a no-op when PTT is busy with
+                // friendlier text field than the raw terminal. v1.1.13
+                // first tried Modifier.combinedClickable here but
+                // onClick failed to fire on the user's device while
+                // onLongClick worked — root cause unclear, but
+                // detectTapGestures is the more direct primitive and
+                // avoids whatever combinedClickable quirk we hit.
+                // Long-press is a no-op when PTT is busy with
                 // anything other than Idle (see PttViewModel.composeText).
                 Box(
                     modifier = Modifier
                         .width(44.dp)
                         .height(40.dp)
-                        .combinedClickable(
-                            onClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                                onToggleKeyboard()
-                            },
-                            onLongClick = {
-                                view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-                                onComposeText()
-                            },
-                        ),
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onTap = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                                    onToggleKeyboard()
+                                },
+                                onLongPress = {
+                                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                                    onComposeText()
+                                },
+                            )
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
