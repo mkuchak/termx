@@ -56,7 +56,6 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
-import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -274,34 +273,9 @@ fun TerminalScreen(
                             // width at the bottom while recording.
                             PttSurface(
                                 onSend = { text, appendNewline ->
-                                    // PTYs interpret Enter as CR (0x0D), not
-                                    // LF (0x0A). Matches ExtraKeyBytes.Enter
-                                    // and what every real terminal sends. LF
-                                    // often renders as a literal newline glyph
-                                    // instead of submitting the line in
-                                    // raw-mode shells over tmux/mosh.
-                                    // Normalise any embedded breaks the user
-                                    // typed in the editable transcript too.
-                                    val normalized = text.replace('\n', '\r')
-                                    val payload = if (appendNewline) "$normalized\r" else normalized
-                                    val bytes = payload.toByteArray()
-                                    // v1.1.14 diagnostic: show the exact bytes
-                                    // about to hit the PTY, in hex. The user
-                                    // reported Send "sends text + line break
-                                    // instead of executing" — this Toast lets
-                                    // us see whether the bytes are CR (0x0D),
-                                    // LF (0x0A), CRLF (0x0D 0x0A) or something
-                                    // unexpected. Removed once we have the
-                                    // answer.
-                                    val hex = bytes.joinToString(" ") { b ->
-                                        "%02X".format(b.toInt() and 0xFF)
-                                    }
-                                    Toast.makeText(
-                                        context,
-                                        "→ $hex",
-                                        Toast.LENGTH_LONG,
-                                    ).show()
-                                    viewModel.writeToPty(bytes)
+                                    viewModel.writeToPty(
+                                        encodePttPayload(text, appendNewline),
+                                    )
                                 },
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -1037,6 +1011,28 @@ private class MinimalTerminalViewClient(
 }
 
 private const val VOL_DOWN_PASSTHROUGH_MS = 500L
+
+/**
+ * Convert a PTT transcript / typed draft into the bytes a PTY expects.
+ *
+ *  - Every embedded `\n` (line-feed) becomes `\r` (carriage-return).
+ *    Real keyboards emit `\r` for Enter, and bash/readline +
+ *    zsh/zle in raw mode bind `\r` to accept-line; emitting `\n`
+ *    instead often renders as a literal newline glyph in raw-mode
+ *    shells over tmux/mosh without submitting the line.
+ *  - When [appendNewline] is true (the Send button), a trailing `\r`
+ *    is appended so the shell executes the last line. Insert leaves
+ *    the cursor mid-line so the user keeps editing in the shell.
+ *
+ * Pure function — no Android, no Compose. Lives at file scope so the
+ * unit-test suite (`PttPayloadTest`) can hammer it without spinning
+ * up a Robolectric runtime.
+ */
+internal fun encodePttPayload(text: String, appendNewline: Boolean): ByteArray {
+    val normalized = text.replace('\n', '\r')
+    val payload = if (appendNewline) "$normalized\r" else normalized
+    return payload.toByteArray()
+}
 
 /**
  * Prompts the user for a password when the server row uses password auth
