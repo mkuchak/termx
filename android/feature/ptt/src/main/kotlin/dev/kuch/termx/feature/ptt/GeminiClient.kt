@@ -288,7 +288,7 @@ class GeminiClient @Inject constructor(
             )
         }
 
-    private fun extractTranscript(body: String): String {
+    internal fun extractTranscript(body: String): String {
         val parsed = runCatching { json.parseToJsonElement(body).jsonObject }
             .getOrElse {
                 throw GeminiException("Gemini response was not JSON: ${body.take(GeminiException.SNIPPET_MAX)}")

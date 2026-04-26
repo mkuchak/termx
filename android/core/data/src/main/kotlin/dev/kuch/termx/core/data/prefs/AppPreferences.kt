@@ -126,7 +126,14 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_ONBOARDING_COMPLETE] = value }
     }
 
-    private companion object {
+    /**
+     * `internal` (was `private`) so AppPreferencesTest can verify the
+     * default constants directly without relying on the DataStore
+     * singleton being empty — the singleton persists across tests in
+     * the same JVM, so testing defaults via the Flow.first() path is
+     * unreliable.
+     */
+    internal companion object {
         val KEY_PARANOID_MODE = booleanPreferencesKey("paranoid_mode_enabled")
         val KEY_AUTO_LOCK_MINUTES = intPreferencesKey("auto_lock_minutes")
         val KEY_FONT_SIZE_SP = intPreferencesKey("terminal_font_size_sp")
