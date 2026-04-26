@@ -33,9 +33,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -84,7 +83,6 @@ fun PttSurface(
     viewModel: PttViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val mode by viewModel.mode.collectAsStateWithLifecycle()
     val sourceLanguage by viewModel.sourceLanguage.collectAsStateWithLifecycle()
     val targetLanguage by viewModel.targetLanguage.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -132,8 +130,6 @@ fun PttSurface(
         ) {
             PttStatusCard(
                 state = state,
-                mode = mode,
-                onModeChange = viewModel::setMode,
                 onCancel = {
                     haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                     when (state) {
@@ -141,9 +137,8 @@ fun PttSurface(
                         else -> viewModel.dismiss()
                     }
                 },
-                onSend = {
-                    val ready = state as? PttState.Ready ?: return@PttStatusCard
-                    onSend(ready.text, ready.mode.appendNewline)
+                onSend = { text, appendNewline ->
+                    onSend(text, appendNewline)
                     viewModel.consumeSend()
                 },
                 modifier = Modifier
@@ -257,10 +252,8 @@ fun PttSurface(
 @Composable
 private fun PttStatusCard(
     state: PttState,
-    mode: PttMode,
-    onModeChange: (PttMode) -> Unit,
     onCancel: () -> Unit,
-    onSend: () -> Unit,
+    onSend: (text: String, appendNewline: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -277,8 +270,6 @@ private fun PttStatusCard(
             when (state) {
                 is PttState.Recording -> RecordingBody(
                     amplitudes = state.amplitudes,
-                    mode = mode,
-                    onModeChange = onModeChange,
                     onCancel = onCancel,
                 )
                 is PttState.Transcribing -> TranscribingBody(
@@ -287,8 +278,6 @@ private fun PttStatusCard(
                 )
                 is PttState.Ready -> ReadyBody(
                     text = state.text,
-                    mode = mode,
-                    onModeChange = onModeChange,
                     onCancel = onCancel,
                     onSend = onSend,
                 )
@@ -302,8 +291,6 @@ private fun PttStatusCard(
 @Composable
 private fun RecordingBody(
     amplitudes: List<Int>,
-    mode: PttMode,
-    onModeChange: (PttMode) -> Unit,
     onCancel: () -> Unit,
 ) {
     Text(
@@ -314,10 +301,9 @@ private fun RecordingBody(
     WaveformBars(amplitudes = amplitudes)
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ModeSegmentedToggle(mode = mode, onModeChange = onModeChange)
         TextButton(onClick = onCancel) { Text("Cancel") }
     }
 }
@@ -332,41 +318,60 @@ private fun TranscribingBody(attempt: Int, maxAttempts: Int) {
     }
 }
 
+/**
+ * Editable transcript preview. The TextField holds a local [draft]
+ * keyed off the incoming [text] so a fresh transcription resets it
+ * but the user's edits survive recomposition while they're still
+ * working on the same one. Three buttons:
+ *
+ *  - **Cancel**: drop the transcript, back to Idle.
+ *  - **Insert**: write [draft] to the PTY without a trailing newline;
+ *    the user keeps editing in the shell.
+ *  - **Send**: write [draft] followed by `\n`; the shell executes it
+ *    immediately. This is the primary action.
+ *
+ * Both Insert and Send disable on a blank draft so we don't waste a
+ * round-trip writing nothing.
+ */
 @Composable
 private fun ReadyBody(
     text: String,
-    mode: PttMode,
-    onModeChange: (PttMode) -> Unit,
     onCancel: () -> Unit,
-    onSend: () -> Unit,
+    onSend: (text: String, appendNewline: Boolean) -> Unit,
 ) {
+    var draft by remember(text) { mutableStateOf(text) }
+    val canSend = draft.isNotBlank()
+
     Text(
         text = "Transcript",
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(8.dp),
+    OutlinedTextField(
+        value = draft,
+        onValueChange = { draft = it },
         modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(12.dp),
-        )
-    }
+        textStyle = MaterialTheme.typography.bodyMedium,
+        singleLine = false,
+        maxLines = 5,
+    )
     Row(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ModeSegmentedToggle(mode = mode, onModeChange = onModeChange)
+        TextButton(onClick = onCancel) { Text("Cancel") }
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onCancel) { Text("Cancel") }
+            OutlinedButton(
+                onClick = { onSend(draft, false) },
+                enabled = canSend,
+            ) {
+                Text("Insert")
+            }
             Spacer(Modifier.width(8.dp))
             Button(
-                onClick = onSend,
+                onClick = { onSend(draft, true) },
+                enabled = canSend,
                 colors = ButtonDefaults.buttonColors(),
             ) {
                 Icon(
@@ -375,7 +380,7 @@ private fun ReadyBody(
                     modifier = Modifier.size(18.dp),
                 )
                 Spacer(Modifier.width(6.dp))
-                Text(if (mode.appendNewline) "Send" else "Insert")
+                Text("Send")
             }
         }
     }
@@ -393,25 +398,6 @@ private fun ErrorBody(message: String, onDismiss: () -> Unit) {
         horizontalArrangement = Arrangement.End,
     ) {
         TextButton(onClick = onDismiss) { Text("Dismiss") }
-    }
-}
-
-@Composable
-private fun ModeSegmentedToggle(
-    mode: PttMode,
-    onModeChange: (PttMode) -> Unit,
-) {
-    val modes = listOf(PttMode.Command, PttMode.Text)
-    SingleChoiceSegmentedButtonRow {
-        modes.forEachIndexed { index, entry ->
-            SegmentedButton(
-                selected = mode == entry,
-                onClick = { onModeChange(entry) },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = modes.size),
-            ) {
-                Text(entry.label)
-            }
-        }
     }
 }
 

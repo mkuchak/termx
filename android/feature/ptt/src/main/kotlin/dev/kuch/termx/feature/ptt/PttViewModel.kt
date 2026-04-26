@@ -17,7 +17,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -27,16 +26,20 @@ import kotlinx.coroutines.withContext
  *
  *  1. User presses and holds FAB   → [startRecording].
  *  2. User releases                 → [stopRecordingAndTranscribe] fires
- *     the Gemini call. On success we land in [PttState.Ready], showing a
- *     preview card with Send / Cancel.
- *  3. User taps "Send"              → [sendReady] returns the text to
- *     the caller via [consumeSend]; the composable injects it into the
- *     PTY via [dev.kuch.termx.feature.terminal.TerminalViewModel.writeToPty].
+ *     the Gemini call. On success we land in [PttState.Ready], showing
+ *     a preview card with the editable transcript.
+ *  3. User taps "Send" or "Insert" → the composable writes the
+ *     (possibly edited) transcript to the PTY, with or without a
+ *     trailing newline, and calls [consumeSend] to drop back to Idle.
  *
- * Mode (Command vs Text) is persisted to DataStore via [AppPreferences].
- * The send path here does not itself touch the PTY — the PTT module has
- * no dependency on `:feature:terminal` to avoid a cycle; the caller
- * composable resolves the writer and calls it.
+ * The "Command vs Text" persisted mode was removed in v1.1.11: the
+ * choice is now made per-utterance via the two buttons on the Ready
+ * card, and the transcript itself is editable inside the card so the
+ * user can fix Gemini mistranscriptions without retyping in the shell.
+ *
+ * The send path here does not itself touch the PTY — the PTT module
+ * has no dependency on `:feature:terminal` to avoid a cycle; the
+ * caller composable resolves the writer and calls it.
  */
 @HiltViewModel
 class PttViewModel @Inject constructor(
@@ -49,18 +52,6 @@ class PttViewModel @Inject constructor(
 
     private val _state = MutableStateFlow<PttState>(PttState.Idle)
     val state: StateFlow<PttState> = _state.asStateFlow()
-
-    /**
-     * Live push-to-talk mode preference. The FAB UI binds to this
-     * directly so switching persists instantly via [setMode].
-     */
-    val mode: StateFlow<PttMode> = appPreferences.pttMode
-        .map { PttMode.parse(it) }
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5_000),
-            PttMode.Command,
-        )
 
     /** BCP-47 source locale ("en-US"); driven by Settings. */
     val sourceLanguage: StateFlow<String> = appPreferences.pttSourceLanguage
@@ -166,7 +157,7 @@ class PttViewModel @Inject constructor(
                 if (text.trim().equals(NO_SPEECH_SENTINEL, ignoreCase = true)) {
                     _state.value = PttState.Error("No speech detected — try again.")
                 } else {
-                    _state.value = PttState.Ready(text = text, mode = mode.value)
+                    _state.value = PttState.Ready(text = text)
                 }
             }.onFailure { t ->
                 Log.w(LOG_TAG, "transcription failed", t)
@@ -204,13 +195,6 @@ class PttViewModel @Inject constructor(
      */
     fun consumeSend() {
         _state.value = PttState.Idle
-    }
-
-    /** Persist the new PTT mode. */
-    fun setMode(new: PttMode) {
-        viewModelScope.launch {
-            appPreferences.setPttMode(new.persistValue)
-        }
     }
 
     override fun onCleared() {
@@ -253,8 +237,8 @@ class PttViewModel @Inject constructor(
  * Observable PTT state. The composable binds one branch at a time:
  *  - [Idle]: FAB only.
  *  - [Recording]: FAB in "recording" visuals + waveform card.
- *  - [Transcribing]: spinner card.
- *  - [Ready]: transcript preview with Send / Cancel.
+ *  - [Transcribing]: spinner card with retry counter.
+ *  - [Ready]: editable transcript preview with Cancel / Insert / Send.
  *  - [Error]: error banner, dismissible.
  */
 sealed interface PttState {
@@ -269,24 +253,6 @@ sealed interface PttState {
      * attempts ≥2.
      */
     data class Transcribing(val attempt: Int, val maxAttempts: Int) : PttState
-    data class Ready(val text: String, val mode: PttMode) : PttState
+    data class Ready(val text: String) : PttState
     data class Error(val message: String) : PttState
-}
-
-/**
- * Push-to-talk output mode. Drives whether the injected transcript
- * is terminated with a newline (shell executes immediately) or not
- * (user adds details and presses Enter themselves).
- */
-enum class PttMode(val persistValue: String, val appendNewline: Boolean, val label: String) {
-    Command(persistValue = "command", appendNewline = true, label = "Command"),
-    Text(persistValue = "text", appendNewline = false, label = "Text"),
-    ;
-
-    companion object {
-        fun parse(raw: String): PttMode = when (raw) {
-            Text.persistValue -> Text
-            else -> Command
-        }
-    }
 }

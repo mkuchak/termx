@@ -57,15 +57,6 @@ class AppPreferences @Inject constructor(
         ds.data.map { it[KEY_ACTIVE_THEME_ID] ?: DEFAULT_ACTIVE_THEME_ID }
 
     /**
-     * Last-used Push-to-talk mode. Either `"command"` (transcript is
-     * injected into the PTY with a trailing newline so the shell
-     * executes it immediately) or `"text"` (no newline; user can edit
-     * then hit Enter themselves). Task #42.
-     */
-    val pttMode: Flow<String> =
-        ds.data.map { it[KEY_PTT_MODE] ?: DEFAULT_PTT_MODE }
-
-    /**
      * Push-to-talk source language as a BCP-47 locale code (e.g.
      * `"en-US"`, `"pt-BR"`). Drives the language Gemini is told the
      * audio is spoken in. Defaults to American English so a fresh
@@ -119,11 +110,6 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_ACTIVE_THEME_ID] = id }
     }
 
-    suspend fun setPttMode(value: String) {
-        val normalised = if (value == PTT_MODE_TEXT) PTT_MODE_TEXT else PTT_MODE_COMMAND
-        ds.edit { it[KEY_PTT_MODE] = normalised }
-    }
-
     suspend fun setPttSourceLanguage(value: String) {
         ds.edit { it[KEY_PTT_SOURCE_LANGUAGE] = value }
     }
@@ -145,7 +131,6 @@ class AppPreferences @Inject constructor(
         val KEY_AUTO_LOCK_MINUTES = intPreferencesKey("auto_lock_minutes")
         val KEY_FONT_SIZE_SP = intPreferencesKey("terminal_font_size_sp")
         val KEY_ACTIVE_THEME_ID = stringPreferencesKey("terminal_active_theme_id")
-        val KEY_PTT_MODE = stringPreferencesKey("ptt_mode")
         val KEY_PTT_SOURCE_LANGUAGE = stringPreferencesKey("ptt_source_language")
         val KEY_PTT_TARGET_LANGUAGE = stringPreferencesKey("ptt_target_language")
         val KEY_PTT_CONTEXT = stringPreferencesKey("ptt_context")
@@ -168,10 +153,6 @@ class AppPreferences @Inject constructor(
         const val DEFAULT_ACTIVE_THEME_ID = "dracula"
         const val MIN_FONT_SIZE_SP = 8
         const val MAX_FONT_SIZE_SP = 32
-        const val PTT_MODE_COMMAND = "command"
-        const val PTT_MODE_TEXT = "text"
-        const val DEFAULT_PTT_MODE = PTT_MODE_COMMAND
-
         /**
          * Default source/target locale code for the PTT pickers. Kept
          * here (not delegated to PttLanguage in :core:domain) because
