@@ -158,22 +158,78 @@ internal class MoshSessionImpl(
         thread(name = "mosh-waitpid-$pid", isDaemon = true) {
             val code = runCatching { NativePty.waitPid(pid) }.getOrElse { -1 }
             val elapsed = System.currentTimeMillis() - startTimeMs
-            val headSnapshot = synchronized(headBuf) {
+            val ptyHead = synchronized(headBuf) {
                 String(headBuf, 0, headLen, Charsets.UTF_8)
             }
+            // bionic's dynamic linker writes failure messages
+            // ("library X not found", "cannot locate symbol Y",
+            // "p_align too small for kernel page size", …) and the
+            // kernel's tombstone DEBUG output go to logcat — NOT to
+            // the child's stdout/stderr. Our PTY-master capture sees
+            // only what the running child writes. If the child dies
+            // pre-main (SIGSEGV in <50 ms during dynamic linking or
+            // a static C++ ctor), [ptyHead] is empty and we used to
+            // surface "no output captured" to the user with no
+            // actionable detail. v1.1.16: we now also pull the last
+            // few hundred lines of logcat for this app's UID,
+            // filtered to the dead child's pid, and append the
+            // matching linker/DEBUG/libc lines so the snackbar
+            // actually says what bionic complained about.
+            val combinedHead = if (code != 0 && elapsed < EARLY_EXIT_WINDOW_MS) {
+                val linkerLog = captureLinkerLogcat(pid).take(LINKER_LOG_CAP)
+                if (linkerLog.isNotBlank()) {
+                    if (ptyHead.isBlank()) linkerLog
+                    else "$ptyHead\n--- linker log ---\n$linkerLog"
+                } else ptyHead
+            } else ptyHead
             _diagnostic.value = MoshDiagnostic(
                 exitCode = code,
                 elapsedMs = elapsed,
-                head = headSnapshot,
+                head = combinedHead,
             )
             if (elapsed < EARLY_EXIT_WINDOW_MS && code != 0) {
                 Log.w(
                     LOG_TAG,
-                    "mosh-client exited in ${elapsed}ms code=$code head=${headSnapshot.take(200)}",
+                    "mosh-client exited in ${elapsed}ms code=$code head=${combinedHead.take(200)}",
                 )
             }
         }
     }
+
+    /**
+     * Drain `logcat -d` (dump-and-exit) for the linker / native-crash
+     * tags and filter to the dead child's pid. We can read this app's
+     * UID's logcat lines without `READ_LOGS` permission since API 16,
+     * and the pid filter keeps us strictly within our own child's
+     * output.
+     *
+     * Returns "" on any failure — logcat may be unavailable on
+     * specific OEM ROMs or under SELinux denial; the caller falls
+     * back to the existing "no output captured" message.
+     */
+    private fun captureLinkerLogcat(deadPid: Int): String = runCatching {
+        val proc = ProcessBuilder(
+            "logcat",
+            "-d",
+            "-t", "500",
+            "linker:V",
+            "linker64:V",
+            "DEBUG:V",
+            "libc:V",
+            "crash_dump:V",
+            "*:S",
+        ).redirectErrorStream(true).start()
+        val output = proc.inputStream.bufferedReader().use { it.readText() }
+        runCatching { proc.waitFor() }
+        // logcat default format is:
+        //   MM-DD HH:MM:SS.MMM   PID  TID PRIORITY TAG    : MESSAGE
+        // Filter by " $pid " (whitespace-bounded) so we don't false-
+        // match a longer pid that happens to contain ours as a substring.
+        val pidPattern = " $deadPid "
+        output.lineSequence()
+            .filter { it.contains(pidPattern) }
+            .joinToString("\n")
+    }.getOrElse { "" }
 
     private companion object {
         const val LOG_TAG = "MoshSessionImpl"
@@ -183,5 +239,8 @@ internal class MoshSessionImpl(
 
         /** Under this, an exitCode != 0 is almost certainly a startup failure. */
         const val EARLY_EXIT_WINDOW_MS = 2_000L
+
+        /** Max characters of logcat output appended to the diagnostic. */
+        const val LINKER_LOG_CAP = 4_000
     }
 }
