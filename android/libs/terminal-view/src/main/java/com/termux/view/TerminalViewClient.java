@@ -73,6 +73,32 @@ public interface TerminalViewClient {
 
     boolean readFnKey();
 
+    /**
+     * termx extension (v1.1.14): the extra-keys bar's sticky CTRL state.
+     * Read from the IME commit path so a single tap of CTRL on the bar
+     * applies Ctrl-byte translation to the next letter typed on the
+     * Android keyboard, even though that letter arrives via
+     * InputConnection.commitText() rather than KeyEvent dispatch.
+     * Default false keeps non-termx hosts of this fork unaffected.
+     */
+    default boolean readStickyCtrl() { return false; }
+
+    /**
+     * termx extension (v1.1.14): the extra-keys bar's sticky ALT state.
+     * Causes commitText to ESC-prefix the bytes of the next codepoint
+     * (xterm Meta encoding) when set.
+     */
+    default boolean readStickyAlt() { return false; }
+
+    /**
+     * termx extension (v1.1.14): clear any OneShot sticky modifiers.
+     * Called by commitText after applying a sticky CTRL/ALT to the
+     * first codepoint of a commit, mirroring the existing OneShot
+     * semantics from the bar's Modifier.clickable path. Locked
+     * modifiers are unaffected.
+     */
+    default void consumeStickyModifiers() { }
+
 
 
     boolean onCodePoint(int codePoint, boolean ctrlDown, TerminalSession session);

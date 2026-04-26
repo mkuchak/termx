@@ -56,6 +56,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
+import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -283,7 +284,24 @@ fun TerminalScreen(
                                     // typed in the editable transcript too.
                                     val normalized = text.replace('\n', '\r')
                                     val payload = if (appendNewline) "$normalized\r" else normalized
-                                    viewModel.writeToPty(payload.toByteArray())
+                                    val bytes = payload.toByteArray()
+                                    // v1.1.14 diagnostic: show the exact bytes
+                                    // about to hit the PTY, in hex. The user
+                                    // reported Send "sends text + line break
+                                    // instead of executing" — this Toast lets
+                                    // us see whether the bytes are CR (0x0D),
+                                    // LF (0x0A), CRLF (0x0D 0x0A) or something
+                                    // unexpected. Removed once we have the
+                                    // answer.
+                                    val hex = bytes.joinToString(" ") { b ->
+                                        "%02X".format(b.toInt() and 0xFF)
+                                    }
+                                    Toast.makeText(
+                                        context,
+                                        "→ $hex",
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                    viewModel.writeToPty(bytes)
                                 },
                                 modifier = Modifier.fillMaxSize(),
                             )
@@ -685,7 +703,7 @@ private fun TerminalPane(
         modifier = Modifier.fillMaxSize(),
         factory = { ctx ->
             val view = TerminalView(ctx, null).apply {
-                setTerminalViewClient(MinimalTerminalViewClient)
+                setTerminalViewClient(MinimalTerminalViewClient(extraKeysState))
                 setTextSize(pinchState.currentSp)
                 setBackgroundColor(android.graphics.Color.BLACK)
                 layoutParams = FrameLayout.LayoutParams(
@@ -973,7 +991,19 @@ private const val TMUX_SCROLL_STEP_PX = 32f
  * handling (pinch-zoom, two-finger scroll, long-press select, URL
  * tap). For now we return sane defaults and forward nothing.
  */
-private object MinimalTerminalViewClient : TerminalViewClient {
+/**
+ * Minimal [TerminalViewClient] for the embedded Termux view.
+ *
+ * Pre-v1.1.14 this was a stateless `object`. v1.1.14 makes it a class
+ * carrying the hoisted [ExtraKeysState] so the IME-commit path inside
+ * [com.termux.view.TerminalView.sendTextToTerminal] can read the bar's
+ * sticky CTRL/ALT (Bug A from the v1.1.13 grilling). Without this,
+ * tapping CTRL on the bar then typing 'b' on Gboard sends a plain 'b'
+ * — the modifier never reaches commitText-delivered letters.
+ */
+private class MinimalTerminalViewClient(
+    private val extraKeysState: dev.kuch.termx.feature.terminal.keys.ExtraKeysState,
+) : TerminalViewClient {
     override fun onScale(scale: Float): Float = scale.coerceIn(0.5f, 3.0f)
     override fun onSingleTapUp(e: MotionEvent?) { /* focus is managed by the view itself */ }
     override fun shouldBackButtonBeMappedToEscape(): Boolean = false
@@ -988,6 +1018,9 @@ private object MinimalTerminalViewClient : TerminalViewClient {
     override fun readAltKey(): Boolean = false
     override fun readShiftKey(): Boolean = false
     override fun readFnKey(): Boolean = false
+    override fun readStickyCtrl(): Boolean = extraKeysState.ctrlActive
+    override fun readStickyAlt(): Boolean = extraKeysState.altActive
+    override fun consumeStickyModifiers() = extraKeysState.resetOneShots()
     override fun onCodePoint(codePoint: Int, ctrlDown: Boolean, session: com.termux.terminal.TerminalSession?): Boolean = false
     override fun onEmulatorSet() {}
     override fun logError(tag: String?, message: String?) { android.util.Log.e(tag ?: "TerminalView", message.orEmpty()) }

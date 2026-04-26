@@ -387,6 +387,20 @@ public final class TerminalView extends View {
 
             void sendTextToTerminal(CharSequence text) {
                 stopTextSelectionMode();
+
+                // termx v1.1.14: capture sticky CTRL/ALT from the
+                // extra-keys bar and apply to the FIRST codepoint of
+                // this commit. Most Android IMEs (Gboard, SwiftKey,
+                // AOSP) deliver typed letters via commitText(), so this
+                // is the only path where the sticky modifier can reach
+                // a typed letter (e.g. Ctrl+B for tmux prefix). After
+                // the first codepoint we consume() so subsequent
+                // codepoints in the same commit (autocorrect
+                // replacements, multi-char paste) are unaffected.
+                final boolean stickyCtrl = mClient.readStickyCtrl();
+                final boolean stickyAlt = mClient.readStickyAlt();
+                boolean stickyConsumed = false;
+
                 final int textLengthInChars = text.length();
                 for (int i = 0; i < textLengthInChars; i++) {
                     char firstChar = text.charAt(i);
@@ -407,6 +421,7 @@ public final class TerminalView extends View {
                         codePoint = Character.toUpperCase(codePoint);
 
                     boolean ctrlHeld = false;
+                    boolean altHeld = false;
                     if (codePoint <= 31 && codePoint != 27) {
                         if (codePoint == '\n') {
                             // The AOSP keyboard and descendants seems to send \n as text when the enter key is pressed,
@@ -437,7 +452,16 @@ public final class TerminalView extends View {
                         }
                     }
 
-                    inputCodePoint(codePoint, ctrlHeld, false);
+                    if (!stickyConsumed) {
+                        if (stickyCtrl) ctrlHeld = true;
+                        if (stickyAlt) altHeld = true;
+                        if (stickyCtrl || stickyAlt) {
+                            stickyConsumed = true;
+                            mClient.consumeStickyModifiers();
+                        }
+                    }
+
+                    inputCodePoint(codePoint, ctrlHeld, altHeld);
                 }
             }
 
