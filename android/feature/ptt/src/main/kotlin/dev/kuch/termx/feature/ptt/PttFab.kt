@@ -50,6 +50,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import kotlinx.coroutines.CancellationException
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -115,10 +116,16 @@ fun PttSurface(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        val active = state !is PttState.Idle
+        // The Card surfaces the recording / transcript UI. The FAB has
+        // its own visibility rule below — critically, it stays rendered
+        // through Recording so the user's hold-to-record gesture isn't
+        // interrupted by the modifier being detached mid-press. See the
+        // load-bearing comment on `fabVisible` below.
+        val cardVisible = state !is PttState.Idle
+        val recording = state is PttState.Recording
 
         AnimatedVisibility(
-            visible = active,
+            visible = cardVisible,
             enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
             exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -145,8 +152,23 @@ fun PttSurface(
             )
         }
 
+        // Render the FAB during Idle AND Recording. If we hid it the
+        // moment Recording begins (the original design), AnimatedVisibility
+        // would start an exit transition while the user is still holding,
+        // and ~300ms later detach the LayoutNode. Detaching kills the
+        // pointerInput coroutine via CancellationException at the
+        // `waitForUpOrCancellation` suspension — the if/else after it
+        // never resumes, and depending on the synthetic event Compose
+        // dispatches at detach time you get either a stuck-in-Recording
+        // state or a falsely-fired stopRecordingAndTranscribe with a
+        // <1.5s duration that surfaces as "Recording too short". Both
+        // bugs trace back to this layout, not to the gesture API. Keep
+        // the FAB on screen until the user's gesture is genuinely done
+        // (Transcribing / Ready / Error are all post-release states).
+        val fabVisible = state is PttState.Idle || state is PttState.Recording
+
         AnimatedVisibility(
-            visible = !active,
+            visible = fabVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier
@@ -159,33 +181,49 @@ fun PttSurface(
                         .size(64.dp)
                         .clip(CircleShape)
                         .pointerInput(Unit) {
-                            // The FAB sits above an AndroidView-wrapped Termux
-                            // TerminalView whose own onTouchEvent runs an active
-                            // GestureDetector. The v1.1.9 fix consumed the
-                            // first-down so the underlying view never sees the
-                            // press; waitForUpOrCancellation() then gives us a
-                            // clean release-vs-cancel signal. Cancel = silent
-                            // abort; release = transcribe. Treating cancel as
-                            // release used to fire stopRecordingAndTranscribe()
-                            // mid-press, which is what produced the v1.1.8
-                            // "FAB auto-released and hallucinated a transcript"
-                            // bug.
+                            // Two load-bearing details:
+                            //
+                            // 1. We consume the first-down so the
+                            //    AndroidView interop wrapper around Termux's
+                            //    TerminalView dispatches ACTION_CANCEL to it
+                            //    instead of forwarding the press; the
+                            //    underlying GestureDetector then aborts and
+                            //    won't reclaim our pointer mid-press.
+                            //
+                            // 2. The catch wraps the whole release/cancel
+                            //    branch so that if the pointerInput is ever
+                            //    detached mid-gesture (e.g. a parent
+                            //    AnimatedVisibility hiding us), we still
+                            //    call cancelRecording instead of leaking
+                            //    the Recording state. The structural fix
+                            //    above keeps the FAB rendered through
+                            //    Recording, so this catch is now defence
+                            //    in depth, not the primary mechanism.
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
                                 down.consume()
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 tryStart()
-                                val up = waitForUpOrCancellation()
-                                if (up != null) {
-                                    up.consume()
-                                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    viewModel.stopRecordingAndTranscribe()
-                                } else {
+                                try {
+                                    val up = waitForUpOrCancellation()
+                                    if (up != null) {
+                                        up.consume()
+                                        haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                        viewModel.stopRecordingAndTranscribe()
+                                    } else {
+                                        viewModel.cancelRecording()
+                                    }
+                                } catch (e: CancellationException) {
                                     viewModel.cancelRecording()
+                                    throw e
                                 }
                             }
                         },
-                    color = MaterialTheme.colorScheme.primary,
+                    color = if (recording) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
                     shape = CircleShape,
                     shadowElevation = 6.dp,
                 ) {
