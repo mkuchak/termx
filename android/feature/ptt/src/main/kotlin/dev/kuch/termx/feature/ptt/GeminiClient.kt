@@ -127,9 +127,11 @@ class GeminiClient @Inject constructor(
 
     /**
      * Pick the correct prompt template and append the optional context
-     * appendix. Pure function — no Gemini I/O.
+     * appendix. Pure function — no Gemini I/O. `internal` so the
+     * `GeminiClientTest` suite can verify language interpolation +
+     * NO_SPEECH guard + context appendix without spinning up OkHttp.
      */
-    private fun buildPrompt(source: String, target: String, context: String): String {
+    internal fun buildPrompt(source: String, target: String, context: String): String {
         val base = if (source == target) {
             buildTranscribePrompt(source)
         } else {
@@ -139,7 +141,7 @@ class GeminiClient @Inject constructor(
         return if (ctx.isEmpty()) base else base + contextAppendix(ctx)
     }
 
-    private fun buildTranscribePrompt(code: String): String {
+    internal fun buildTranscribePrompt(code: String): String {
         val name = PttLanguage.fullName[code] ?: code
         return "You are a precise transcription assistant. Transcribe the " +
             "following audio faithfully in $name ($code). Fix any obvious " +
@@ -152,7 +154,7 @@ class GeminiClient @Inject constructor(
             "explanation. " + NO_SPEECH_GUARD
     }
 
-    private fun buildTranslatePrompt(from: String, to: String): String {
+    internal fun buildTranslatePrompt(from: String, to: String): String {
         val fromName = PttLanguage.fullName[from] ?: from
         val toName = PttLanguage.fullName[to] ?: to
         val fromShort = PttLanguage.shortName(from)
@@ -170,7 +172,7 @@ class GeminiClient @Inject constructor(
             "$fromShort text. " + NO_SPEECH_GUARD
     }
 
-    private fun contextAppendix(ctx: String): String =
+    internal fun contextAppendix(ctx: String): String =
         "\n\nThe speaker may reference the following domain-specific terms, " +
             "names, or context. Use this to improve transcription accuracy " +
             "and ensure these terms are spelled correctly:\n\"\"\"\n$ctx\n\"\"\""
@@ -228,7 +230,7 @@ class GeminiClient @Inject constructor(
     }
 
     /** 500ms on attempt 2, 1200ms on attempt 3, ±20% jitter. */
-    private fun jitteredBackoff(attempt: Int): Long {
+    internal fun jitteredBackoff(attempt: Int): Long {
         val base = when (attempt) {
             1 -> 500L
             else -> 1200L
@@ -238,10 +240,10 @@ class GeminiClient @Inject constructor(
         return (base + offset).toLong().coerceAtLeast(0L)
     }
 
-    private fun isRetryableHttp(code: Int): Boolean =
+    internal fun isRetryableHttp(code: Int): Boolean =
         code == 429 || code in 500..504
 
-    private fun isRetryableBody(body: String): Boolean =
+    internal fun isRetryableBody(body: String): Boolean =
         RETRYABLE_BODY_REGEX.containsMatchIn(body)
 
     private fun buildRequestPayload(prompt: String, audioBase64: String): JsonObject =
