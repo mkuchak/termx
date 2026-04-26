@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.13](https://github.com/mkuchak/termx/compare/v1.1.12...v1.1.13) (2026-04-26)
+
+### Features
+
+* **terminal+ptt:** three v1.1.13 fixes -- compose-text, sticky-modifier IME, write observability + SSH heartbeat ([3e64a1e](https://github.com/mkuchak/termx/commit/3e64a1ee08a2edd3de7496a269c7b2764660b3af))
+
 ## [1.1.12](https://github.com/mkuchak/termx/compare/v1.1.11...v1.1.12) (2026-04-26)
 
 ### Bug Fixes
