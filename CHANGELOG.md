@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.12](https://github.com/mkuchak/termx/compare/v1.1.11...v1.1.12) (2026-04-26)
+
+### Bug Fixes
+
+* **terminal:** send CR not LF for PTT Send so the line actually executes ([88b17ee](https://github.com/mkuchak/termx/commit/88b17ee30db8546bf4fa7c648b603030ca3d0aa9))
+
 ## [1.1.11](https://github.com/mkuchak/termx/compare/v1.1.10...v1.1.11) (2026-04-26)
 
 ### ⚠ BREAKING CHANGES
