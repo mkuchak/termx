@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.16](https://github.com/mkuchak/termx/compare/v1.1.15...v1.1.16) (2026-04-26)
+
+### Bug Fixes
+
+* **mosh:** capture linker / native-crash logcat lines on early exit ([552bbd0](https://github.com/mkuchak/termx/commit/552bbd01a1ee377f80799f91526803603939d363))
+
 ## [1.1.15](https://github.com/mkuchak/termx/compare/v1.1.14...v1.1.15) (2026-04-26)
 
 ### Bug Fixes
