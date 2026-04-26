@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.11](https://github.com/mkuchak/termx/compare/v1.1.10...v1.1.11) (2026-04-26)
+
+### ⚠ BREAKING CHANGES
+
+* **ptt:** editable transcript + per-utterance Insert/Send buttons
+
+### Features
+
+* **ptt:** editable transcript + per-utterance Insert/Send buttons ([cd972c7](https://github.com/mkuchak/termx/commit/cd972c7dcf6b578a01ae480187d7ad7b37c341c0))
+
 ## [1.1.10](https://github.com/mkuchak/termx/compare/v1.1.9...v1.1.10) (2026-04-26)
 
 ### Bug Fixes
