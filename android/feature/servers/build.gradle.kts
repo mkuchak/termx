@@ -22,6 +22,13 @@ android {
         sourceCompatibility = JavaVersion.VERSION_21
         targetCompatibility = JavaVersion.VERSION_21
     }
+
+    testOptions {
+        // android.util.Log.w is invoked from the MoshPreflightImpl
+        // catch branches; without this flag the pure-JVM unit tests
+        // throw "Method w not mocked" instead of running.
+        unitTests.isReturnDefaultValues = true
+    }
 }
 
 dependencies {
@@ -52,4 +59,8 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.coroutines.test)
+    // mockk lets MoshPreflightImplTest stub the @ApplicationContext
+    // dependency that MoshClient pulls in without dragging Robolectric
+    // into a pure-JVM test module.
+    testImplementation(libs.mockk)
 }

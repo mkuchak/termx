@@ -18,6 +18,8 @@ import dev.kuch.termx.core.domain.repository.ServerGroupRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.core.domain.usecase.InstallCompanionUseCase
 import dev.kuch.termx.core.domain.usecase.InstallStep3State
+import dev.kuch.termx.feature.servers.MoshPreflight
+import dev.kuch.termx.feature.servers.MoshStatus
 import dev.kuch.termx.feature.servers.TestResult
 import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
@@ -65,6 +67,7 @@ class SetupWizardViewModel @Inject constructor(
     private val installCompanion: InstallCompanionUseCase,
     private val passwordCache: dev.kuch.termx.core.data.prefs.PasswordCache,
     private val sshClient: SshClient,
+    private val moshPreflight: MoshPreflight,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(SetupWizardUiState())
@@ -228,7 +231,18 @@ class SetupWizardViewModel @Inject constructor(
                 TestResult.Error("Timed out after 10s.")
             } else {
                 runCatching { withContext(Dispatchers.IO) { session.close() } }
-                TestResult.Success
+                // SSH itself works. If the row is mosh-flagged, also
+                // run the layered mosh probe (mosh-server present →
+                // handshake → first-byte UDP). Wizard is the most
+                // likely place a user discovers mosh isn't installed
+                // on a fresh VPS — failing fast here is exactly the
+                // signal they need.
+                val moshStatus = if (s.draft.useMosh) {
+                    withContext(Dispatchers.IO) { moshPreflight.run(target, auth) }
+                } else {
+                    MoshStatus.NotChecked
+                }
+                TestResult.Success(moshStatus)
             }
         } catch (t: SshException.AuthFailed) {
             TestResult.Error("Authentication failed. Wrong key or username?")

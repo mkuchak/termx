@@ -41,7 +41,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -649,19 +651,44 @@ class TerminalViewModel @Inject constructor(
             // "clean but fast" path that almost always means UDP is
             // blocked between phone and VPS.
             //
+            // v1.1.19: race fix. The previous version read
+            // `session.diagnostic.value` immediately after the output
+            // flow ended — but the `waitpid` watcher thread updates
+            // that StateFlow in parallel and usually loses the race
+            // (PTY-EOF fires within milliseconds of child exit; the
+            // watcher's `captureLinkerLogcat` adds 100-500ms before
+            // the diagnostic is written). Result on v1.1.18: exitCode
+            // was null when checked, every branch fell through, user
+            // saw bare "Disconnected". Fix: AWAIT the diagnostic with
+            // a 2-second budget, which lines up with the watcher's
+            // worst-case logcat-drain latency.
+            //
             // The `isActive` guard is what stops a user-initiated
             // disconnect (detachTab → outputJob.cancel + close →
             // SIGKILL) from surfacing a spurious "exit 137" snackbar
             // on the user's own action: when the coroutine has been
-            // cancelled, we drop the diagnostic on the floor and let
+            // cancelled, we don't wait and we don't push a message;
             // [disconnect] / [detachTab] own the UI transition.
-            val diag = session.diagnostic.value
-            if (currentCoroutineContext().isActive && diag.exitCode != null) {
-                val message = MoshExitMessage.forDiagnostic(
-                    exitCode = diag.exitCode!!,
-                    elapsedMs = diag.elapsedMs,
-                    head = diag.head,
-                )
+            if (currentCoroutineContext().isActive) {
+                val diag = withTimeoutOrNull(MOSH_DIAG_WAIT_MS) {
+                    session.diagnostic.first { it.exitCode != null }
+                }
+                val message = if (diag != null) {
+                    MoshExitMessage.forDiagnostic(
+                        exitCode = diag.exitCode!!,
+                        elapsedMs = diag.elapsedMs,
+                        head = diag.head,
+                    )
+                } else {
+                    // Last-resort fallback: the watcher never reported
+                    // an exit code within 2s. Could mean the process
+                    // was killed by lmkd before waitpid could run, or
+                    // the host has SELinux restrictions on logcat that
+                    // hung the capture. Better to tell the user
+                    // *something* than to leave them on a bare
+                    // Disconnected screen with no clue why.
+                    "mosh-client ended without a status — Android may have killed the process. Check Settings → Battery → restrict-background for termx."
+                }
                 if (message != null) {
                     _state.value = _state.value.copy(
                         status = TerminalUiState.Status.Disconnected,
@@ -908,6 +935,16 @@ class TerminalViewModel @Inject constructor(
          * covers a fresh VPS cold-start plus firewall pinhole-probe.
          */
         const val MOSH_HANDSHAKE_TIMEOUT_MS: Long = 8_000L
+
+        /**
+         * Budget for awaiting [MoshSessionImpl]'s diagnostic flow to
+         * report a final exit code. The watcher thread's
+         * `captureLinkerLogcat` can spend 100-500ms draining logcat
+         * before publishing — without this wait the consumer would
+         * race and read `exitCode == null`, falling through to the
+         * silent "Disconnected" path that v1.1.19 set out to fix.
+         */
+        const val MOSH_DIAG_WAIT_MS: Long = 2_000L
 
         /**
          * Stable sentinel UUID for BuildConfig test-server connections

@@ -57,6 +57,9 @@ class SetupWizardViewModelTest {
         installCompanion = installCompanion,
         passwordCache = dev.kuch.termx.core.data.prefs.PasswordCache(),
         sshClient = FakeSshClient(),
+        moshPreflight = dev.kuch.termx.feature.servers.MoshPreflight { _, _ ->
+            dev.kuch.termx.feature.servers.MoshStatus.NotChecked
+        },
     )
 
     private fun SetupWizardViewModel.setDraft(

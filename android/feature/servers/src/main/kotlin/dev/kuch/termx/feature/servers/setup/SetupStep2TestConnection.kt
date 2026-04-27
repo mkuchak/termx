@@ -29,6 +29,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.kuch.termx.core.domain.model.AuthType
+import dev.kuch.termx.feature.servers.MoshStatus
 import dev.kuch.termx.feature.servers.TestResult
 
 /**
@@ -83,8 +84,8 @@ fun SetupStep2TestConnection(
                     Text("Testing…")
                 }
             }
-            TestResult.Success -> {
-                SuccessCard()
+            is TestResult.Success -> {
+                SuccessCard(moshStatus = r.moshStatus)
                 Spacer(Modifier.height(16.dp))
                 Button(
                     onClick = onNext,
@@ -152,27 +153,60 @@ private fun SummaryCard(state: SetupWizardUiState) {
 }
 
 @Composable
-private fun SuccessCard() {
+private fun SuccessCard(moshStatus: MoshStatus) {
     Surface(
         shape = RoundedCornerShape(12.dp),
         color = MaterialTheme.colorScheme.primaryContainer,
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Row(
-            modifier = Modifier.padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-            )
-            Spacer(Modifier.size(8.dp))
-            Text(
-                "Connected successfully",
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                fontWeight = FontWeight.SemiBold,
-            )
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+                Spacer(Modifier.size(8.dp))
+                Text(
+                    "Connected successfully",
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+            when (moshStatus) {
+                MoshStatus.NotChecked -> Unit
+                MoshStatus.Ok -> Row(
+                    modifier = Modifier.padding(top = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "Mosh handshake OK",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                }
+                is MoshStatus.Failed -> Row(
+                    modifier = Modifier.padding(top = 6.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    )
+                    Spacer(Modifier.size(8.dp))
+                    Text(
+                        "Mosh: ${moshStatus.reason}",
+                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
         }
     }
 }

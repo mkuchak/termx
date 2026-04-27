@@ -60,6 +60,7 @@ class AddEditServerViewModelTest {
         vault: FakeSecretVault = FakeSecretVault(),
         passwordCache: PasswordCache = PasswordCache(),
         sshClient: FakeSshClient = FakeSshClient(),
+        moshPreflight: MoshPreflight = MoshPreflight { _, _ -> MoshStatus.NotChecked },
     ): AddEditServerViewModel = AddEditServerViewModel(
         knownHostsPath = knownHosts,
         serverRepository = servers,
@@ -68,6 +69,7 @@ class AddEditServerViewModelTest {
         secretVault = vault,
         passwordCache = passwordCache,
         sshClient = sshClient,
+        moshPreflight = moshPreflight,
     )
 
     // --- save() -----------------------------------------------------------

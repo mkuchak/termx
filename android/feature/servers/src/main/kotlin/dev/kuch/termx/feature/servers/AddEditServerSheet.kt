@@ -573,17 +573,53 @@ private fun TestResultRow(result: TestResult) {
             )
             Text("Testing…", modifier = Modifier.padding(start = 8.dp))
         }
-        TestResult.Success -> Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = Icons.Filled.Check,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                "Connected successfully",
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(start = 8.dp),
-            )
+        is TestResult.Success -> Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "Connected successfully",
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            when (val mosh = result.moshStatus) {
+                MoshStatus.NotChecked -> Unit
+                MoshStatus.Ok -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(top = 2.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        "Mosh handshake OK",
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+                is MoshStatus.Failed -> Row(
+                    verticalAlignment = Alignment.Top,
+                    modifier = Modifier.padding(top = 2.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.tertiary,
+                    )
+                    Text(
+                        "Mosh: ${mosh.reason}",
+                        color = MaterialTheme.colorScheme.tertiary,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
         }
         is TestResult.Error -> Row(
             verticalAlignment = Alignment.Top,
