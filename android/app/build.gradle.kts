@@ -44,10 +44,6 @@ android {
         versionName = appVersionName
         versionCode = appVersionCode
 
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
-
         // Test-server coordinates for the Phase 1 "no server manager yet"
         // path. Populate by exporting TERMX_TEST_SERVER_HOST / _USER / _PORT
         // before building; empty defaults let release builds compile cleanly

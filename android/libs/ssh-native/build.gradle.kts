@@ -11,29 +11,8 @@ android {
 
     defaultConfig {
         minSdk = 28
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
-        }
-        externalNativeBuild {
-            cmake {
-                // C only — no STL, keeps the toolchain lightweight.
-                // Leave cFlags alone so the NDK default (-std=gnu17) stays
-                // in effect; the GNU extensions unlock POSIX helpers
-                // (ptsname_r, strdup, grantpt, unlockpt) on bionic without
-                // needing explicit feature macros.
-                arguments += listOf("-DANDROID_STL=none")
-            }
-        }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
-        }
-    }
-
-    sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
     sourceSets["main"].kotlin.srcDirs("src/main/kotlin")
     sourceSets["test"].kotlin.srcDirs("src/test/kotlin")
 
@@ -44,6 +23,10 @@ android {
 
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // CapturingMoshLogger calls android.util.Log.{d,w} from
+        // production code; without this the JVM unit tests throw
+        // "Method d/w not mocked" on first invocation.
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -54,6 +37,11 @@ dependencies {
     implementation(libs.bouncycastle.bcprov)
     implementation(libs.bouncycastle.bcpkix)
     implementation(libs.coroutines.android)
+
+    // v1.1.21: pure-Kotlin mosh client transport. Resolved via the
+    // composite-build substitution declared in settings.gradle.kts;
+    // the actual sources live at libs/mosh-transport/ in this repo.
+    implementation("sh.haven:ssp-transport:0.1.0")
 
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
