@@ -39,7 +39,9 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -345,6 +347,14 @@ class TerminalViewModel @Inject constructor(
                 return
             }
             Log.i(LOG_TAG, "mosh handshake did not complete in ${MOSH_HANDSHAKE_TIMEOUT_MS}ms; falling back to ssh")
+            // Tell the user we silently downgraded — otherwise tapping
+            // a mosh-flagged server, getting an SSH session, and seeing
+            // disconnects on flaky networks looks identical to "mosh
+            // works fine". The snackbar is one-shot via _writeErrors;
+            // the SSH session still proceeds below.
+            _writeErrors.tryEmit(
+                "Mosh handshake didn't complete in ${MOSH_HANDSHAKE_TIMEOUT_MS / 1_000}s — using SSH instead.",
+            )
         }
 
         val client = SshClient().also { sshClient = it }
@@ -632,20 +642,35 @@ class TerminalViewModel @Inject constructor(
             emulator.onRemoteSessionClosed()
             // mosh-client stdout EOF ⇒ the child process either exited
             // cleanly (user typed `exit` on the remote) or died during
-            // startup. Distinguish via the diagnostic snapshot: a
-            // non-zero code within the early-exit window means we
-            // should tell the user *why* rather than silently dropping
-            // them on a useless Reconnect button.
+            // startup / runtime. Decide what to surface via the pure
+            // helper [MoshExitMessage] — covers early non-zero exits
+            // (linker / static-init crashes), late non-zero exits
+            // (runtime segfaults, OOM-kill), and the suspicious
+            // "clean but fast" path that almost always means UDP is
+            // blocked between phone and VPS.
+            //
+            // The `isActive` guard is what stops a user-initiated
+            // disconnect (detachTab → outputJob.cancel + close →
+            // SIGKILL) from surfacing a spurious "exit 137" snackbar
+            // on the user's own action: when the coroutine has been
+            // cancelled, we drop the diagnostic on the floor and let
+            // [disconnect] / [detachTab] own the UI transition.
             val diag = session.diagnostic.value
-            if (diag.exitCode != null && diag.exitCode != 0 && diag.elapsedMs < MOSH_EARLY_EXIT_WINDOW_MS) {
-                val reason = extractReadableReason(diag.head)
-                _state.value = _state.value.copy(
-                    status = TerminalUiState.Status.Disconnected,
-                    error = "mosh-client exited after ${diag.elapsedMs}ms (exit ${diag.exitCode}): $reason",
-                    activeSession = null,
-                    activeTabName = null,
-                    openTabs = emptySet(),
+            if (currentCoroutineContext().isActive && diag.exitCode != null) {
+                val message = MoshExitMessage.forDiagnostic(
+                    exitCode = diag.exitCode!!,
+                    elapsedMs = diag.elapsedMs,
+                    head = diag.head,
                 )
+                if (message != null) {
+                    _state.value = _state.value.copy(
+                        status = TerminalUiState.Status.Disconnected,
+                        error = message,
+                        activeSession = null,
+                        activeTabName = null,
+                        openTabs = emptySet(),
+                    )
+                }
             }
         }
 
@@ -665,27 +690,6 @@ class TerminalViewModel @Inject constructor(
             tabName = tab.name,
         )
         return tab
-    }
-
-    /**
-     * Pull the most useful single line out of mosh-client's captured
-     * stderr head. ncurses prints `Error opening terminal: ...` or the
-     * classic `Cannot find termcap entry for ...`; mosh itself prints
-     * things like `mosh-client: ...`. We prefer a line matching any of
-     * those markers, falling back to the first non-empty line, then to
-     * a size-capped flattened form.
-     */
-    private fun extractReadableReason(head: String): String {
-        if (head.isBlank()) return "no output captured"
-        val lines = head.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
-        val preferred = lines.firstOrNull { line ->
-            line.contains("termcap", ignoreCase = true) ||
-                line.contains("terminal", ignoreCase = true) ||
-                line.startsWith("mosh", ignoreCase = true) ||
-                line.contains("error", ignoreCase = true)
-        }
-        val best = preferred ?: lines.firstOrNull() ?: head.replace('\n', ' ').trim()
-        return best.take(200)
     }
 
     /**
@@ -904,14 +908,6 @@ class TerminalViewModel @Inject constructor(
          * covers a fresh VPS cold-start plus firewall pinhole-probe.
          */
         const val MOSH_HANDSHAKE_TIMEOUT_MS: Long = 8_000L
-
-        /**
-         * Window within which a mosh-client exit is treated as a
-         * startup failure rather than a normal user-initiated exit.
-         * Matches the companion in `MoshSessionImpl` so the log and
-         * the UI post-mortem agree on what counts as "immediate".
-         */
-        const val MOSH_EARLY_EXIT_WINDOW_MS: Long = 2_000L
 
         /**
          * Stable sentinel UUID for BuildConfig test-server connections

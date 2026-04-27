@@ -170,12 +170,22 @@ internal class MoshSessionImpl(
             // pre-main (SIGSEGV in <50 ms during dynamic linking or
             // a static C++ ctor), [ptyHead] is empty and we used to
             // surface "no output captured" to the user with no
-            // actionable detail. v1.1.16: we now also pull the last
-            // few hundred lines of logcat for this app's UID,
-            // filtered to the dead child's pid, and append the
-            // matching linker/DEBUG/libc lines so the snackbar
-            // actually says what bionic complained about.
-            val combinedHead = if (code != 0 && elapsed < EARLY_EXIT_WINDOW_MS) {
+            // actionable detail.
+            //
+            // v1.1.16: pull the last few hundred lines of logcat for
+            // this app's UID, filtered to the dead child's pid, and
+            // append the matching linker/DEBUG/libc lines so the
+            // snackbar actually says what bionic complained about.
+            //
+            // v1.1.18: drop the `elapsed < EARLY_EXIT_WINDOW_MS` gate.
+            // Late runtime crashes (segfaults inside ncurses, OOM-kill
+            // by lmkd, mosh-client hitting an assert several seconds
+            // in) leave the same kind of footprint in logcat that the
+            // early-exit case did, and `logcat -d -t 500 | grep <pid>`
+            // is cheap. Suppressing the linker log for late exits
+            // means TerminalViewModel can't surface a useful "exit
+            // 137 after 12s — killed by lmkd" line either.
+            val combinedHead = if (code != 0) {
                 val linkerLog = captureLinkerLogcat(pid).take(LINKER_LOG_CAP)
                 if (linkerLog.isNotBlank()) {
                     if (ptyHead.isBlank()) linkerLog
