@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.19](https://github.com/mkuchak/termx/compare/v1.1.18...v1.1.19) (2026-04-27)
+
+### Bug Fixes
+
+* **mosh:** race fix on exit diagnostic + mosh-aware Test Connection ([a508775](https://github.com/mkuchak/termx/commit/a50877563378f7e7b8174a139d8cf194a4813775))
+
 ## [1.1.18](https://github.com/mkuchak/termx/compare/v1.1.17...v1.1.18) (2026-04-27)
 
 ### Bug Fixes
