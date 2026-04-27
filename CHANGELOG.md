@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.17](https://github.com/mkuchak/termx/compare/v1.1.16...v1.1.17) (2026-04-27)
+
+### Features
+
+* **updater:** in-app GitHub-Release auto-updater ([0097aa8](https://github.com/mkuchak/termx/commit/0097aa86cf4fc26079ddde1dddc4b989ce5e3c42))
+
 ## [1.1.16](https://github.com/mkuchak/termx/compare/v1.1.15...v1.1.16) (2026-04-26)
 
 ### Bug Fixes
