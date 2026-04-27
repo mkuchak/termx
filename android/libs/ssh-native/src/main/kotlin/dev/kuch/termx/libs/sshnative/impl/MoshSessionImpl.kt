@@ -207,38 +207,54 @@ internal class MoshSessionImpl(
     }
 
     /**
-     * Drain `logcat -d` (dump-and-exit) for the linker / native-crash
-     * tags and filter to the dead child's pid. We can read this app's
-     * UID's logcat lines without `READ_LOGS` permission since API 16,
-     * and the pid filter keeps us strictly within our own child's
-     * output.
+     * Two-pass `logcat -d` capture aimed at the bionic linker / native
+     * crash output that mosh-client's PTY never sees.
      *
-     * Returns "" on any failure — logcat may be unavailable on
-     * specific OEM ROMs or under SELinux denial; the caller falls
-     * back to the existing "no output captured" message.
+     * Pass 1 (v1.1.16 behaviour): tag-restricted (`linker`, `DEBUG`,
+     * `libc`, `crash_dump`) AND pid-filtered to the dead child. Cheap
+     * and always-correct when those tags are readable.
+     *
+     * Pass 2 (v1.1.20): on empty pass-1 output, retry without the tag
+     * whitelist and without the pid filter, then keyword-grep for the
+     * lines that actually carry crash signal — `Fatal signal`,
+     * `CANNOT LINK`, `cannot locate`, `library …not found`,
+     * `libmoshclient`, `mosh-client`, `SIGSEGV`. This catches devices
+     * where SELinux blocks app-uid reads of system tags but lets the
+     * raw buffer through, AND devices where the linker stamps log
+     * entries with a pid the child never reused.
+     *
+     * Returns "" on any failure — logcat may be unavailable entirely
+     * on specific OEM ROMs; the caller falls back to the existing
+     * "no output captured" message and the new signal-decoded
+     * `MoshExitMessage` copy still gives the user "exit 139,
+     * SIGSEGV" without depending on this output.
      */
-    private fun captureLinkerLogcat(deadPid: Int): String = runCatching {
-        val proc = ProcessBuilder(
-            "logcat",
-            "-d",
-            "-t", "500",
-            "linker:V",
-            "linker64:V",
-            "DEBUG:V",
-            "libc:V",
-            "crash_dump:V",
-            "*:S",
-        ).redirectErrorStream(true).start()
+    private fun captureLinkerLogcat(deadPid: Int): String {
+        val tagged = capturePass(
+            args = listOf(
+                "logcat", "-d", "-t", "500",
+                "linker:V", "linker64:V", "DEBUG:V", "libc:V", "crash_dump:V", "*:S",
+            ),
+        )
+        val pidPattern = " $deadPid "
+        val byPid = tagged.lineSequence().filter { it.contains(pidPattern) }.toList()
+        if (byPid.isNotEmpty()) return byPid.joinToString("\n")
+
+        // Pass 2: drop both filters, grep by keyword.
+        val raw = capturePass(
+            args = listOf("logcat", "-d", "-t", "500", "-v", "threadtime"),
+        )
+        return raw.lineSequence()
+            .filter { line -> CRASH_KEYWORDS.any { line.contains(it, ignoreCase = true) } }
+            .take(50)
+            .joinToString("\n")
+    }
+
+    private fun capturePass(args: List<String>): String = runCatching {
+        val proc = ProcessBuilder(args).redirectErrorStream(true).start()
         val output = proc.inputStream.bufferedReader().use { it.readText() }
         runCatching { proc.waitFor() }
-        // logcat default format is:
-        //   MM-DD HH:MM:SS.MMM   PID  TID PRIORITY TAG    : MESSAGE
-        // Filter by " $pid " (whitespace-bounded) so we don't false-
-        // match a longer pid that happens to contain ours as a substring.
-        val pidPattern = " $deadPid "
-        output.lineSequence()
-            .filter { it.contains(pidPattern) }
-            .joinToString("\n")
+        output
     }.getOrElse { "" }
 
     private companion object {
@@ -252,5 +268,30 @@ internal class MoshSessionImpl(
 
         /** Max characters of logcat output appended to the diagnostic. */
         const val LINKER_LOG_CAP = 4_000
+
+        /**
+         * Keywords used in the pass-2 logcat fallback. Each one is
+         * the canonical marker that a different layer of the runtime
+         * prints when something native blew up:
+         *  - `Fatal signal …` — debuggerd's tombstone preamble.
+         *  - `CANNOT LINK` / `cannot locate` — bionic dynamic linker
+         *    refusing to load the executable or resolve a symbol.
+         *  - `library` + `not found` (matched together at filter
+         *    sites) — bionic's missing-DSO error.
+         *  - `libmoshclient` / `mosh-client` — anything that mentions
+         *    the binary by name, regardless of the tag it landed on.
+         *  - `SIGSEGV` — bare segv hint without the full debuggerd
+         *    line, e.g. from libc's __abort path.
+         */
+        val CRASH_KEYWORDS: List<String> = listOf(
+            "Fatal signal",
+            "CANNOT LINK",
+            "cannot locate",
+            "libmoshclient",
+            "mosh-client",
+            "SIGSEGV",
+            "SIGABRT",
+            "SIGBUS",
+        )
     }
 }

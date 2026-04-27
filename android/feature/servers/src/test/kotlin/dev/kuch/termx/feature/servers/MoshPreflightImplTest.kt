@@ -14,10 +14,12 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -167,6 +169,49 @@ class MoshPreflightImplTest {
         assertTrue(
             "expected exit-code reference, got: $reason",
             reason.contains("exit 137"),
+        )
+    }
+
+    @Test fun `output flow completes empty - regression for v1_1_19 NoSuchElementException leak`() = runTest {
+        // v1.1.19 used `mosh.output.first()` here. When mosh-client
+        // exits without writing anything (the user's actual case),
+        // the channelFlow returns without ever emitting, `first()`
+        // throws NoSuchElementException("Expected at least one
+        // element"), and the message leaked to the user as
+        // "Mosh: Unexpected error: Expected at least one element".
+        // v1.1.20 uses firstOrNull and routes through MoshExitMessage
+        // so this case now produces the same signal-decoded copy a
+        // live connect attempt would.
+        val sshClient = sshClientReturningCommandVExit(exitCode = 0)
+        val moshSession = mockk<MoshSession>(relaxed = true)
+        every { moshSession.output } returns emptyFlow()
+        every { moshSession.diagnostic } returns
+            MutableStateFlow(MoshDiagnostic(exitCode = 139, elapsedMs = 14L, head = ""))
+        val moshClient = mockk<MoshClient>()
+        coEvery { moshClient.tryConnect(any(), any(), any(), any(), any()) } returns moshSession
+
+        val pre = MoshPreflightImpl(sshClient, moshClient)
+        val result = pre.run(target, auth)
+
+        assertTrue("expected Failed, got $result", result is MoshStatus.Failed)
+        val reason = (result as MoshStatus.Failed).reason
+        // Must surface the v1.1.20 signal-decoded format AND must
+        // NOT leak the "Expected at least one element" Java message.
+        assertTrue(
+            "expected SIGSEGV decode, got: $reason",
+            reason.contains("SIGSEGV"),
+        )
+        assertTrue(
+            "expected exit 139 reference, got: $reason",
+            reason.contains("exit 139"),
+        )
+        assertTrue(
+            "expected the no-output-captured note, got: $reason",
+            reason.contains("no output captured"),
+        )
+        assertFalse(
+            "must not leak NoSuchElementException message, got: $reason",
+            reason.contains("Expected at least one element"),
         )
     }
 

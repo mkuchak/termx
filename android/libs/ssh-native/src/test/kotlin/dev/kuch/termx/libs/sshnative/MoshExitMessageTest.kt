@@ -1,4 +1,4 @@
-package dev.kuch.termx.feature.terminal
+package dev.kuch.termx.libs.sshnative
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -7,34 +7,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Pure-logic tests for [MoshExitMessage]. Each branch here maps
- * directly to one of the three previously-silent failure modes the
- * v1.1.18 change is meant to surface to the user:
+ * Pure-logic tests for [MoshExitMessage]. Covers each branch of the
+ * decision tree that drives the live-connect snackbar AND the
+ * mosh-aware preflight row in `:feature:servers`.
  *
  *  - early non-zero exit (preserved from v1.1.16) — must format
  *    identically to before so the user's mental model survives.
- *  - late non-zero exit (NEW) — runtime crash / OOM-kill / signal,
- *    used to fall through to bare "disconnected" with no info.
- *  - clean exit shorter than [SUSPECT_CLEAN_EXIT_MS] (NEW) — almost
- *    always means UDP between phone and VPS is blocked; we now hint
+ *  - late non-zero exit (added v1.1.18) — runtime crash / OOM-kill /
+ *    signal, used to fall through to bare "disconnected" with no info.
+ *  - clean exit shorter than [MoshExitMessage.SUSPECT_CLEAN_EXIT_MS] —
+ *    almost always means UDP between phone and VPS is blocked; we hint
  *    at that.
  *  - clean exit at or above the suspect window — normal user-typed
  *    `exit`; suppressed on purpose so a successful long session
  *    doesn't show a misleading snackbar on its way out.
+ *  - signal-decoded exit codes (added v1.1.20) — `exit 139` becomes
+ *    `exit 139, SIGSEGV` so an empty-head crash still tells the user
+ *    *what kind* of crash without depending on logcat being
+ *    accessible.
  */
 class MoshExitMessageTest {
 
     // ---- forDiagnostic: non-zero exits ---------------------------------
 
-    @Test fun `early non-zero exit produces the v1_1_16 message format`() {
+    @Test fun `early non-zero exit produces the v1_1_16 message format with signal name`() {
         val msg = MoshExitMessage.forDiagnostic(
             exitCode = 139,
             elapsedMs = 14L,
             head = "",
         )
-        // Preserves the wording the user has seen since v1.1.16.
+        // v1.1.20: the bare exit number is now decorated with the
+        // signal name so the user gets actionable info even when the
+        // PTY head and the logcat capture both come back empty (which
+        // is exactly the user's case on their device).
         assertEquals(
-            "mosh-client exited after 14ms (exit 139): no output captured",
+            "mosh-client exited after 14ms (exit 139, SIGSEGV): no output captured",
             msg,
         )
     }
@@ -45,12 +52,10 @@ class MoshExitMessageTest {
             elapsedMs = 12_345L,
             head = "",
         )
-        // The 2s gate is gone — late crashes (OOM-kill, late
-        // segfault) must show up. Seconds-formatted to keep the
-        // snackbar compact.
         assertNotNull(msg)
         assertTrue("expected '12.3s' in $msg", msg!!.contains("12.3s"))
         assertTrue("expected 'exit 137' in $msg", msg.contains("exit 137"))
+        assertTrue("expected SIGKILL decode in $msg", msg.contains("SIGKILL"))
     }
 
     @Test fun `non-zero exit picks the most useful line from head`() {
@@ -104,8 +109,6 @@ class MoshExitMessageTest {
             elapsedMs = MoshExitMessage.SUSPECT_CLEAN_EXIT_MS,
             head = "",
         )
-        // A long-running clean exit is a normal "user typed `exit`"
-        // — surfacing a snackbar on the way out would be noise.
         assertNull(msg)
     }
 
@@ -139,6 +142,32 @@ class MoshExitMessageTest {
         assertEquals("12m45s", MoshExitMessage.formatElapsed(12L * 60_000L + 45_000L))
     }
 
+    // ---- formatExitCode (signal decoding, v1.1.20) --------------------
+
+    @Test fun `formatExitCode passes through plain status codes unchanged`() {
+        // Anything <= 128 is a regular exit status — leave it alone.
+        assertEquals("exit 0", MoshExitMessage.formatExitCode(0))
+        assertEquals("exit 1", MoshExitMessage.formatExitCode(1))
+        assertEquals("exit 127", MoshExitMessage.formatExitCode(127))
+        assertEquals("exit 128", MoshExitMessage.formatExitCode(128))
+    }
+
+    @Test fun `formatExitCode decodes 128 plus N as the named signal`() {
+        // The user's specific failure mode lands on 139 = 128 + SIGSEGV.
+        assertEquals("exit 139, SIGSEGV", MoshExitMessage.formatExitCode(139))
+        assertEquals("exit 137, SIGKILL", MoshExitMessage.formatExitCode(137))
+        assertEquals("exit 143, SIGTERM", MoshExitMessage.formatExitCode(143))
+        assertEquals("exit 134, SIGABRT", MoshExitMessage.formatExitCode(134))
+        assertEquals("exit 135, SIGBUS", MoshExitMessage.formatExitCode(135))
+    }
+
+    @Test fun `formatExitCode falls back to bare code for unknown signals`() {
+        // Real-time signals (>= 32) and the few we don't enumerate
+        // shouldn't break — just don't decorate them.
+        assertEquals("exit 200", MoshExitMessage.formatExitCode(200))
+        assertEquals("exit 158", MoshExitMessage.formatExitCode(158))
+    }
+
     // ---- extractReadableReason ----------------------------------------
 
     @Test fun `extractReadableReason on blank head returns the v1_1_16 fallback`() {
@@ -154,15 +183,40 @@ class MoshExitMessageTest {
             mosh-client: error: bind: address already in use
             trailing line
         """.trimIndent()
-        // Both the SYMBOL and mosh-client lines match; either is
-        // useful. We just guarantee we don't fall back to the
-        // generic preamble.
         val pick = MoshExitMessage.extractReadableReason(head)
         assertTrue(
             "expected an actionable line, got: $pick",
             pick.contains("error", ignoreCase = true) ||
                 pick.contains("symbol", ignoreCase = true) ||
                 pick.startsWith("mosh"),
+        )
+    }
+
+    @Test fun `extractReadableReason picks Fatal signal tombstone marker`() {
+        // The kernel's debuggerd writes lines like
+        // "Fatal signal 11 (SIGSEGV), code 1, fault addr …" — that's
+        // the most actionable line in a tombstone, so we must prefer
+        // it over surrounding boilerplate.
+        val head = """
+            04-27 12:34:56.789  1234  1234 F libc    : Fatal signal 11 (SIGSEGV), code 1, fault addr 0x0
+            04-27 12:34:56.790  1234  1234 F DEBUG   : *** *** *** *** ***
+        """.trimIndent()
+        val pick = MoshExitMessage.extractReadableReason(head)
+        assertTrue(
+            "expected the Fatal signal line, got: $pick",
+            pick.contains("Fatal signal", ignoreCase = true),
+        )
+    }
+
+    @Test fun `extractReadableReason picks linker CANNOT LINK output`() {
+        val head = """
+            04-27 12:34:56.789  1234  1234 E linker  : CANNOT LINK EXECUTABLE "libmoshclient.so": library "libfoo.so" not found
+            unrelated noise
+        """.trimIndent()
+        val pick = MoshExitMessage.extractReadableReason(head)
+        assertTrue(
+            "expected the linker line, got: $pick",
+            pick.contains("CANNOT LINK", ignoreCase = true),
         )
     }
 

@@ -24,6 +24,7 @@ import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
 import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
 import dev.kuch.termx.libs.sshnative.MoshClient
+import dev.kuch.termx.libs.sshnative.MoshExitMessage
 import dev.kuch.termx.libs.sshnative.MoshSession
 import dev.kuch.termx.libs.sshnative.PtyChannel
 import dev.kuch.termx.libs.sshnative.SshAuth

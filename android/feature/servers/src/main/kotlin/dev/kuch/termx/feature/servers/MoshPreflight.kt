@@ -2,6 +2,7 @@ package dev.kuch.termx.feature.servers
 
 import android.util.Log
 import dev.kuch.termx.libs.sshnative.MoshClient
+import dev.kuch.termx.libs.sshnative.MoshExitMessage
 import dev.kuch.termx.libs.sshnative.MoshSession
 import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
@@ -9,6 +10,7 @@ import dev.kuch.termx.libs.sshnative.SshTarget
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -115,30 +117,45 @@ class MoshPreflightImpl @Inject constructor(
      * to receive any byte within [FIRST_BYTE_TIMEOUT_MS] is the
      * canonical signature of a blocked UDP path on ports 60000-60010.
      *
-     * If the byte arrives we succeed regardless of exit code (the
-     * close in the caller's `finally` triggers a clean teardown). If
-     * the timeout elapses we sniff the diagnostic for a hard crash
-     * before falling back to the UDP-blocked hint.
+     * v1.1.20: previously called [Flow.first] which throws
+     * `NoSuchElementException("Expected at least one element")` when
+     * mosh-client exits without ever writing to its PTY (the user's
+     * exact case — bionic-linker / static-init crash, identical
+     * symptom to v1.1.16's `exit 139 / no output captured`). The
+     * exception leaked to the outer `runCatching` and surfaced as
+     * `Mosh: Unexpected error: Expected at least one element` —
+     * useless to the user. [Flow.firstOrNull] returns `null` on
+     * empty completion instead, and the diagnostic-fallback below
+     * routes through [MoshExitMessage] for the actually-helpful
+     * "exit 139, SIGSEGV: no output captured" copy.
      */
     private suspend fun probeFirstByte(mosh: MoshSession): MoshStatus {
         val firstByte = withTimeoutOrNull(FIRST_BYTE_TIMEOUT_MS) {
-            mosh.output.first()
+            mosh.output.firstOrNull()
         }
         if (firstByte != null) return MoshStatus.Ok
 
         val diag = withTimeoutOrNull(DIAG_AFTER_TIMEOUT_MS) {
             mosh.diagnostic.first { it.exitCode != null }
         }
-        return if (diag != null && diag.exitCode != null && diag.exitCode != 0) {
-            MoshStatus.Failed(
-                "mosh-client exited unexpectedly (exit ${diag.exitCode}). Reconnect to see details.",
+        // Process actually exited — let the shared MoshExitMessage
+        // helper produce the same wording the live-connect path uses,
+        // so the user gets identical signal-decoded copy whether they
+        // see this from the test row or from a live connect attempt.
+        if (diag != null && diag.exitCode != null) {
+            val msg = MoshExitMessage.forDiagnostic(
+                exitCode = diag.exitCode!!,
+                elapsedMs = diag.elapsedMs,
+                head = diag.head,
             )
-        } else {
-            MoshStatus.Failed(
-                "Handshake OK but no UDP traffic in ${FIRST_BYTE_TIMEOUT_MS / 1_000}s — " +
-                    "VPS firewall likely blocks UDP ports 60000-60010.",
-            )
+            if (msg != null) return MoshStatus.Failed(msg)
         }
+        // No exit reported within the budget AND no first byte: most
+        // likely UDP packets aren't making it back to the phone.
+        return MoshStatus.Failed(
+            "Handshake OK but no UDP traffic in ${FIRST_BYTE_TIMEOUT_MS / 1_000}s — " +
+                "VPS firewall likely blocks UDP ports 60000-60010.",
+        )
     }
 
     private companion object {
