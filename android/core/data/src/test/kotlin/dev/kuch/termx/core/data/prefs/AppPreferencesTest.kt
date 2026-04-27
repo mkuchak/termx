@@ -82,6 +82,17 @@ class AppPreferencesTest {
         assertFalse(AppPreferences.DEFAULT_ONBOARDING_COMPLETE)
     }
 
+    @Test fun `DEFAULT_UPDATER_LAST_CHECK_MS is 0 (forces a check on first launch)`() {
+        // The updater treats `now - lastCheck > 24h` as "go check"; a
+        // non-zero default would silently suppress the very first
+        // post-install check.
+        assertEquals(0L, AppPreferences.DEFAULT_UPDATER_LAST_CHECK_MS)
+    }
+
+    @Test fun `DEFAULT_UPDATER_SKIPPED_VERSION is empty (no version skipped)`() {
+        assertEquals("", AppPreferences.DEFAULT_UPDATER_SKIPPED_VERSION)
+    }
+
     // ---- round-trip writes --------------------------------------------
 
     @Test fun `setParanoidMode round-trips both true and false`() = runTest {
@@ -131,6 +142,23 @@ class AppPreferencesTest {
     @Test fun `setOnboardingComplete round-trips`() = runTest {
         prefs.setOnboardingComplete(true)
         assertTrue(prefs.onboardingComplete.first())
+    }
+
+    @Test fun `setUpdaterLastCheckEpochMs round-trips`() = runTest {
+        // Ten o'clock on some Tuesday — any concrete millisecond value
+        // round-tripped end-to-end proves the longPreferencesKey path
+        // is wired correctly.
+        prefs.setUpdaterLastCheckEpochMs(1_700_000_000_000L)
+        assertEquals(1_700_000_000_000L, prefs.updaterLastCheckEpochMs.first())
+    }
+
+    @Test fun `setUpdaterSkippedVersion round-trips and clears via empty string`() = runTest {
+        prefs.setUpdaterSkippedVersion("v1.1.17")
+        assertEquals("v1.1.17", prefs.updaterSkippedVersion.first())
+        // Setting to "" is how UpdaterRepository clears a skip when a
+        // newer version supersedes the skipped one.
+        prefs.setUpdaterSkippedVersion("")
+        assertEquals("", prefs.updaterSkippedVersion.first())
     }
 
     @Test fun `independent keys do not interfere`() = runTest {

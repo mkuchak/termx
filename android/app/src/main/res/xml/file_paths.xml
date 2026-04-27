@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider paths for the in-app updater (v1.1.17). Only the
+  `updates/` subdirectory of cacheDir is exposed; nothing else in
+  cacheDir or filesDir leaks via FileProvider URIs. The system
+  installer is the only consumer.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path
+        name="updates"
+        path="updates/" />
+</paths>

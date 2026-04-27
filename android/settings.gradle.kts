@@ -27,6 +27,7 @@ include(
     ":feature:onboarding",
     ":feature:ptt",
     ":feature:settings",
+    ":feature:updater",
     ":libs:companion",
     ":libs:ssh-native",
     ":libs:terminal-view",

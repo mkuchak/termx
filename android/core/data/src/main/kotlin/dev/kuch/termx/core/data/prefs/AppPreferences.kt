@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -94,6 +95,23 @@ class AppPreferences @Inject constructor(
     val onboardingComplete: Flow<Boolean> =
         ds.data.map { it[KEY_ONBOARDING_COMPLETE] ?: DEFAULT_ONBOARDING_COMPLETE }
 
+    /**
+     * Last GitHub-Releases-API check epoch ms. The in-app updater
+     * skips a network call when this is within `UPDATER_CHECK_TTL_MS`
+     * of the current time, so cold start adds at most one HTTP round
+     * per 24h.
+     */
+    val updaterLastCheckEpochMs: Flow<Long> =
+        ds.data.map { it[KEY_UPDATER_LAST_CHECK_MS] ?: DEFAULT_UPDATER_LAST_CHECK_MS }
+
+    /**
+     * The latest version tag the user explicitly skipped (e.g.
+     * `"v1.1.17"`). The banner stays hidden as long as the upstream
+     * `releases/latest` matches this; a newer tag re-surfaces it.
+     */
+    val updaterSkippedVersion: Flow<String> =
+        ds.data.map { it[KEY_UPDATER_SKIPPED_VERSION] ?: DEFAULT_UPDATER_SKIPPED_VERSION }
+
     suspend fun setParanoidMode(value: Boolean) {
         ds.edit { it[KEY_PARANOID_MODE] = value }
     }
@@ -126,6 +144,14 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_ONBOARDING_COMPLETE] = value }
     }
 
+    suspend fun setUpdaterLastCheckEpochMs(value: Long) {
+        ds.edit { it[KEY_UPDATER_LAST_CHECK_MS] = value }
+    }
+
+    suspend fun setUpdaterSkippedVersion(value: String) {
+        ds.edit { it[KEY_UPDATER_SKIPPED_VERSION] = value }
+    }
+
     /**
      * `internal` (was `private`) so AppPreferencesTest can verify the
      * default constants directly without relying on the DataStore
@@ -142,6 +168,8 @@ class AppPreferences @Inject constructor(
         val KEY_PTT_TARGET_LANGUAGE = stringPreferencesKey("ptt_target_language")
         val KEY_PTT_CONTEXT = stringPreferencesKey("ptt_context")
         val KEY_ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
+        val KEY_UPDATER_LAST_CHECK_MS = longPreferencesKey("updater_last_check_epoch_ms")
+        val KEY_UPDATER_SKIPPED_VERSION = stringPreferencesKey("updater_skipped_version")
         const val DEFAULT_PARANOID_MODE = false
 
         /**
@@ -171,5 +199,7 @@ class AppPreferences @Inject constructor(
         const val DEFAULT_PTT_LANGUAGE = "en-US"
         const val DEFAULT_PTT_CONTEXT = ""
         const val DEFAULT_ONBOARDING_COMPLETE = false
+        const val DEFAULT_UPDATER_LAST_CHECK_MS = 0L
+        const val DEFAULT_UPDATER_SKIPPED_VERSION = ""
     }
 }

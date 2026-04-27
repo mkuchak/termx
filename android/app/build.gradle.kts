@@ -130,6 +130,7 @@ dependencies {
     implementation(project(":feature:onboarding"))
     implementation(project(":feature:ptt"))
     implementation(project(":feature:settings"))
+    implementation(project(":feature:updater"))
     implementation(project(":libs:terminal-view"))
     implementation(project(":libs:ssh-native"))
     implementation(project(":libs:companion"))

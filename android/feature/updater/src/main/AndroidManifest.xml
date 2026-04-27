@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ACCESS_NETWORK_STATE is required by UpdaterRepository.isOnWifi(),
+  which calls ConnectivityManager.getActiveNetwork +
+  getNetworkCapabilities to gate auto-download to Wi-Fi only.
+  Declared at the feature-module level so the manifest merger pulls
+  it into any app that depends on :feature:updater, and so this
+  module's own lintDebug check can verify the permission is in place
+  next to the API call.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+</manifest>

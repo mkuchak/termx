@@ -22,7 +22,10 @@ import dev.kuch.termx.feature.keys.KeyListScreen
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
 import dev.kuch.termx.feature.onboarding.OnboardingScreen
 import dev.kuch.termx.feature.servers.ServerListScreen
+import dev.kuch.termx.feature.updater.SettingsUpdateCard
+import dev.kuch.termx.feature.updater.UpdateBanner
 import dev.kuch.termx.feature.servers.setup.SetupWizardScreen
+import dev.kuch.termx.BuildConfig
 import dev.kuch.termx.feature.settings.SettingsScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
 import dev.kuch.termx.feature.terminal.diff.DiffViewerScreen
@@ -126,6 +129,7 @@ fun TermxNavHost() {
                 onOpenSettings = {
                     navController.navigate(Routes.Settings)
                 },
+                updateBanner = { UpdateBanner() },
             )
         }
         composable(Routes.SetupWizard) {
@@ -194,7 +198,10 @@ fun TermxNavHost() {
             )
         }
         composable(Routes.Settings) {
-            SettingsScreen(onBack = { navController.popBackStack() })
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                updaterCard = { SettingsUpdateCard(installedVersion = BuildConfig.VERSION_NAME) },
+            )
         }
         composable(Routes.Unlock) {
             BiometricUnlockScreen(

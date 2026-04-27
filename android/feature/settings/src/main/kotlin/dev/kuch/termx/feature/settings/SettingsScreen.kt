@@ -80,6 +80,12 @@ import dev.kuch.termx.core.domain.theme.TerminalTheme
 @Composable
 fun SettingsScreen(
     onBack: () -> Unit,
+    /**
+     * Slot for the updater card (v1.1.17). Filled by the :app
+     * NavHost with [dev.kuch.termx.feature.updater.SettingsUpdateCard]
+     * so :feature:settings stays free of a :feature:updater dep.
+     */
+    updaterCard: @Composable () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -132,6 +138,7 @@ fun SettingsScreen(
                     onContextChange = viewModel::setPttContext,
                 )
             }
+            item { updaterCard() }
             item { SectionHeader("Theme") }
             items(state.themes, key = { it.id }) { theme ->
                 ThemeCard(

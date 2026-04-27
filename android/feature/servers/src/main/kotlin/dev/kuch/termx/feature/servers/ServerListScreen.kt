@@ -100,6 +100,13 @@ fun ServerListScreen(
     onManageKeys: () -> Unit,
     onLaunchSetupWizard: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    /**
+     * Slot for the in-app updater banner (v1.1.17). The :app NavHost
+     * composes this with [dev.kuch.termx.feature.updater.UpdateBanner]
+     * so :feature:servers stays free of the updater module dep. The
+     * banner self-hides when there's no update to surface.
+     */
+    updateBanner: @Composable () -> Unit = {},
     viewModel: ServerListViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
@@ -190,6 +197,12 @@ fun ServerListScreen(
                 .padding(padding),
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
+                // In-app updater banner (v1.1.17). Self-hides when
+                // there's nothing to surface; otherwise renders Available /
+                // Downloading / ReadyToInstall / Error states above the
+                // server list so the user sees update offers without
+                // visiting Settings.
+                updateBanner()
                 // Task #45: nudge the user to exclude termx from Doze so
                 // background tails keep running with the screen off.
                 // Hoisted above the list so it's the first thing they see

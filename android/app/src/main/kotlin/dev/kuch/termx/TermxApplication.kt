@@ -5,6 +5,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import dagger.hilt.android.HiltAndroidApp
 import dev.kuch.termx.core.data.prefs.AppForegroundTracker
 import dev.kuch.termx.core.data.vault.VaultLifecycleObserver
+import dev.kuch.termx.feature.updater.UpdaterRepository
 import dev.kuch.termx.notification.NotificationChannels
 import dev.kuch.termx.service.SessionServiceLauncher
 import javax.inject.Inject
@@ -28,6 +29,7 @@ class TermxApplication : Application() {
     @Inject lateinit var appForegroundTracker: AppForegroundTracker
     @Inject lateinit var sessionServiceLauncher: SessionServiceLauncher
     @Inject lateinit var notificationChannels: NotificationChannels
+    @Inject lateinit var updaterRepository: UpdaterRepository
 
     override fun onCreate() {
         super.onCreate()
@@ -40,5 +42,9 @@ class TermxApplication : Application() {
         // already registered.
         notificationChannels.ensureAll()
         sessionServiceLauncher.start()
+        // In-app updater (v1.1.17): cold-start GitHub-Release check
+        // gated by 24h DataStore cache + F-Droid suppression. The
+        // server-list banner observes the resulting state.
+        updaterRepository.checkOnLaunch(installedVersion = BuildConfig.VERSION_NAME)
     }
 }
