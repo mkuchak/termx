@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.20](https://github.com/mkuchak/termx/compare/v1.1.19...v1.1.20) (2026-04-27)
+
+### Bug Fixes
+
+* **mosh:** decode signals + firstOrNull preflight + broader logcat ([d7fe6ae](https://github.com/mkuchak/termx/commit/d7fe6ae8e30db81635278b11ebfb448074e99a8e))
+
 ## [1.1.19](https://github.com/mkuchak/termx/compare/v1.1.18...v1.1.19) (2026-04-27)
 
 ### Bug Fixes
