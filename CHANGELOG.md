@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.18](https://github.com/mkuchak/termx/compare/v1.1.17...v1.1.18) (2026-04-27)
+
+### Bug Fixes
+
+* **mosh:** surface late + clean-fast exits and handshake fall-through ([53bdfc5](https://github.com/mkuchak/termx/commit/53bdfc5445339b7d53e9a0848aaa782dd74a52c6))
+
 ## [1.1.17](https://github.com/mkuchak/termx/compare/v1.1.16...v1.1.17) (2026-04-27)
 
 ### Features
