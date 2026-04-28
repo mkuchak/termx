@@ -59,6 +59,17 @@ class RemoteTerminalSession(
     @Volatile
     private var sessionFinished = false
 
+    /**
+     * Bytes received via [feedRemoteBytes] BEFORE [initializeEmulator]
+     * has run. SSH doesn't currently trip this race (the sshj connect
+     * handshake takes 1–3 s, AndroidView lays out long before any
+     * remote byte arrives), but the symmetric mosh transport DID hit
+     * it in v1.1.21 — see [MoshRemoteTerminalSession.pendingBytes].
+     * Mirrored here defensively so a future faster transport (or an
+     * unusually quick `motd` print) doesn't silently lose data.
+     */
+    private val pendingBytes = ArrayDeque<ByteArray>()
+
     override fun initializeEmulator(
         columns: Int,
         rows: Int,
@@ -78,6 +89,14 @@ class RemoteTerminalSession(
             mClient,
         )
         onResize(columns, rows)
+        if (pendingBytes.isNotEmpty()) {
+            val emulator = mEmulator
+            for (chunk in pendingBytes) {
+                emulator.append(chunk, chunk.size)
+            }
+            pendingBytes.clear()
+            notifyScreenUpdate()
+        }
     }
 
     override fun updateSize(
@@ -108,7 +127,11 @@ class RemoteTerminalSession(
     fun feedRemoteBytes(bytes: ByteArray) {
         if (bytes.isEmpty() || sessionFinished) return
         mainHandler.post {
-            val emulator = mEmulator ?: return@post
+            val emulator = mEmulator
+            if (emulator == null) {
+                pendingBytes.addLast(bytes)
+                return@post
+            }
             emulator.append(bytes, bytes.size)
             notifyScreenUpdate()
         }

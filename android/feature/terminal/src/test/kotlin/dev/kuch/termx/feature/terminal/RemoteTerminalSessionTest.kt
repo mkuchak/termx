@@ -3,6 +3,7 @@ package dev.kuch.termx.feature.terminal
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import com.termux.terminal.MoshRemoteTerminalSession
 import com.termux.terminal.RemoteTerminalSession
 import com.termux.terminal.TerminalSessionClient
 import org.junit.Assert.assertEquals
@@ -54,6 +55,111 @@ class RemoteTerminalSessionTest {
                 "observed ${client.textChangedCount} calls",
             client.textChangedCount >= 1,
         )
+    }
+
+    @Test
+    fun feedRemoteBytes_buffersBeforeInit_andReplaysOnInitializeEmulator() {
+        // Regression test for the v1.1.21 → v1.1.22 black-screen bug.
+        // Bytes that arrived before the AndroidView attached (and
+        // therefore before initializeEmulator ran) used to be silently
+        // dropped by `mEmulator ?: return`. For mosh that meant the
+        // server's initial state-sync was lost and every subsequent
+        // diff landed on an empty emulator. Same race exists on the
+        // SSH path; this test pins the symmetric defensive fix.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val client = CountingClient(context)
+        val session = RemoteTerminalSession(
+            client = client,
+            transcriptRows = null,
+            onInputBytes = { /* unused */ },
+            onResize = { _, _ -> },
+        )
+
+        // Feed bytes BEFORE initializeEmulator has run.
+        session.feedRemoteBytes("queued-".toByteArray(Charsets.UTF_8))
+        session.feedRemoteBytes("output\n".toByteArray(Charsets.UTF_8))
+        shadowOf(Looper.getMainLooper()).idle()
+        // Pre-init: there is no emulator yet, so nothing has rendered
+        // and onTextChanged hasn't fired.
+        assertEquals(0, client.textChangedCount)
+
+        // Now lay out — initializeEmulator runs and must drain the
+        // queue into the freshly-built emulator.
+        session.updateSize(80, 24, 8, 16)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val firstRow = session.emulator.screen
+            .getSelectedText(0, 0, 80, 1)
+            .trimEnd()
+        assertEquals(
+            "buffered bytes must be replayed into the emulator on initializeEmulator",
+            "queued-output",
+            firstRow,
+        )
+        assertTrue(
+            "drain must trigger at least one onTextChanged so the view repaints",
+            client.textChangedCount >= 1,
+        )
+    }
+
+    @Test
+    fun feedRemoteBytes_appliesPostInitBytesNormally_afterReplay() {
+        // Half-and-half: some bytes pre-init (replayed), some
+        // post-init (applied directly). Ensures the replay path
+        // doesn't break ordering or re-fire on later writes.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val client = CountingClient(context)
+        val session = RemoteTerminalSession(
+            client = client,
+            transcriptRows = null,
+            onInputBytes = { /* unused */ },
+            onResize = { _, _ -> },
+        )
+
+        session.feedRemoteBytes("pre-".toByteArray(Charsets.UTF_8))
+        session.updateSize(80, 24, 8, 16)
+        session.feedRemoteBytes("post\n".toByteArray(Charsets.UTF_8))
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val firstRow = session.emulator.screen
+            .getSelectedText(0, 0, 80, 1)
+            .trimEnd()
+        assertEquals("pre-post", firstRow)
+    }
+
+    @Test
+    fun moshRemoteTerminalSession_buffersBeforeInit_andReplaysOnInitializeEmulator() {
+        // The v1.1.22 fix's primary target: the mosh transport
+        // pushes a server state-sync within milliseconds of the UDP
+        // handshake closing. Without buffering, the prompt is
+        // silently dropped; the user sees a black screen with the
+        // cursor at (1, 1). This test pins the mosh-side fix
+        // directly.
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        val client = CountingClient(context)
+        val session = MoshRemoteTerminalSession(
+            client = client,
+            transcriptRows = null,
+            onInputBytes = { /* unused */ },
+            onResize = { _, _ -> },
+        )
+
+        // Mosh session pushes DECCKM_ON to the channel before
+        // anything else; here we simulate a similar very-early
+        // emission landing before the AndroidView has attached.
+        session.feedRemoteBytes("[?1h".toByteArray(Charsets.UTF_8))
+        session.feedRemoteBytes("vps:~$ ".toByteArray(Charsets.UTF_8))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(0, client.textChangedCount)
+
+        session.updateSize(80, 24, 8, 16)
+        shadowOf(Looper.getMainLooper()).idle()
+
+        val firstRow = session.emulator.screen
+            .getSelectedText(0, 0, 80, 1)
+            .trimEnd()
+        assertEquals("vps:~\$", firstRow)
+        assertTrue(client.textChangedCount >= 1)
     }
 
     @Test

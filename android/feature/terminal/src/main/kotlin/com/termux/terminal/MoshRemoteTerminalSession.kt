@@ -48,6 +48,24 @@ class MoshRemoteTerminalSession(
     @Volatile
     private var sessionFinished = false
 
+    /**
+     * Bytes that arrived via [feedRemoteBytes] BEFORE [initializeEmulator]
+     * had run (i.e. before the AndroidView attached). v1.1.21 dropped
+     * these on the floor, which manifested on mosh as a black screen
+     * with no prompt: mosh-server pushes a full state-sync within
+     * milliseconds of the UDP handshake closing — well before Compose
+     * has laid out the AndroidView and called [updateSize] to create
+     * the emulator. The library acks those bytes internally, so the
+     * server only ever sends DIFFS afterwards, and the emulator never
+     * catches up.
+     *
+     * v1.1.22: queue here while `mEmulator` is null, drain in
+     * [initializeEmulator] the moment the emulator exists. Only ever
+     * accessed from `mainHandler.post {}` callbacks, so no
+     * synchronisation needed.
+     */
+    private val pendingBytes = ArrayDeque<ByteArray>()
+
     override fun initializeEmulator(
         columns: Int,
         rows: Int,
@@ -64,6 +82,18 @@ class MoshRemoteTerminalSession(
             mClient,
         )
         onResize(columns, rows)
+        // Replay anything that arrived before the emulator existed.
+        // For mosh this is the server's initial state-sync — without
+        // it, the screen renders empty and every subsequent diff lands
+        // in a void.
+        if (pendingBytes.isNotEmpty()) {
+            val emulator = mEmulator
+            for (chunk in pendingBytes) {
+                emulator.append(chunk, chunk.size)
+            }
+            pendingBytes.clear()
+            notifyScreenUpdate()
+        }
     }
 
     override fun updateSize(
@@ -95,7 +125,14 @@ class MoshRemoteTerminalSession(
     fun feedRemoteBytes(bytes: ByteArray) {
         if (bytes.isEmpty() || sessionFinished) return
         mainHandler.post {
-            val emulator = mEmulator ?: return@post
+            val emulator = mEmulator
+            if (emulator == null) {
+                // Queue until initializeEmulator runs; do NOT drop.
+                // See pendingBytes kdoc for the v1.1.21 → v1.1.22
+                // black-screen bug this guards against.
+                pendingBytes.addLast(bytes)
+                return@post
+            }
             emulator.append(bytes, bytes.size)
             notifyScreenUpdate()
         }
