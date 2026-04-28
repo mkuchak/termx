@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.21](https://github.com/mkuchak/termx/compare/v1.1.20...v1.1.21) (2026-04-28)
+
+### ⚠ BREAKING CHANGES
+
+* **mosh:** replace native mosh-client with pure-Kotlin SSP transport
+
+### Features
+
+* **mosh:** replace native mosh-client with pure-Kotlin SSP transport ([3a04233](https://github.com/mkuchak/termx/commit/3a04233a86f78fc91cc026752d6bf766ab657af2)), closes [#73](https://github.com/mkuchak/termx/issues/73)
+
 ## [1.1.20](https://github.com/mkuchak/termx/compare/v1.1.19...v1.1.20) (2026-04-27)
 
 ### Bug Fixes
