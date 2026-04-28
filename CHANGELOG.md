@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.22](https://github.com/mkuchak/termx/compare/v1.1.21...v1.1.22) (2026-04-28)
+
+### Bug Fixes
+
+* **mosh:** buffer pre-init bytes so the initial state-sync isn't lost ([c87088d](https://github.com/mkuchak/termx/commit/c87088dcf1f8ff48b434bdc39c0a93fc72d70e59))
+
 ## [1.1.21](https://github.com/mkuchak/termx/compare/v1.1.20...v1.1.21) (2026-04-28)
 
 ### ⚠ BREAKING CHANGES
