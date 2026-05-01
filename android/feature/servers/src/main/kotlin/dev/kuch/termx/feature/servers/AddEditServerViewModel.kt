@@ -61,7 +61,6 @@ class AddEditServerViewModel @Inject constructor(
     private val secretVault: SecretVault,
     private val passwordCache: PasswordCache,
     private val sshClient: SshClient,
-    private val moshPreflight: MoshPreflight,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(AddEditServerUiState())
@@ -217,17 +216,7 @@ class AddEditServerViewModel @Inject constructor(
                 TestResult.Error("Timed out after 10s.")
             } else {
                 runCatching { withContext(Dispatchers.IO) { session.close() } }
-                // SSH itself works. If the row is mosh-flagged, also
-                // run the layered mosh probe (mosh-server present →
-                // handshake → first-byte UDP). Non-mosh rows skip it
-                // entirely so the existing "Connected successfully"
-                // copy is untouched.
-                val moshStatus = if (s.useMosh) {
-                    withContext(Dispatchers.IO) { moshPreflight.run(target, auth) }
-                } else {
-                    MoshStatus.NotChecked
-                }
-                TestResult.Success(moshStatus)
+                TestResult.Success
             }
         } catch (t: SshException.AuthFailed) {
             TestResult.Error("Authentication failed. Wrong key or username?")

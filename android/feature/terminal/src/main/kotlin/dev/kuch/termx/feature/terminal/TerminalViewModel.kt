@@ -24,7 +24,6 @@ import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
 import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
 import dev.kuch.termx.libs.sshnative.MoshClient
-import dev.kuch.termx.libs.sshnative.MoshExitMessage
 import dev.kuch.termx.libs.sshnative.MoshSession
 import dev.kuch.termx.libs.sshnative.PtyChannel
 import dev.kuch.termx.libs.sshnative.SshAuth
@@ -40,11 +39,7 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -350,14 +345,6 @@ class TerminalViewModel @Inject constructor(
                 return
             }
             Log.i(LOG_TAG, "mosh handshake did not complete in ${MOSH_HANDSHAKE_TIMEOUT_MS}ms; falling back to ssh")
-            // Tell the user we silently downgraded — otherwise tapping
-            // a mosh-flagged server, getting an SSH session, and seeing
-            // disconnects on flaky networks looks identical to "mosh
-            // works fine". The snackbar is one-shot via _writeErrors;
-            // the SSH session still proceeds below.
-            _writeErrors.tryEmit(
-                "Mosh handshake didn't complete in ${MOSH_HANDSHAKE_TIMEOUT_MS / 1_000}s — using SSH instead.",
-            )
         }
 
         val client = SshClient().also { sshClient = it }
@@ -645,60 +632,20 @@ class TerminalViewModel @Inject constructor(
             emulator.onRemoteSessionClosed()
             // mosh-client stdout EOF ⇒ the child process either exited
             // cleanly (user typed `exit` on the remote) or died during
-            // startup / runtime. Decide what to surface via the pure
-            // helper [MoshExitMessage] — covers early non-zero exits
-            // (linker / static-init crashes), late non-zero exits
-            // (runtime segfaults, OOM-kill), and the suspicious
-            // "clean but fast" path that almost always means UDP is
-            // blocked between phone and VPS.
-            //
-            // v1.1.19: race fix. The previous version read
-            // `session.diagnostic.value` immediately after the output
-            // flow ended — but the `waitpid` watcher thread updates
-            // that StateFlow in parallel and usually loses the race
-            // (PTY-EOF fires within milliseconds of child exit; the
-            // watcher's `captureLinkerLogcat` adds 100-500ms before
-            // the diagnostic is written). Result on v1.1.18: exitCode
-            // was null when checked, every branch fell through, user
-            // saw bare "Disconnected". Fix: AWAIT the diagnostic with
-            // a 2-second budget, which lines up with the watcher's
-            // worst-case logcat-drain latency.
-            //
-            // The `isActive` guard is what stops a user-initiated
-            // disconnect (detachTab → outputJob.cancel + close →
-            // SIGKILL) from surfacing a spurious "exit 137" snackbar
-            // on the user's own action: when the coroutine has been
-            // cancelled, we don't wait and we don't push a message;
-            // [disconnect] / [detachTab] own the UI transition.
-            if (currentCoroutineContext().isActive) {
-                val diag = withTimeoutOrNull(MOSH_DIAG_WAIT_MS) {
-                    session.diagnostic.first { it.exitCode != null }
-                }
-                val message = if (diag != null) {
-                    MoshExitMessage.forDiagnostic(
-                        exitCode = diag.exitCode!!,
-                        elapsedMs = diag.elapsedMs,
-                        head = diag.head,
-                    )
-                } else {
-                    // Last-resort fallback: the watcher never reported
-                    // an exit code within 2s. Could mean the process
-                    // was killed by lmkd before waitpid could run, or
-                    // the host has SELinux restrictions on logcat that
-                    // hung the capture. Better to tell the user
-                    // *something* than to leave them on a bare
-                    // Disconnected screen with no clue why.
-                    "mosh-client ended without a status — Android may have killed the process. Check Settings → Battery → restrict-background for termx."
-                }
-                if (message != null) {
-                    _state.value = _state.value.copy(
-                        status = TerminalUiState.Status.Disconnected,
-                        error = message,
-                        activeSession = null,
-                        activeTabName = null,
-                        openTabs = emptySet(),
-                    )
-                }
+            // startup. Distinguish via the diagnostic snapshot: a
+            // non-zero code within the early-exit window means we
+            // should tell the user *why* rather than silently dropping
+            // them on a useless Reconnect button.
+            val diag = session.diagnostic.value
+            if (diag.exitCode != null && diag.exitCode != 0 && diag.elapsedMs < MOSH_EARLY_EXIT_WINDOW_MS) {
+                val reason = extractReadableReason(diag.head)
+                _state.value = _state.value.copy(
+                    status = TerminalUiState.Status.Disconnected,
+                    error = "mosh-client exited after ${diag.elapsedMs}ms (exit ${diag.exitCode}): $reason",
+                    activeSession = null,
+                    activeTabName = null,
+                    openTabs = emptySet(),
+                )
             }
         }
 
@@ -718,6 +665,27 @@ class TerminalViewModel @Inject constructor(
             tabName = tab.name,
         )
         return tab
+    }
+
+    /**
+     * Pull the most useful single line out of mosh-client's captured
+     * stderr head. ncurses prints `Error opening terminal: ...` or the
+     * classic `Cannot find termcap entry for ...`; mosh itself prints
+     * things like `mosh-client: ...`. We prefer a line matching any of
+     * those markers, falling back to the first non-empty line, then to
+     * a size-capped flattened form.
+     */
+    private fun extractReadableReason(head: String): String {
+        if (head.isBlank()) return "no output captured"
+        val lines = head.split('\n').map { it.trim() }.filter { it.isNotEmpty() }
+        val preferred = lines.firstOrNull { line ->
+            line.contains("termcap", ignoreCase = true) ||
+                line.contains("terminal", ignoreCase = true) ||
+                line.startsWith("mosh", ignoreCase = true) ||
+                line.contains("error", ignoreCase = true)
+        }
+        val best = preferred ?: lines.firstOrNull() ?: head.replace('\n', ' ').trim()
+        return best.take(200)
     }
 
     /**
@@ -938,14 +906,12 @@ class TerminalViewModel @Inject constructor(
         const val MOSH_HANDSHAKE_TIMEOUT_MS: Long = 8_000L
 
         /**
-         * Budget for awaiting [MoshSessionImpl]'s diagnostic flow to
-         * report a final exit code. The watcher thread's
-         * `captureLinkerLogcat` can spend 100-500ms draining logcat
-         * before publishing — without this wait the consumer would
-         * race and read `exitCode == null`, falling through to the
-         * silent "Disconnected" path that v1.1.19 set out to fix.
+         * Window within which a mosh-client exit is treated as a
+         * startup failure rather than a normal user-initiated exit.
+         * Matches the companion in `MoshSessionImpl` so the log and
+         * the UI post-mortem agree on what counts as "immediate".
          */
-        const val MOSH_DIAG_WAIT_MS: Long = 2_000L
+        const val MOSH_EARLY_EXIT_WINDOW_MS: Long = 2_000L
 
         /**
          * Stable sentinel UUID for BuildConfig test-server connections
