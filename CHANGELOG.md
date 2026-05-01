@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.23](https://github.com/mkuchak/termx/compare/v1.1.22...v1.1.23) (2026-05-01)
+
+### Bug Fixes
+
+* **mosh:** revert SSP transport rewrite, restore v1.1.17 native client ([9b00fcb](https://github.com/mkuchak/termx/commit/9b00fcbd5b843413777618a9cc666f44b5978820))
+
 ## [1.1.22](https://github.com/mkuchak/termx/compare/v1.1.21...v1.1.22) (2026-04-28)
 
 ### Bug Fixes
