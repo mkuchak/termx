@@ -5,6 +5,8 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import dagger.hilt.android.HiltAndroidApp
 import dev.kuch.termx.core.data.prefs.AppForegroundTracker
 import dev.kuch.termx.core.data.vault.VaultLifecycleObserver
+import dev.kuch.termx.core.domain.theme.Sorcerer
+import dev.kuch.termx.feature.terminal.theme.ThemeBinder
 import dev.kuch.termx.feature.updater.UpdaterRepository
 import dev.kuch.termx.notification.NotificationChannels
 import dev.kuch.termx.service.SessionServiceLauncher
@@ -33,6 +35,17 @@ class TermxApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Install Sorcerer as the process-wide Termux palette default
+        // before any session is created. This is what actually gets
+        // the theme into every TerminalEmulator (their TerminalColors
+        // constructor copies from the static defaults) AND keeps it
+        // there across mid-session reset escapes (RIS, DECSTR, OSC
+        // 104, OSC 110/111/112). See ThemeBinder.installAsDefault for
+        // the full rationale — this single line replaces the broken
+        // AndroidView factory/update apply path that v1.3.0 / v1.3.1
+        // shipped, where ThemeBinder.apply silently no-op'd because
+        // mEmulator is null at composition time.
+        ThemeBinder.installAsDefault(Sorcerer.terminalTheme)
         val lifecycle = ProcessLifecycleOwner.get().lifecycle
         lifecycle.addObserver(vaultLifecycleObserver)
         lifecycle.addObserver(appForegroundTracker)

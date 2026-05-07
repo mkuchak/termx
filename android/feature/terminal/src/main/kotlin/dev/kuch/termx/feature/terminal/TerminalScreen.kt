@@ -84,7 +84,6 @@ import dev.kuch.termx.feature.terminal.sessions.RenameSessionDialog
 import dev.kuch.termx.feature.terminal.sessions.SessionTabActionsMenu
 import dev.kuch.termx.feature.terminal.sessions.SessionTabBar
 import dev.kuch.termx.feature.terminal.sessions.SessionTabBarViewModel
-import dev.kuch.termx.feature.terminal.theme.ThemeBinder
 import dev.kuch.termx.feature.ptt.PttSurface
 import java.util.UUID
 import kotlinx.coroutines.launch
@@ -697,9 +696,13 @@ private fun TerminalPane(
             }
             view.attachSession(session)
 
-            // Paint the initial theme before the first frame so the
-            // user never sees the Termux default palette flash.
-            ThemeBinder.apply(Sorcerer.terminalTheme, view)
+            // Sorcerer is already painted into the freshly-constructed
+            // emulator via the static default installed in
+            // TermxApplication.onCreate. No need (and no use) for a
+            // ThemeBinder.apply call here — the View has not been
+            // laid out yet, mEmulator is null, the apply would no-op.
+            // The factory's earlier setBackgroundColor(Sorcerer.BACKGROUND)
+            // covers the View chrome.
 
             // Scale-gesture detector for pinch-to-zoom. Runs ahead of
             // TerminalView's own onTouchEvent so two fingers never
@@ -785,12 +788,16 @@ private fun TerminalPane(
         update = { view ->
             if (view.currentSession !== session) {
                 view.attachSession(session)
-                ThemeBinder.apply(Sorcerer.terminalTheme, view)
                 view.requestFocus()
                 // Tab swap: unbind the previous session's client and
                 // bind the new one. The DisposableEffect(session) above
                 // handles the outgoing side; this side re-arms on the
                 // next active session.
+                //
+                // Sorcerer is already inside the new emulator's mColors
+                // (TerminalColors() constructor inherits from the
+                // ThemeBinder-installed static defaults), so no
+                // palette re-apply is needed on tab swap.
                 bindViewToSession(session, view)
             }
 
@@ -801,17 +808,6 @@ private fun TerminalPane(
                 view.setTextSize(fontSizeSp)
             }
 
-            // Re-apply Sorcerer on every update pass. The factory's
-            // first call typically runs BEFORE the View has been laid
-            // out, which means RemoteTerminalSession.initializeEmulator
-            // hasn't run yet and view.mEmulator is null — and
-            // [ThemeBinder.apply] early-returns in that state. Without
-            // this re-apply the terminal palette silently falls back
-            // to Termux's default scheme (the "terminal colors don't
-            // match Sorcerer" symptom v1.3.0 introduced). Cost is ~20
-            // int writes + invalidate() per recomposition, which is
-            // negligible at compose-frame frequency.
-            ThemeBinder.apply(Sorcerer.terminalTheme, view)
 
             // Keep the hoisted ref in sync in case a new AndroidView
             // instance was created (e.g. after a configuration change).
