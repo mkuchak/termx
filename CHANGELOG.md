@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.0](https://github.com/mkuchak/termx/compare/v1.2.0...v1.3.0) (2026-05-07)
+
+### Features
+
+* **theme:** ship Sorcerer as the only theme; remove theme picker and dormant editor ([16fb748](https://github.com/mkuchak/termx/commit/16fb748e09479d8182cc885854e4a7daa6ce3855)), closes [#0F1115](https://github.com/mkuchak/termx/issues/0F1115) [#0E141A](https://github.com/mkuchak/termx/issues/0E141A)
+
 ## [1.2.0](https://github.com/mkuchak/termx/compare/v1.1.23...v1.2.0) (2026-05-07)
 
 ### Features
