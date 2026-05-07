@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.2](https://github.com/mkuchak/termx/compare/v1.3.1...v1.3.2) (2026-05-07)
+
+### Bug Fixes
+
+* **theme:** apply Sorcerer to terminal palette via static-defaults install ([c06253c](https://github.com/mkuchak/termx/commit/c06253c63fa51f5d6ac9ceae41b308d5b59158fd))
+
 ## [1.3.1](https://github.com/mkuchak/termx/compare/v1.3.0...v1.3.1) (2026-05-07)
 
 ### Bug Fixes
