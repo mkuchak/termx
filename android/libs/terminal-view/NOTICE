@@ -8,3 +8,20 @@ Pinned commit: 5b657c6adf4304e5198951ce815fe0205dcac29c
 Tag: v0.118.3
 
 See LICENSE.apache-2.0 for full license text.
+
+---
+
+Bundled fonts under `src/main/assets/fonts/`:
+
+JetBrains Mono NL (no-ligatures), v2.304
+  Copyright 2020 The JetBrains Mono Project Authors
+  Licensed under the SIL Open Font License, Version 1.1
+  Upstream: https://github.com/JetBrains/JetBrainsMono
+  License text: src/main/assets/fonts/OFL.txt
+
+The NL ("no-ligatures") variants are bundled instead of the standard
+JetBrains Mono so the cell-grid renderer is never tempted to substitute
+a multi-cell ligature glyph for sequences like `==`, `=>`, `!=`, etc.
+Even with `setFontFeatureSettings("liga 0")` set on the Paint, the NL
+families guarantee no ligature substitution can happen at any layer
+above us.
