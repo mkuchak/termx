@@ -535,12 +535,38 @@ public final class TerminalView extends View {
      * @param textSize the new font size, in density-independent pixels.
      */
     public void setTextSize(int textSize) {
-        mRenderer = new TerminalRenderer(textSize, mRenderer == null ? Typeface.MONOSPACE : mRenderer.mTypeface);
+        // termx fork: default typeface bundle is JetBrains Mono NL with
+        // all four variants real (Regular / Italic / Bold / BoldItalic),
+        // not Typeface.MONOSPACE. See TerminalTypefaces for the rationale —
+        // the OEM monospace fallback chain on many Android devices is
+        // exactly what produced the "some letters thicker, others
+        // normal" symptom this fork ships to avoid.
+        TerminalTypefaces typefaces = mRenderer == null
+            ? TerminalTypefaces.bundled(getContext())
+            : mRenderer.mTypefaces;
+        mRenderer = new TerminalRenderer(textSize, typefaces);
         updateSize();
     }
 
+    /**
+     * Legacy single-{@link Typeface} setter, preserved so external
+     * callers that still pass one face continue to work. Internally
+     * wraps the face into a {@link TerminalTypefaces} bundle whose
+     * bold / italic variants are derived synthetically by Android,
+     * matching pre-bundled-fonts behaviour. Prefer
+     * {@link #setTypefaces(TerminalTypefaces)} for new call sites that
+     * want real variants.
+     */
     public void setTypeface(Typeface newTypeface) {
-        mRenderer = new TerminalRenderer(mRenderer.mTextSize, newTypeface);
+        setTypefaces(TerminalTypefaces.fromSingle(newTypeface));
+    }
+
+    /**
+     * Preferred typeface setter: takes a four-variant bundle and
+     * renders bold / italic runs with their real glyphs.
+     */
+    public void setTypefaces(TerminalTypefaces typefaces) {
+        mRenderer = new TerminalRenderer(mRenderer.mTextSize, typefaces);
         updateSize();
         invalidate();
     }

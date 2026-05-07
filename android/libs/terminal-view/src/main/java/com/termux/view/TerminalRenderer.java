@@ -30,11 +30,20 @@ import com.termux.terminal.WcWidth;
  * Renderer of a {@link TerminalEmulator} into a {@link Canvas}.
  * <p/>
  * Saves font metrics, so needs to be recreated each time the typeface or font size changes.
+ *
+ * <p>termx fork: takes a {@link TerminalTypefaces} bundle of four real
+ * variants (Regular / Italic / Bold / BoldItalic) instead of a single
+ * {@link Typeface}. The {@link #drawTextRun} path swaps the active
+ * variant per run so ANSI bold / italic attributes render with real
+ * glyphs from a properly designed code font, instead of synthetic
+ * fake-bold ({@code setFakeBoldText}) and oblique skew
+ * ({@code setTextSkewX}). See {@link TerminalTypefaces} for the
+ * rationale.
  */
 public final class TerminalRenderer {
 
     final int mTextSize;
-    final Typeface mTypeface;
+    final TerminalTypefaces mTypefaces;
     private final Paint mTextPaint = new Paint();
 
     /** The width of a single mono spaced character obtained by {@link Paint#measureText(String)} on a single 'X'. */
@@ -48,13 +57,19 @@ public final class TerminalRenderer {
 
     private final float[] asciiMeasures = new float[127];
 
-    public TerminalRenderer(int textSize, Typeface typeface) {
+    public TerminalRenderer(int textSize, TerminalTypefaces typefaces) {
         mTextSize = textSize;
-        mTypeface = typeface;
+        mTypefaces = typefaces;
 
-        mTextPaint.setTypeface(typeface);
+        mTextPaint.setTypeface(typefaces.regular);
         mTextPaint.setAntiAlias(true);
         mTextPaint.setTextSize(textSize);
+        // Belt-and-suspenders: even if a future bundled font ever
+        // contained ligatures, the cell-grid renderer can never use
+        // them. JetBrains Mono NL has them stripped at the font
+        // level; this flag closes the loop on Android's text
+        // shaper.
+        mTextPaint.setFontFeatureSettings("liga 0, clig 0, calt 0");
 
         mFontLineSpacing = (int) Math.ceil(mTextPaint.getFontSpacing());
         mFontAscent = (int) Math.ceil(mTextPaint.ascent());
@@ -241,9 +256,22 @@ public final class TerminalRenderer {
                 foreColor = 0xFF000000 + (red << 16) + (green << 8) + blue;
             }
 
-            mTextPaint.setFakeBoldText(bold);
+            // termx fork: swap the active typeface variant per run so
+            // bold / italic attributes render with real glyphs from a
+            // proper code font, instead of synthetic fake-bold +
+            // oblique skew. See TerminalTypefaces for context. The
+            // setFakeBoldText / setTextSkewX residue is reset to off
+            // every run so a future call site that pre-configures
+            // mTextPaint elsewhere can't leak state into the draw.
+            final Typeface tf;
+            if (bold && italic) tf = mTypefaces.boldItalic;
+            else if (bold)      tf = mTypefaces.bold;
+            else if (italic)    tf = mTypefaces.italic;
+            else                tf = mTypefaces.regular;
+            mTextPaint.setTypeface(tf);
+            mTextPaint.setFakeBoldText(false);
+            mTextPaint.setTextSkewX(0.f);
             mTextPaint.setUnderlineText(underline);
-            mTextPaint.setTextSkewX(italic ? -0.35f : 0.f);
             mTextPaint.setStrikeThruText(strikeThrough);
             mTextPaint.setColor(foreColor);
 
