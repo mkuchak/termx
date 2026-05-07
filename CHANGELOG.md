@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.1](https://github.com/mkuchak/termx/compare/v1.3.0...v1.3.1) (2026-05-07)
+
+### Bug Fixes
+
+* **theme:** apply Sorcerer to terminal palette + sweep remaining color leaks ([af0a4e7](https://github.com/mkuchak/termx/commit/af0a4e7922a8d30bc151853aeb85f9e918eceaa8)), closes [#4CAF50](https://github.com/mkuchak/termx/issues/4CAF50) [#7C3AED](https://github.com/mkuchak/termx/issues/7C3AED) [#3DD68C](https://github.com/mkuchak/termx/issues/3DD68C) [#E4B740](https://github.com/mkuchak/termx/issues/E4B740) [#E5484D](https://github.com/mkuchak/termx/issues/E5484D) [#E5484D](https://github.com/mkuchak/termx/issues/E5484D)
+
 ## [1.3.0](https://github.com/mkuchak/termx/compare/v1.2.0...v1.3.0) (2026-05-07)
 
 ### Features
