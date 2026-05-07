@@ -271,7 +271,7 @@ private fun TermxLogo() {
         Box(contentAlignment = Alignment.Center) {
             Text(
                 text = "tx",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onPrimary,
                 fontSize = 44.sp,
                 fontWeight = FontWeight.Bold,
             )

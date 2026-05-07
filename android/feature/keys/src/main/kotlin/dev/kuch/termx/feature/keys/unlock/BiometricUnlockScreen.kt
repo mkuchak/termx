@@ -105,7 +105,7 @@ private fun UnlockScreenContent(
                 Box(contentAlignment = Alignment.Center) {
                     Text(
                         text = "tx",
-                        color = Color.White,
+                        color = MaterialTheme.colorScheme.onPrimary,
                         fontSize = 36.sp,
                         fontWeight = FontWeight.Bold,
                     )

@@ -60,6 +60,19 @@ fun sorcererColorScheme(): ColorScheme = darkColorScheme(
     onSurfaceVariant = Color(Sorcerer.NORMAL_WHITE.toInt()),
     surfaceTint = Color.Transparent,
 
+    // Material 3 elevated containers — Card defaults to surfaceContainerHigh,
+    // so the most user-visible token of this set is that one. Without
+    // explicit values here the framework falls back to a stock M3 dark
+    // gray, which is exactly the "PTT card has a gray background" leak
+    // v1.3.0 left behind.
+    surfaceContainerLowest = Color(Sorcerer.SURFACE_CONTAINER_LOWEST.toInt()),
+    surfaceContainerLow = Color(Sorcerer.SURFACE_CONTAINER_LOW.toInt()),
+    surfaceContainer = Color(Sorcerer.SURFACE_CONTAINER.toInt()),
+    surfaceContainerHigh = Color(Sorcerer.SURFACE_CONTAINER_HIGH.toInt()),
+    surfaceContainerHighest = Color(Sorcerer.SURFACE_CONTAINER_HIGHEST.toInt()),
+    surfaceDim = Color(Sorcerer.SURFACE_DIM.toInt()),
+    surfaceBright = Color(Sorcerer.SURFACE_BRIGHT.toInt()),
+
     outline = Color(Sorcerer.OUTLINE.toInt()),
     outlineVariant = Color(Sorcerer.OUTLINE_VARIANT.toInt()),
 

@@ -676,7 +676,7 @@ private fun TerminalPane(
             val view = TerminalView(ctx, null).apply {
                 setTerminalViewClient(MinimalTerminalViewClient(extraKeysState))
                 setTextSize(pinchState.currentSp)
-                setBackgroundColor(android.graphics.Color.BLACK)
+                setBackgroundColor(dev.kuch.termx.core.domain.theme.Sorcerer.BACKGROUND.toInt())
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -801,10 +801,17 @@ private fun TerminalPane(
                 view.setTextSize(fontSizeSp)
             }
 
-            // (Theme is now a constant — no per-update palette repaint
-            // needed; the tab-swap branch above handles the only case
-            // where the emulator gets re-bound and needs the colors
-            // re-applied.)
+            // Re-apply Sorcerer on every update pass. The factory's
+            // first call typically runs BEFORE the View has been laid
+            // out, which means RemoteTerminalSession.initializeEmulator
+            // hasn't run yet and view.mEmulator is null — and
+            // [ThemeBinder.apply] early-returns in that state. Without
+            // this re-apply the terminal palette silently falls back
+            // to Termux's default scheme (the "terminal colors don't
+            // match Sorcerer" symptom v1.3.0 introduced). Cost is ~20
+            // int writes + invalidate() per recomposition, which is
+            // negligible at compose-frame frequency.
+            ThemeBinder.apply(Sorcerer.terminalTheme, view)
 
             // Keep the hoisted ref in sync in case a new AndroidView
             // instance was created (e.g. after a configuration change).

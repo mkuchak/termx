@@ -275,12 +275,16 @@ private fun parseDiffLines(unified: String): List<DiffLine> {
 
 private val HUNK_REGEX = Regex("""@@ -(\d+),?\d* \+(\d+),?\d* @@""")
 
-// Muted red/green that still read on a dark background. Picked to clear
-// WCAG AA against black; kept low-saturation so a long diff isn't visually
-// overwhelming.
-private val ADDED_BG = Color(0x3300FF66)
-private val ADDED_FG = Color(0xFFB5F7C4)
-private val REMOVED_BG = Color(0x33FF5252)
-private val REMOVED_FG = Color(0xFFFFB5B5)
-private val HUNK_BG = Color(0x22808080)
+// Diff +/- coloring. Sourced from Sorcerer so a long diff stays
+// inside the palette: added uses Sorcerer's lime green, removed
+// uses Sorcerer's accent (red == accent in this theme by faithful
+// design — the collapse is intentional, not a bug). Backgrounds
+// are alpha-blended so the highlighted code remains readable;
+// foregrounds match the on*Container tokens for high contrast on
+// the dim row background.
+private val ADDED_BG = Color(dev.kuch.termx.core.domain.theme.Sorcerer.ADDED_BG.toInt())
+private val ADDED_FG = Color(dev.kuch.termx.core.domain.theme.Sorcerer.ADDED_FG.toInt())
+private val REMOVED_BG = Color(dev.kuch.termx.core.domain.theme.Sorcerer.REMOVED_BG.toInt())
+private val REMOVED_FG = Color(dev.kuch.termx.core.domain.theme.Sorcerer.REMOVED_FG.toInt())
+private val HUNK_BG = Color(dev.kuch.termx.core.domain.theme.Sorcerer.HUNK_BG.toInt())
 

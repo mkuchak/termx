@@ -506,11 +506,15 @@ private fun SwipeableServerCard(
 
 @Composable
 private fun DismissBackground() {
+    // Destructive action surface — uses Material 3's `error` token so
+    // it inherits Sorcerer's accent (red==accent in this palette by
+    // faithful design). Icon + label are `onError` so contrast stays
+    // tied to the same semantic pair.
     Surface(
         modifier = Modifier
             .fillMaxSize()
             .padding(horizontal = 16.dp, vertical = 4.dp),
-        color = Color(0xFFE5484D),
+        color = MaterialTheme.colorScheme.error,
         shape = MaterialTheme.shapes.medium,
     ) {
         Row(
@@ -523,12 +527,12 @@ private fun DismissBackground() {
             Icon(
                 imageVector = Icons.Filled.Delete,
                 contentDescription = null,
-                tint = Color.White,
+                tint = MaterialTheme.colorScheme.onError,
             )
             Spacer(Modifier.width(8.dp))
             Text(
                 text = "Delete",
-                color = Color.White,
+                color = MaterialTheme.colorScheme.onError,
                 fontWeight = FontWeight.SemiBold,
             )
         }

@@ -79,6 +79,43 @@ object Sorcerer {
     const val OUTLINE: Long = BRIGHT_BLACK                   // #5A6986
     const val OUTLINE_VARIANT: Long = 0xFF2A3540
 
+    /**
+     * Material 3 surfaceContainer ramp. These are the tokens elevated
+     * components reach for by default — `Card` in particular uses
+     * `surfaceContainerHigh`, so a missing value here renders as the
+     * stock M3 dark gray (the "transcribing card looks gray" symptom
+     * v1.3.0 users will have noticed).
+     *
+     * The ramp is tight on purpose: every step stays inside the
+     * Sorcerer blue-black hue range with only a small brightness
+     * shift between adjacent levels, so the elevation reads as a
+     * subtle Sorcerer-themed lift rather than a contrast jump out of
+     * the palette.
+     */
+    const val SURFACE_CONTAINER_LOWEST: Long = 0xFF080C10
+    const val SURFACE_CONTAINER_LOW: Long = 0xFF0A1016        // matches DARKER_SURFACE
+    const val SURFACE_CONTAINER: Long = 0xFF0E141A            // matches BACKGROUND (neutral midpoint)
+    const val SURFACE_CONTAINER_HIGH: Long = 0xFF141A20       // matches SURFACE_VARIANT
+    const val SURFACE_CONTAINER_HIGHEST: Long = 0xFF1A2128
+
+    /** Material 3 surfaceDim / surfaceBright tonal extremes within the canvas. */
+    const val SURFACE_DIM: Long = 0xFF080C10
+    const val SURFACE_BRIGHT: Long = 0xFF1F2731
+
+    /**
+     * Diff-viewer hues — derived so the +/- rows on the diff screen
+     * stay inside the Sorcerer palette instead of using the muted
+     * Material green / red the screen shipped with originally.
+     * Background is at low alpha (0x33) so it doesn't drown out the
+     * highlighted code; foreground is the pure palette hue, which
+     * remains readable on the dark canvas.
+     */
+    const val ADDED_BG: Long = 0x33AAED36
+    const val ADDED_FG: Long = 0xFFD8FFAA                     // ON_TERTIARY_CONTAINER
+    const val REMOVED_BG: Long = 0x33FF006A
+    const val REMOVED_FG: Long = 0xFFFFD0E0                   // ON_PRIMARY_CONTAINER
+    const val HUNK_BG: Long = 0x33141A20                      // SURFACE_VARIANT at low alpha
+
     /** The terminal-side palette: 16 ANSI + fg/bg/cursor. */
     val terminalTheme: TerminalTheme = TerminalTheme(
         id = "sorcerer",

@@ -198,19 +198,28 @@ private fun PulsingActivityDot() {
         modifier = Modifier
             .size(6.dp)
             .clip(CircleShape)
-            .background(Color(0xFF4CAF50).copy(alpha = alpha)),
+            .background(
+                Color(dev.kuch.termx.core.domain.theme.Sorcerer.NORMAL_GREEN.toInt())
+                    .copy(alpha = alpha),
+            ),
     )
 }
 
 @Composable
 private fun ClaudeBadge() {
+    // The Claude badge used to be a hard-coded Anthropic-purple
+    // (#7C3AED) — strong brand signal but loud against Sorcerer.
+    // Switched to the theme's accent so the badge reads as the most
+    // distinctive token in the palette without breaking out of it.
+    // The activity dot uses Sorcerer's green, so accent here keeps
+    // the two indicators visually distinct.
     Surface(
         shape = RoundedCornerShape(50),
-        color = CLAUDE_PURPLE,
+        color = MaterialTheme.colorScheme.primary,
     ) {
         Text(
             text = "claude",
-            color = Color.White,
+            color = MaterialTheme.colorScheme.onPrimary,
             fontSize = 9.sp,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -277,5 +286,3 @@ fun SessionTabActionsMenu(
 // the tab is only 36.dp tall so this is always at least one tab's
 // height of upward travel.
 private const val SWIPE_UP_DETACH_PX = 80f
-
-private val CLAUDE_PURPLE = Color(0xFF7C3AED)

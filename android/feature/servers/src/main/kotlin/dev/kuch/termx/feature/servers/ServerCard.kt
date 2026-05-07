@@ -192,11 +192,13 @@ fun ServerCard(
 
 @Composable
 private fun PingDot(pingMs: Int?) {
+    // good / warning / bad mapped onto Sorcerer's green / yellow /
+    // accent (red==accent in this palette, intentional collapse).
     val color = when {
         pingMs == null -> MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
-        pingMs < 50 -> Color(0xFF3DD68C)
-        pingMs < 200 -> Color(0xFFE4B740)
-        else -> Color(0xFFE5484D)
+        pingMs < 50 -> Color(dev.kuch.termx.core.domain.theme.Sorcerer.NORMAL_GREEN.toInt())
+        pingMs < 200 -> Color(dev.kuch.termx.core.domain.theme.Sorcerer.NORMAL_YELLOW.toInt())
+        else -> MaterialTheme.colorScheme.error
     }
     Box(
         modifier = Modifier
