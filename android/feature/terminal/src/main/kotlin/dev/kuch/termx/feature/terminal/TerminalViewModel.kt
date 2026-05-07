@@ -190,13 +190,6 @@ class TerminalViewModel @Inject constructor(
     val fontSizeSp: StateFlow<Int> = appPreferences.fontSizeSp
         .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_FONT_SIZE_SP)
 
-    /**
-     * Currently-selected theme id. Task #18 theme picker writes; this
-     * flow drives the live repaint in `TerminalScreen`.
-     */
-    val activeThemeId: StateFlow<String> = appPreferences.activeThemeId
-        .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_THEME_ID)
-
     private var currentServerId: UUID? = null
     /**
      * Cached display label + stable UUID for the active connection, used
@@ -896,7 +889,6 @@ class TerminalViewModel @Inject constructor(
         const val INITIAL_COLS = 80
         const val INITIAL_ROWS = 24
         const val DEFAULT_FONT_SIZE_SP = 14
-        const val DEFAULT_THEME_ID = "dracula"
         /**
          * Phase 3 mosh race window. If `mosh-server new` on the VPS
          * doesn't print `MOSH CONNECT <port> <key>` within this budget,

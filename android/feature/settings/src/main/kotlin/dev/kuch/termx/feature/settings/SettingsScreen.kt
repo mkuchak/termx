@@ -66,7 +66,6 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.kuch.termx.core.domain.ptt.PttLanguage
-import dev.kuch.termx.core.domain.theme.TerminalTheme
 
 /**
  * App Settings — font size slider, Gemini API key entry, and theme picker.
@@ -139,14 +138,6 @@ fun SettingsScreen(
                 )
             }
             item { updaterCard() }
-            item { SectionHeader("Theme") }
-            items(state.themes, key = { it.id }) { theme ->
-                ThemeCard(
-                    theme = theme,
-                    selected = theme.id == state.activeThemeId,
-                    onSelect = { viewModel.setTheme(theme.id) },
-                )
-            }
         }
     }
 }
@@ -393,100 +384,6 @@ private fun FontSizeSection(
                 steps = (MAX_FONT_SIZE_SP - MIN_FONT_SIZE_SP) - 1,
             )
         }
-    }
-}
-
-@Composable
-private fun ThemeCard(
-    theme: TerminalTheme,
-    selected: Boolean,
-    onSelect: () -> Unit,
-) {
-    val borderColor = if (selected) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.outlineVariant
-    }
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onSelect)
-            .border(
-                width = if (selected) 2.dp else 1.dp,
-                color = borderColor,
-                shape = RoundedCornerShape(12.dp),
-            ),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(),
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = theme.displayName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.padding(end = 8.dp),
-                )
-                if (selected) {
-                    Icon(
-                        imageVector = Icons.Filled.Check,
-                        contentDescription = "Selected",
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            ThemeSwatch(theme)
-            Spacer(Modifier.height(8.dp))
-            ThemeSamplePreview(theme)
-        }
-    }
-}
-
-@Composable
-private fun ThemeSwatch(theme: TerminalTheme) {
-    // 16-cell palette strip: two rows of 8.
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            theme.ansi.subList(0, 8).forEach { color ->
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color(color.toInt())),
-                )
-            }
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            theme.ansi.subList(8, 16).forEach { color ->
-                Box(
-                    modifier = Modifier
-                        .size(20.dp)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color(color.toInt())),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun ThemeSamplePreview(theme: TerminalTheme) {
-    Surface(
-        color = Color(theme.background.toInt()),
-        shape = RoundedCornerShape(6.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(
-            text = "$ echo \"hello, termx\"",
-            fontFamily = FontFamily.Monospace,
-            fontSize = 13.sp,
-            color = Color(theme.foreground.toInt()),
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-        )
     }
 }
 

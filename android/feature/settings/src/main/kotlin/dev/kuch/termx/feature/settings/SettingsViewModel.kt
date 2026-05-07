@@ -5,8 +5,6 @@ import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.GeminiApiKeyStore
-import dev.kuch.termx.core.domain.theme.BuiltInThemes
-import dev.kuch.termx.core.domain.theme.TerminalTheme
 import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -51,15 +49,12 @@ class SettingsViewModel @Inject constructor(
 
     val state: StateFlow<SettingsUiState> = combine(
         appPreferences.fontSizeSp,
-        appPreferences.activeThemeId,
         geminiKeySaved,
         geminiSaveStatus,
         pttLanguageFlow,
-    ) { fontSp, themeId, keySaved, saveStatus, ptt ->
+    ) { fontSp, keySaved, saveStatus, ptt ->
         SettingsUiState(
             fontSizeSp = fontSp,
-            activeThemeId = themeId,
-            themes = BuiltInThemes.all,
             geminiKeyPresent = keySaved,
             geminiSaveStatus = saveStatus,
             pttSourceLanguage = ptt.first,
@@ -74,10 +69,6 @@ class SettingsViewModel @Inject constructor(
 
     fun setFontSize(sp: Int) {
         viewModelScope.launch { appPreferences.setFontSizeSp(sp) }
-    }
-
-    fun setTheme(id: String) {
-        viewModelScope.launch { appPreferences.setActiveThemeId(id) }
     }
 
     /**
@@ -141,8 +132,6 @@ class SettingsViewModel @Inject constructor(
 
 data class SettingsUiState(
     val fontSizeSp: Int = 14,
-    val activeThemeId: String = "dracula",
-    val themes: List<TerminalTheme> = BuiltInThemes.all,
     val geminiKeyPresent: Boolean = false,
     val geminiSaveStatus: String? = null,
     val pttSourceLanguage: String = "en-US",

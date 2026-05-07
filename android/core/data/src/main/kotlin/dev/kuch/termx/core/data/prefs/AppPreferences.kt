@@ -29,8 +29,6 @@ private val Context.appPrefsDataStore by preferencesDataStore(name = "app_prefs"
  *   [dev.kuch.termx.core.data.vault.VaultLifecycleObserver] re-locks.
  * - [fontSizeSp]: active terminal font size in density-independent
  *   pixels. Persisted by Task #17's pinch-to-zoom gesture.
- * - [activeThemeId]: currently-selected [
- *   dev.kuch.termx.core.domain.theme.TerminalTheme] id.
  * - [pttMode]: last-used Push-to-talk mode (Task #42).
  * - [onboardingComplete]: first-run gate (Task #46) — flips to true
  *   when the 3-screen onboarding finishes (or the user skips), and
@@ -53,9 +51,6 @@ class AppPreferences @Inject constructor(
 
     val fontSizeSp: Flow<Int> =
         ds.data.map { it[KEY_FONT_SIZE_SP] ?: DEFAULT_FONT_SIZE_SP }
-
-    val activeThemeId: Flow<String> =
-        ds.data.map { it[KEY_ACTIVE_THEME_ID] ?: DEFAULT_ACTIVE_THEME_ID }
 
     /**
      * Push-to-talk source language as a BCP-47 locale code (e.g.
@@ -124,10 +119,6 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_FONT_SIZE_SP] = value.coerceIn(MIN_FONT_SIZE_SP, MAX_FONT_SIZE_SP) }
     }
 
-    suspend fun setActiveThemeId(id: String) {
-        ds.edit { it[KEY_ACTIVE_THEME_ID] = id }
-    }
-
     suspend fun setPttSourceLanguage(value: String) {
         ds.edit { it[KEY_PTT_SOURCE_LANGUAGE] = value }
     }
@@ -163,7 +154,6 @@ class AppPreferences @Inject constructor(
         val KEY_PARANOID_MODE = booleanPreferencesKey("paranoid_mode_enabled")
         val KEY_AUTO_LOCK_MINUTES = intPreferencesKey("auto_lock_minutes")
         val KEY_FONT_SIZE_SP = intPreferencesKey("terminal_font_size_sp")
-        val KEY_ACTIVE_THEME_ID = stringPreferencesKey("terminal_active_theme_id")
         val KEY_PTT_SOURCE_LANGUAGE = stringPreferencesKey("ptt_source_language")
         val KEY_PTT_TARGET_LANGUAGE = stringPreferencesKey("ptt_target_language")
         val KEY_PTT_CONTEXT = stringPreferencesKey("ptt_context")
@@ -185,7 +175,6 @@ class AppPreferences @Inject constructor(
          */
         const val DEFAULT_AUTO_LOCK_MINUTES = 1440
         const val DEFAULT_FONT_SIZE_SP = 14
-        const val DEFAULT_ACTIVE_THEME_ID = "dracula"
         const val MIN_FONT_SIZE_SP = 8
         const val MAX_FONT_SIZE_SP = 32
         /**

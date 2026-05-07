@@ -3,7 +3,6 @@ package dev.kuch.termx
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.core.view.WindowCompat
 import androidx.fragment.app.FragmentActivity
@@ -35,5 +34,5 @@ class MainActivity : FragmentActivity() {
 
 @Composable
 private fun TermxTheme(content: @Composable () -> Unit) {
-    MaterialTheme(colorScheme = darkColorScheme(), content = content)
+    MaterialTheme(colorScheme = sorcererColorScheme(), content = content)
 }

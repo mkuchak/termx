@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#0F1115</color>
+    <!--
+      Sorcerer palette (single theme, ships v1.3.0+):
+        background = #0E141A — main canvas
+        foreground = #FFFFFF — pure white
+      The launcher icon's background reuses Sorcerer's background hex
+      so the splash, app icon, and Compose root all match exactly.
+    -->
+    <color name="ic_launcher_background">#0E141A</color>
     <color name="ic_launcher_foreground">#E6E6E6</color>
 </resources>

@@ -61,10 +61,6 @@ class AppPreferencesTest {
         assertEquals(14, AppPreferences.DEFAULT_FONT_SIZE_SP)
     }
 
-    @Test fun `DEFAULT_ACTIVE_THEME_ID is dracula`() {
-        assertEquals("dracula", AppPreferences.DEFAULT_ACTIVE_THEME_ID)
-    }
-
     @Test fun `MIN and MAX font size span the slider range`() {
         assertEquals(8, AppPreferences.MIN_FONT_SIZE_SP)
         assertEquals(32, AppPreferences.MAX_FONT_SIZE_SP)
@@ -118,11 +114,6 @@ class AppPreferencesTest {
         assertEquals(20, prefs.fontSizeSp.first())
     }
 
-    @Test fun `setActiveThemeId round-trips arbitrary string`() = runTest {
-        prefs.setActiveThemeId("solarized-dark")
-        assertEquals("solarized-dark", prefs.activeThemeId.first())
-    }
-
     @Test fun `setPttSourceLanguage round-trips`() = runTest {
         prefs.setPttSourceLanguage("pt-BR")
         assertEquals("pt-BR", prefs.pttSourceLanguage.first())
@@ -166,12 +157,10 @@ class AppPreferencesTest {
         prefs.setPttTargetLanguage("hi-IN")
         prefs.setPttContext("test")
         prefs.setFontSizeSp(20)
-        prefs.setActiveThemeId("solarized-dark")
 
         assertEquals("pt-BR", prefs.pttSourceLanguage.first())
         assertEquals("hi-IN", prefs.pttTargetLanguage.first())
         assertEquals("test", prefs.pttContext.first())
         assertEquals(20, prefs.fontSizeSp.first())
-        assertEquals("solarized-dark", prefs.activeThemeId.first())
     }
 }

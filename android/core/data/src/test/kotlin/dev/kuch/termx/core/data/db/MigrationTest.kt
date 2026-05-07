@@ -18,6 +18,8 @@ import org.robolectric.annotation.Config
  *  - v1 to v2 adds the `custom_themes` table for Task #48.
  *  - v2 to v3 adds the `password_alias` column to `servers` so SSH
  *    passwords can round-trip via the Keystore-backed vault.
+ *  - v3 to v4 drops the (always-orphaned) `custom_themes` table when
+ *    shipping Sorcerer as the only theme.
  *
  * A silent regression here during a user upgrade would wipe their entire
  * Room DB — servers, key pairs, groups, themes and now stored-password
@@ -238,11 +240,67 @@ class MigrationTest {
     }
 
     @Test
-    fun migrate_1_to_3_end_to_end_preserves_rows_and_adds_new_surfaces() {
-        // Walks the full chain v1 to v3 — the same path a real user upgrading
-        // from the v0.3.x line to the next release follows. Guards against
-        // either migration individually passing while the chain corrupts
-        // state.
+    fun migrate_3_to_4_drops_custom_themes_and_preserves_other_tables() {
+        val keyId = "00000000-0000-0000-0000-0000000000c1"
+        val groupId = "00000000-0000-0000-0000-0000000000c2"
+        val serverId = "00000000-0000-0000-0000-0000000000c3"
+
+        helper.createDatabase(dbName, 3).apply {
+            // Servers + key_pairs + server_groups must survive the v4 drop.
+            execSQL(
+                "INSERT INTO key_pairs (id, label, algorithm, publicKey, keystoreAlias, createdAt) " +
+                    "VALUES ('$keyId', 'primary', 'ED25519', 'AAAA', 'alias-1', 1700000000000)",
+            )
+            execSQL(
+                "INSERT INTO server_groups (id, name, sortOrder, isCollapsed) " +
+                    "VALUES ('$groupId', 'prod', 0, 0)",
+            )
+            execSQL(
+                "INSERT INTO servers (id, label, host, port, username, authType, keyPairId, groupId, " +
+                    "useMosh, autoAttachTmux, tmuxSessionName, lastConnected, pingMs, sortOrder, " +
+                    "companionInstalled, password_alias) " +
+                    "VALUES ('$serverId', 'prod-web', 'example.com', 22, 'root', 'KEY', " +
+                    "'$keyId', '$groupId', 1, 1, 'main', 1700000000000, 42, 0, 1, NULL)",
+            )
+            // Belt-and-suspenders: also seed a row in custom_themes so the
+            // drop is exercised against a non-empty table even though no
+            // real install ever wrote here (the editor was orphaned from
+            // v1.0.0). DROP TABLE handles both empty and non-empty cases
+            // identically; this just makes the assertion meaningful.
+            execSQL(
+                "INSERT INTO custom_themes (id, displayName, colorsJson, createdAt) " +
+                    "VALUES ('custom:dummy', 'Dummy', '{}', 1700000000000)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(dbName, 4, true, MIGRATION_3_4)
+
+        val customThemesExists = db.query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='custom_themes'",
+        ).use { c -> c.moveToFirst(); c.getInt(0) }
+        assertEquals("custom_themes table should be gone after v3 to v4", 0, customThemesExists)
+
+        // Other tables and their rows survive intact.
+        val serverLabel = db.query("SELECT label FROM servers WHERE id = '$serverId'").use { c ->
+            c.moveToFirst(); c.getString(0)
+        }
+        val keyCount = db.query("SELECT COUNT(*) FROM key_pairs").use { c ->
+            c.moveToFirst(); c.getInt(0)
+        }
+        val groupCount = db.query("SELECT COUNT(*) FROM server_groups").use { c ->
+            c.moveToFirst(); c.getInt(0)
+        }
+        assertEquals("prod-web", serverLabel)
+        assertEquals(1, keyCount)
+        assertEquals(1, groupCount)
+    }
+
+    @Test
+    fun migrate_1_to_4_end_to_end_preserves_rows_and_adds_new_surfaces() {
+        // Walks the full chain v1 to v4 — the same path a real user upgrading
+        // from the v0.3.x line to the v1.3.x line follows. Guards against
+        // any individual migration passing while the chain corrupts state.
         val keyId = "00000000-0000-0000-0000-0000000000b1"
         val serverId = "00000000-0000-0000-0000-0000000000b2"
         val groupId = "00000000-0000-0000-0000-0000000000b3"
@@ -267,27 +325,28 @@ class MigrationTest {
 
         val db = helper.runMigrationsAndValidate(
             dbName,
-            3,
+            4,
             true,
             MIGRATION_1_2,
             MIGRATION_2_3,
+            MIGRATION_3_4,
         )
 
-        // v2's custom_themes table exists and is empty.
-        val themesRowCount = db.query("SELECT COUNT(*) FROM custom_themes").use { c ->
-            c.moveToFirst(); c.getInt(0)
-        }
-        assertEquals(0, themesRowCount)
+        // v4's custom_themes table is gone.
+        val customThemesExists = db.query(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='custom_themes'",
+        ).use { c -> c.moveToFirst(); c.getInt(0) }
+        assertEquals(0, customThemesExists)
 
-        // v3's servers.password_alias column exists and the pre-existing row
-        // comes through unscathed with NULL in the new column.
+        // v3's servers.password_alias column survives the v4 drop and the
+        // pre-existing row carries NULL in the new column.
         db.query(
             "SELECT label, host, password_alias FROM servers WHERE id = '$serverId'",
         ).use {
             assertTrue(it.moveToFirst())
             assertEquals("prod-web", it.getString(0))
             assertEquals("example.com", it.getString(1))
-            assertTrue("expected NULL password_alias after v1 to v3 chain", it.isNull(2))
+            assertTrue("expected NULL password_alias after v1 to v4 chain", it.isNull(2))
         }
     }
 }

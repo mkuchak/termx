@@ -41,5 +41,23 @@ val MIGRATION_2_3: Migration = object : Migration(2, 3) {
     }
 }
 
+/**
+ * v3 to v4: drops the `custom_themes` table. Termx ships Sorcerer as
+ * the only theme from v1.3.0 onward; the editor + repository + DAO
+ * were never actually wired into navigation, so the table held no
+ * user data on any real install. Drop is unconditional and
+ * irreversible — but since nothing ever wrote to it, this is loss-
+ * free.
+ */
+val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("DROP TABLE IF EXISTS custom_themes")
+    }
+}
+
 /** Ordered list of every migration the database understands. */
-val ALL_MIGRATIONS: Array<Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+val ALL_MIGRATIONS: Array<Migration> = arrayOf(
+    MIGRATION_1_2,
+    MIGRATION_2_3,
+    MIGRATION_3_4,
+)

@@ -72,7 +72,7 @@ import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
 import dev.kuch.termx.core.domain.model.TmuxSession
-import dev.kuch.termx.core.domain.theme.BuiltInThemes
+import dev.kuch.termx.core.domain.theme.Sorcerer
 import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
 import dev.kuch.termx.feature.terminal.gestures.UrlTapConfirmDialog
 import dev.kuch.termx.feature.terminal.keys.ExtraKey
@@ -450,7 +450,6 @@ private fun ConnectedPane(
     val volState = remember { VolDownState() }
     val focusRequester = remember { FocusRequester() }
     val fontSizeSp by viewModel.fontSizeSp.collectAsStateWithLifecycle()
-    val themeId by viewModel.activeThemeId.collectAsStateWithLifecycle()
     // Hoisted out of ExtraKeysBar so the IME-key path below can read
     // the sticky CTRL/ALT state. Without this hoist, tapping CTRL on
     // the bar then typing 'c' on the Android keyboard sends a plain
@@ -485,7 +484,6 @@ private fun ConnectedPane(
             extraKeysState = extraKeysState,
             onWriteToPty = onWriteToPty,
             fontSizeSp = fontSizeSp,
-            themeId = themeId,
             onFontSizeChanged = viewModel::onFontSizeChanged,
             onUrlDoubleTap = viewModel::onUrlDoubleTap,
             tmuxBacked = tmuxBacked,
@@ -620,7 +618,6 @@ private fun TerminalPane(
     extraKeysState: dev.kuch.termx.feature.terminal.keys.ExtraKeysState,
     onWriteToPty: (ByteArray) -> Unit,
     fontSizeSp: Int,
-    themeId: String,
     onFontSizeChanged: (Int) -> Unit,
     onUrlDoubleTap: (String) -> Unit,
     tmuxBacked: Boolean,
@@ -702,7 +699,7 @@ private fun TerminalPane(
 
             // Paint the initial theme before the first frame so the
             // user never sees the Termux default palette flash.
-            ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
+            ThemeBinder.apply(Sorcerer.terminalTheme, view)
 
             // Scale-gesture detector for pinch-to-zoom. Runs ahead of
             // TerminalView's own onTouchEvent so two fingers never
@@ -788,7 +785,7 @@ private fun TerminalPane(
         update = { view ->
             if (view.currentSession !== session) {
                 view.attachSession(session)
-                ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
+                ThemeBinder.apply(Sorcerer.terminalTheme, view)
                 view.requestFocus()
                 // Tab swap: unbind the previous session's client and
                 // bind the new one. The DisposableEffect(session) above
@@ -804,9 +801,10 @@ private fun TerminalPane(
                 view.setTextSize(fontSizeSp)
             }
 
-            // Repaint the palette on every theme change. apply() is
-            // cheap (~20 int writes + invalidate).
-            ThemeBinder.apply(BuiltInThemes.byId(themeId), view)
+            // (Theme is now a constant — no per-update palette repaint
+            // needed; the tab-swap branch above handles the only case
+            // where the emulator gets re-bound and needs the colors
+            // re-applied.)
 
             // Keep the hoisted ref in sync in case a new AndroidView
             // instance was created (e.g. after a configuration change).

@@ -9,7 +9,6 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import dev.kuch.termx.core.data.db.ALL_MIGRATIONS
 import dev.kuch.termx.core.data.db.AppDatabase
-import dev.kuch.termx.core.data.db.dao.CustomThemeDao
 import dev.kuch.termx.core.data.db.dao.KeyPairDao
 import dev.kuch.termx.core.data.db.dao.ServerDao
 import dev.kuch.termx.core.data.db.dao.ServerGroupDao
@@ -38,7 +37,4 @@ object DatabaseModule {
 
     @Provides
     fun provideServerGroupDao(db: AppDatabase): ServerGroupDao = db.serverGroupDao()
-
-    @Provides
-    fun provideCustomThemeDao(db: AppDatabase): CustomThemeDao = db.customThemeDao()
 }
