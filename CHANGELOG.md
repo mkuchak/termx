@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.0](https://github.com/mkuchak/termx/compare/v1.1.23...v1.2.0) (2026-05-07)
+
+### Features
+
+* **terminal:** bundle JetBrains Mono NL with real bold/italic glyphs ([b4a95b6](https://github.com/mkuchak/termx/commit/b4a95b61d222836f11024fa45a8d66a9397cf278)), closes [termux/termux-app#107](https://github.com/termux/termux-app/issues/107) [#4318](https://github.com/mkuchak/termx/issues/4318) [#4757](https://github.com/mkuchak/termx/issues/4757) [#4779](https://github.com/mkuchak/termx/issues/4779)
+
 ## [1.1.23](https://github.com/mkuchak/termx/compare/v1.1.22...v1.1.23) (2026-05-01)
 
 ### Bug Fixes
