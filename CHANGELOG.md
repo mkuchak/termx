@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.3](https://github.com/mkuchak/termx/compare/v1.3.2...v1.3.3) (2026-05-10)
+
+### Bug Fixes
+
+* **ptt:** collapse all line-break codepoints to CR so Send always submits ([638104a](https://github.com/mkuchak/termx/commit/638104a9f6e681b7e20a1b8fcc69f2f14a17c2c5))
+
 ## [1.3.2](https://github.com/mkuchak/termx/compare/v1.3.1...v1.3.2) (2026-05-07)
 
 ### Bug Fixes
