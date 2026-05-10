@@ -1014,13 +1014,39 @@ private class MinimalTerminalViewClient(
 private const val VOL_DOWN_PASSTHROUGH_MS = 500L
 
 /**
+ * Pattern matching every Unicode codepoint that a downstream terminal
+ * is plausibly going to render as a line break visually but that the
+ * shell's `accept-line` keybinding does NOT recognize:
+ *
+ *  - `\r` (CR, U+000D) — kept as the canonical Enter byte; not a leak.
+ *  - `\n` (LF, U+000A) — original target; bash readline accepts it but
+ *    raw-mode shells over tmux/mosh render the literal newline glyph
+ *    without submitting (v1.1.12 fix).
+ *  - `` (NEL, Next Line) — IBM legacy; some terminals advance.
+ *  - `` (VT, Vertical Tab) — xterm interprets as cursor-down-1.
+ *  - `` (FF, Form Feed) — xterm interprets as cursor-down-1.
+ *  - ` ` (LSEP, Line Separator) — Word documents emit this for
+ *    soft line breaks; clipboard pastes deliver it; LLM transcribers
+ *    occasionally pick it for sentence boundaries.
+ *  - ` ` (PSEP, Paragraph Separator) — same, but for paragraph
+ *    boundaries.
+ *
+ * Empirical: a probe test (`PttPayloadProbeTest`) confirmed the
+ * pre-v1.3.3 encoder leaked all of these untouched into the byte
+ * stream. With the widened regex below, any run of mixed line-break
+ * codepoints collapses to a single `\r` — the only thing readline +
+ * tmux + mosh agree means "submit this line."
+ */
+private val ANY_LINE_BREAK = Regex("[\\r\\n\\u0085\\u000B\\u000C\\u2028\\u2029]+")
+
+/**
  * Convert a PTT transcript / typed draft into the bytes a PTY expects.
  *
- *  - Every embedded `\n` (line-feed) becomes `\r` (carriage-return).
- *    Real keyboards emit `\r` for Enter, and bash/readline +
- *    zsh/zle in raw mode bind `\r` to accept-line; emitting `\n`
- *    instead often renders as a literal newline glyph in raw-mode
- *    shells over tmux/mosh without submitting the line.
+ *  - Every run of mixed line-break codepoints (see [ANY_LINE_BREAK])
+ *    collapses to a single `\r` (carriage-return). Real keyboards emit
+ *    `\r` for Enter, and bash/readline + zsh/zle in raw mode bind `\r`
+ *    to accept-line; the other codepoints either don't trigger
+ *    accept-line, or render as line-break glyphs without submitting.
  *  - When [appendNewline] is true (the Send button), a trailing `\r`
  *    is appended so the shell executes the last line. Insert leaves
  *    the cursor mid-line so the user keeps editing in the shell.
@@ -1030,7 +1056,7 @@ private const val VOL_DOWN_PASSTHROUGH_MS = 500L
  * up a Robolectric runtime.
  */
 internal fun encodePttPayload(text: String, appendNewline: Boolean): ByteArray {
-    val normalized = text.replace('\n', '\r')
+    val normalized = ANY_LINE_BREAK.replace(text, "\r")
     val payload = if (appendNewline) "$normalized\r" else normalized
     return payload.toByteArray()
 }
