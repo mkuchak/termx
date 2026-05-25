@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.4](https://github.com/mkuchak/termx/compare/v1.3.3...v1.3.4) (2026-05-25)
+
+### Bug Fixes
+
+* **ptt:** bump Gemini model to GA after preview retirement ([2e7c93c](https://github.com/mkuchak/termx/commit/2e7c93c26520a8c8e40fecabc9f84622ee4fa973))
+
 ## [1.3.3](https://github.com/mkuchak/termx/compare/v1.3.2...v1.3.3) (2026-05-10)
 
 ### Bug Fixes
