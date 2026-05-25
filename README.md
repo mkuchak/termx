@@ -33,7 +33,7 @@ fine too; the Claude hooks just stay dormant.
   Claude idle? Ping. Build failed? Ping. Each has its own priority and
   vibration pattern.
 - **Push-to-talk** — hold the FAB, speak, release. Your audio goes to
-  Google Gemini (`gemini-2.5-flash-lite`) using your own API key; the
+  Google Gemini (`gemini-3.1-flash-lite`) using your own API key; the
   transcription is injected directly into the active PTY — no clipboard
   dance.
 - **Key vault** — SSH private keys and the Gemini API key live in a single

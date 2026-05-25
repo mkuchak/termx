@@ -310,7 +310,11 @@ class GeminiClient @Inject constructor(
     }
 
     companion object {
-        const val MODEL = "gemini-3.1-flash-lite-preview"
+        // Bumped 2026-05-25 after Google retired the preview model
+        // (`gemini-3.1-flash-lite-preview` → 404 on generateContent).
+        // GA endpoint is the same name minus the `-preview` suffix.
+        // Parallel fix shipped in github.com/mkuchak/push-to-talk@a7c78ac.
+        const val MODEL = "gemini-3.1-flash-lite"
         const val ENDPOINT_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
         const val AUDIO_MIME_TYPE = "audio/mp4"
         const val TIMEOUT_SECONDS = 30L
