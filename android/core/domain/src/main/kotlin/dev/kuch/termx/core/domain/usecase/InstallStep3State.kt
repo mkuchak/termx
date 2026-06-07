@@ -20,8 +20,22 @@ sealed class InstallStep3State {
     /** Initial probe: `which termx` + `uname -m`. */
     data object Detecting : InstallStep3State()
 
-    /** termx already on PATH; version string is whatever `termx --version` prints. */
-    data class AlreadyInstalled(val version: String) : InstallStep3State()
+    /**
+     * termx already on PATH; [version] is whatever `termx --version` prints.
+     *
+     * When the detect stage finds the installed binary is OLDER than the latest
+     * release (or its version is unparseable / "version unknown"), it also
+     * populates [updateUrl] (the arch-matched asset URL) and [latestTag] (the
+     * `termxd-v*` release tag) so the UI can offer an in-place Update that
+     * reuses the existing download → preview → install pipeline. Both stay
+     * `null` when the binary is already up to date, in which case the wizard
+     * just offers Next/Skip.
+     */
+    data class AlreadyInstalled(
+        val version: String,
+        val updateUrl: String? = null,
+        val latestTag: String? = null,
+    ) : InstallStep3State()
 
     /** Hitting `api.github.com/.../releases` to pick the right asset. */
     data object FetchingRelease : InstallStep3State()

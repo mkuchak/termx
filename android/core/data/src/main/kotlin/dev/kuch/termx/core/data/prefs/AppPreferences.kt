@@ -6,7 +6,9 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import java.util.UUID
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -107,6 +109,38 @@ class AppPreferences @Inject constructor(
     val updaterSkippedVersion: Flow<String> =
         ds.data.map { it[KEY_UPDATER_SKIPPED_VERSION] ?: DEFAULT_UPDATER_SKIPPED_VERSION }
 
+    // --- companion (termxd) on-connect update offer (Task #32) -------------
+    //
+    // Two anti-nag memories backing the best-effort on-connect companion
+    // check, keyed by server id so each VPS is tracked independently:
+    //
+    //  - [companionUpdateSkipped]: set of `"$serverId@$tag"` strings the user
+    //    explicitly dismissed via the banner's "Later". A newer `termxd-v*`
+    //    tag re-surfaces the offer because the encoded token no longer matches.
+    //    Mirrors the APK updater's single [updaterSkippedVersion], scaled to
+    //    one entry per (server, version) pair.
+    //  - [companionUpdateLastCheck]: per-server last-probe epoch ms (encoded
+    //    `"$serverId=$epochMs"`). The repo skips re-probing a server inside a
+    //    24h window, so frequent reconnects don't re-run `termx --version` over
+    //    SSH AND we stay clear of GitHub's 60 req/h unauthenticated limit
+    //    (TermxReleaseFetcher is uncached). Mirrors [updaterLastCheckEpochMs],
+    //    keyed per server.
+
+    /** Raw `"$serverId@$tag"` skip tokens; consumers query via [isCompanionUpdateSkipped]. */
+    val companionUpdateSkipped: Flow<Set<String>> =
+        ds.data.map { it[KEY_COMPANION_UPDATE_SKIPPED] ?: emptySet() }
+
+    /** True iff the user previously skipped exactly [tag] for [serverId]. */
+    fun isCompanionUpdateSkipped(serverId: UUID, tag: String): Flow<Boolean> =
+        companionUpdateSkipped.map { it.contains(skipToken(serverId, tag)) }
+
+    /** Last on-connect companion check epoch ms for [serverId], or 0 if never. */
+    fun companionUpdateLastCheck(serverId: UUID): Flow<Long> =
+        ds.data.map { prefs ->
+            (prefs[KEY_COMPANION_UPDATE_LAST_CHECK] ?: emptySet())
+                .lastCheckFor(serverId)
+        }
+
     suspend fun setParanoidMode(value: Boolean) {
         ds.edit { it[KEY_PARANOID_MODE] = value }
     }
@@ -143,6 +177,25 @@ class AppPreferences @Inject constructor(
         ds.edit { it[KEY_UPDATER_SKIPPED_VERSION] = value }
     }
 
+    /** Remember that the user dismissed the companion update offer for [tag] on [serverId]. */
+    suspend fun addCompanionUpdateSkipped(serverId: UUID, tag: String) {
+        ds.edit { prefs ->
+            val current = prefs[KEY_COMPANION_UPDATE_SKIPPED] ?: emptySet()
+            prefs[KEY_COMPANION_UPDATE_SKIPPED] = current + skipToken(serverId, tag)
+        }
+    }
+
+    /** Stamp [serverId]'s last companion check, replacing any prior entry for it. */
+    suspend fun setCompanionUpdateLastCheck(serverId: UUID, epochMs: Long) {
+        ds.edit { prefs ->
+            val prefix = "$serverId="
+            val kept = (prefs[KEY_COMPANION_UPDATE_LAST_CHECK] ?: emptySet())
+                .filterNot { it.startsWith(prefix) }
+                .toSet()
+            prefs[KEY_COMPANION_UPDATE_LAST_CHECK] = kept + "$prefix$epochMs"
+        }
+    }
+
     /**
      * `internal` (was `private`) so AppPreferencesTest can verify the
      * default constants directly without relying on the DataStore
@@ -160,6 +213,8 @@ class AppPreferences @Inject constructor(
         val KEY_ONBOARDING_COMPLETE = booleanPreferencesKey("onboarding_complete")
         val KEY_UPDATER_LAST_CHECK_MS = longPreferencesKey("updater_last_check_epoch_ms")
         val KEY_UPDATER_SKIPPED_VERSION = stringPreferencesKey("updater_skipped_version")
+        val KEY_COMPANION_UPDATE_SKIPPED = stringSetPreferencesKey("companion_update_skipped")
+        val KEY_COMPANION_UPDATE_LAST_CHECK = stringSetPreferencesKey("companion_update_last_check")
         const val DEFAULT_PARANOID_MODE = false
 
         /**
@@ -191,4 +246,24 @@ class AppPreferences @Inject constructor(
         const val DEFAULT_UPDATER_LAST_CHECK_MS = 0L
         const val DEFAULT_UPDATER_SKIPPED_VERSION = ""
     }
+}
+
+/**
+ * Encode a per-(server, version) skip memory as a single stringSet entry.
+ * `"$serverId@$tag"` is intentionally stable across reconnects so a newer
+ * `termxd-v*` tag yields a different token (and re-surfaces the offer).
+ */
+private fun skipToken(serverId: UUID, tag: String): String = "$serverId@$tag"
+
+/**
+ * Pull [serverId]'s last-check epoch out of the `"$serverId=$epochMs"` set
+ * encoding, defaulting to 0 (never checked) when no entry exists or the
+ * stored value isn't a parseable long.
+ */
+private fun Set<String>.lastCheckFor(serverId: UUID): Long {
+    val prefix = "$serverId="
+    return firstOrNull { it.startsWith(prefix) }
+        ?.removePrefix(prefix)
+        ?.toLongOrNull()
+        ?: 0L
 }

@@ -13,6 +13,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.prefs.AlertPreferences
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.PasswordCache
+import dev.kuch.termx.core.data.remote.CompanionUpdateRepository
 import dev.kuch.termx.core.data.remote.EventStreamRepository
 import dev.kuch.termx.core.data.session.EventStreamHub
 import dev.kuch.termx.core.data.session.ReconnectBroker
@@ -81,8 +82,10 @@ class TerminalViewModel @Inject constructor(
     private val sessionRegistry: SessionRegistry,
     private val eventStreamHub: EventStreamHub,
     private val eventStreamRepository: EventStreamRepository,
+    private val companionUpdateRepository: CompanionUpdateRepository,
     private val reconnectBroker: ReconnectBroker,
     private val moshClient: MoshClient,
+    private val sshClient: SshClient,
 ) : ViewModel() {
 
     init {
@@ -176,8 +179,21 @@ class TerminalViewModel @Inject constructor(
      */
     private var currentServerLabel: String = "termx"
     private var currentServerRegistryId: UUID = FALLBACK_SERVER_ID
-    private var sshClient: SshClient? = null
     private var sshSession: SshSession? = null
+
+    /**
+     * Best-effort SECOND SSH connection opened only on the mosh-backed
+     * path (see [startMoshSideChannel]). mosh's own bootstrap SSH is
+     * closed unconditionally inside `MoshClientImpl` and exposes no
+     * handle, so a mosh session has no live exec channel of its own to
+     * tail `events.ndjson` over. This dedicated side connection gives the
+     * event-stream + UnifiedPush-sync machinery the live [SshSession] it
+     * needs while the terminal itself stays on mosh. null on the
+     * plain-SSH path and whenever the side connect hasn't landed (or
+     * failed — it is strictly best-effort).
+     */
+    private var sideClient: SshClient? = null
+    private var sideSession: SshSession? = null
 
     /** The single open shell for this connection, or null when down. */
     private var activeShell: SessionPty? = null
@@ -312,13 +328,24 @@ class TerminalViewModel @Inject constructor(
                     moshBacked = true,
                     error = null,
                 )
+                // mosh is up and the terminal is live. Now open a
+                // DEDICATED, best-effort side SSH connection so the
+                // event-stream router can tail `events.ndjson` and the
+                // UnifiedPush endpoint gets synced — neither of which the
+                // mosh transport can carry (its bootstrap SSH is already
+                // closed). This must never block or fail the terminal: it
+                // is fully fire-and-forget. See [startMoshSideChannel].
+                startMoshSideChannel(target, auth)
                 return
             }
             Log.i(LOG_TAG, "mosh handshake did not complete in ${MOSH_HANDSHAKE_TIMEOUT_MS}ms; falling back to ssh")
         }
 
-        val client = SshClient().also { sshClient = it }
-        val sshSession = client.connect(target, auth)
+        // Primary login transport goes through the injected [sshClient].
+        // `connect` builds a fresh SSHClient under the hood, so reusing
+        // the same instance for the (best-effort) mosh side channel is
+        // safe — the injection is purely a unit-test seam.
+        val sshSession = sshClient.connect(target, auth)
         this.sshSession = sshSession
 
         // Publish the live session so `EventNotificationRouter` (and any
@@ -340,6 +367,12 @@ class TerminalViewModel @Inject constructor(
         // session coming up.
         syncUnifiedPushEndpoint(sshSession)
 
+        // OPT-2 (Task #32): best-effort on-connect companion update offer.
+        // Like the endpoint sync above this is fully detached and swallows
+        // every failure — it only ever drives the CompanionUpdateRepository
+        // StateFlow (the server-list banner), never the terminal transport.
+        maybeOfferCompanionUpdate(serverId, sshSession)
+
         val shell = openTab(attachCommand = startup)
         server?.id?.let { touchLastConnected(it) }
         _state.value = _state.value.copy(
@@ -348,6 +381,72 @@ class TerminalViewModel @Inject constructor(
             moshBacked = false,
             error = null,
         )
+    }
+
+    /**
+     * Open a DEDICATED, best-effort side SSH connection for the
+     * mosh-backed path and wire it into the event-stream + UnifiedPush
+     * machinery.
+     *
+     * Why this exists: when the terminal comes up over mosh, there is no
+     * live [SshSession] to tail `~/.termx/events.ndjson` over. mosh's own
+     * bootstrap SSH is closed unconditionally by `MoshClientImpl` and the
+     * resulting [MoshSession] exposes no SSH handle, so agent-finished /
+     * idle / permission notifications and the Tier-2 UnifiedPush endpoint
+     * sync would never happen on the DEFAULT (mosh) path. A second,
+     * independent SSH connection — cheap, `connect` builds a fresh
+     * SSHClient — gives the session-agnostic [EventStreamClient] (which
+     * has its own `retryWhen` reconnect) and [syncUnifiedPushEndpoint] the
+     * live session they need.
+     *
+     * Strictly best-effort and fully detached on [viewModelScope]: it must
+     * NEVER block or break the mosh terminal coming up. A failed connect
+     * is swallowed to [Log.w]; the terminal stays Connected+moshBacked,
+     * just without Tier-1 notifications.
+     *
+     * KNOWN LIMITATION (deliberate follow-up — do not fix here): this side
+     * SSH is not as roam-resilient as mosh. [EventStreamClient.retryWhen]
+     * recovers exec-level hiccups (log-rotate, a killed stray `tail`) but
+     * not full transport death, so after a network flap the side
+     * connection can go quiet until the next explicit reconnect. A
+     * supervised relaunch of this channel is a planned follow-up.
+     */
+    private fun startMoshSideChannel(target: SshTarget, auth: SshAuth) {
+        val registryId = currentServerRegistryId
+        val label = currentServerLabel
+        // Persisted server id (null on the BuildConfig test-server path) —
+        // captured here so the detached companion check below targets the
+        // right Room row even if a reconnect swaps `currentServerId` meanwhile.
+        val persistedServerId = currentServerId
+        viewModelScope.launch {
+            val session = runCatching { sshClient.connect(target, auth) }
+                .onFailure { Log.w(LOG_TAG, "mosh side-channel SSH connect failed", it) }
+                .getOrNull() ?: return@launch
+
+            // Torn-down-while-connecting guard. The mosh connect could have
+            // raced a disconnect() (or a reconnect onto a different server)
+            // while this side SSH was still handshaking. If the mosh shell
+            // is gone, or we're no longer on the same server, close the
+            // orphan and bail WITHOUT publishing — otherwise we'd leak an
+            // entry that cleanupQuietly() already ran past.
+            if (activeShell?.moshSession == null || currentServerRegistryId != registryId) {
+                runCatching { session.close() }
+                return@launch
+            }
+
+            sideClient = sshClient
+            sideSession = session
+            eventStreamHub.publish(
+                serverId = registryId,
+                serverLabel = label,
+                client = eventStreamRepository.clientFor(session),
+            )
+            syncUnifiedPushEndpoint(session)
+            // OPT-2 (Task #32): same best-effort companion update offer as the
+            // plain-SSH path, run over this dedicated side session so it fires
+            // on the mosh transport too.
+            maybeOfferCompanionUpdate(persistedServerId, session)
+        }
     }
 
     /**
@@ -409,6 +508,32 @@ class TerminalViewModel @Inject constructor(
                     runCatching { sftp.close() }
                 }
             }.onFailure { Log.w(LOG_TAG, "UnifiedPush endpoint sync failed", it) }
+        }
+    }
+
+    /**
+     * Best-effort, NON-INTRUSIVE on-connect companion (termxd) update offer —
+     * OPT-2 (Task #32). The setup wizard is otherwise the only place that
+     * checks the VPS-side companion version, so an already-configured server
+     * never learns about a companion update; this surfaces a one-tap
+     * "Install / Later" offer on reconnect.
+     *
+     * Mechanics mirror [syncUnifiedPushEndpoint] EXACTLY: a fully detached
+     * [viewModelScope] launch that swallows every failure to [Log.w] and
+     * NEVER touches [_state] (the transport status). The result is pushed only
+     * through [CompanionUpdateRepository]'s StateFlow, which the server-list
+     * banner observes. The repo itself gates on a per-server 24h TTL + the
+     * per-(server, tag) skip memory, so reconnects in the window don't
+     * re-probe and dismissed offers stay quiet.
+     *
+     * No-op on the BuildConfig test-server path ([serverId] is null) — there's
+     * no persisted Server row for the install use-case to act against.
+     */
+    private fun maybeOfferCompanionUpdate(serverId: UUID?, session: SshSession) {
+        if (serverId == null) return
+        viewModelScope.launch {
+            runCatching { companionUpdateRepository.maybeOfferUpdate(serverId, session) }
+                .onFailure { Log.w(LOG_TAG, "companion update check failed", it) }
         }
     }
 
@@ -774,11 +899,18 @@ class TerminalViewModel @Inject constructor(
         activeShell = null
         // Drop the hub entry before closing the session so any router
         // subscriber cancels its collection first and doesn't get a
-        // transient exec failure on the way out.
+        // transient exec failure on the way out. This single unpublish
+        // covers the mosh path too — the side channel publishes under the
+        // same `currentServerRegistryId` key.
         eventStreamHub.unpublish(currentServerRegistryId)
         runCatching { sshSession?.close() }
         sshSession = null
-        sshClient = null
+        // Tear down the mosh side channel (no-op on the plain-SSH path
+        // where it was never opened). Closing the session ends the
+        // EventStreamClient's tail exec for free.
+        runCatching { sideSession?.close() }
+        sideSession = null
+        sideClient = null
     }
 
     /**

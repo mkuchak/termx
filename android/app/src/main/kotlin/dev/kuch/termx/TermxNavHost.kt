@@ -21,6 +21,7 @@ import dev.kuch.termx.feature.keys.KeyImportScreen
 import dev.kuch.termx.feature.keys.KeyListScreen
 import dev.kuch.termx.feature.keys.unlock.BiometricUnlockScreen
 import dev.kuch.termx.feature.onboarding.OnboardingScreen
+import dev.kuch.termx.companion.CompanionUpdateBanner
 import dev.kuch.termx.feature.servers.ServerListScreen
 import dev.kuch.termx.feature.updater.SettingsUpdateCard
 import dev.kuch.termx.feature.updater.UpdateBanner
@@ -138,6 +139,7 @@ fun TermxNavHost() {
                     navController.navigate(Routes.Settings)
                 },
                 updateBanner = { UpdateBanner() },
+                companionUpdateBanner = { CompanionUpdateBanner() },
             )
         }
         composable(Routes.SetupWizard) {

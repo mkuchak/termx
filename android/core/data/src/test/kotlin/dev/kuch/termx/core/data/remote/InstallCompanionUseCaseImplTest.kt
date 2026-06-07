@@ -215,12 +215,15 @@ class InstallCompanionUseCaseImplTest {
     // --- Detect stage: termx probe -----------------------------------------
 
     @Test
-    fun `detect with termx on PATH emits AlreadyInstalled with version`() = runTest {
+    fun `detect with up-to-date termx on PATH emits plain AlreadyInstalled`() = runTest {
         val servers = FakeServerRepository().apply { put(passwordServer()) }
+        // Installed v0.1.0 == latest release tag termxd-v0.1.0 (default
+        // fetcher) → no update, plain AlreadyInstalled with updateUrl null.
         val session = FakeSshSession(
             execResponses = mapOf(
                 "command -v termx" to FakeExecChannel(stdout = "/home/user/.local/bin/termx\n"),
                 "/home/user/.local/bin/termx" to FakeExecChannel(stdout = "termx v0.1.0\n"),
+                "uname -m" to FakeExecChannel(stdout = "x86_64\n"),
             ),
         )
         val sshClient = FakeSshClient(sessionProvider = { session })
@@ -241,6 +244,70 @@ class InstallCompanionUseCaseImplTest {
             "expected version string in ${ready!!.version}",
             ready.version.contains("termx v0.1.0"),
         )
+        assertNull("up-to-date binary must not offer an update", ready.updateUrl)
+        assertNull(ready.latestTag)
+    }
+
+    @Test
+    fun `detect with outdated termx on PATH emits AlreadyInstalled with updateUrl`() = runTest {
+        val servers = FakeServerRepository().apply { put(passwordServer()) }
+        // Installed v0.0.9 < latest termxd-v0.1.0 → update offered, updateUrl
+        // is the arch-matched (amd64 / x86_64) asset from the default release.
+        val session = FakeSshSession(
+            execResponses = mapOf(
+                "command -v termx" to FakeExecChannel(stdout = "/home/user/.local/bin/termx\n"),
+                "/home/user/.local/bin/termx" to FakeExecChannel(stdout = "termx version 0.0.9\n"),
+                "uname -m" to FakeExecChannel(stdout = "x86_64\n"),
+            ),
+        )
+        val sshClient = FakeSshClient(sessionProvider = { session })
+        val impl = makeImpl(servers = servers, sshClient = sshClient)
+
+        val states = impl.run(
+            serverId,
+            InstallCompanionUseCase.Stage.Detect,
+            InstallCompanionUseCase.Context(passwordOverride = "pw"),
+        ).toList()
+
+        val ready = states.filterIsInstance<InstallStep3State.AlreadyInstalled>().firstOrNull()
+        assertNotNull("expected AlreadyInstalled, got $states", ready)
+        assertEquals("termxd-v0.1.0", ready!!.latestTag)
+        assertNotNull("outdated binary must offer an update", ready.updateUrl)
+        assertTrue(
+            "expected x86_64 asset url, got ${ready.updateUrl}",
+            ready.updateUrl!!.contains("x86_64"),
+        )
+    }
+
+    @Test
+    fun `detect with version-unknown termx on PATH offers an update`() = runTest {
+        val servers = FakeServerRepository().apply { put(passwordServer()) }
+        // `termx --version` returns nothing → "termx (version unknown)" sentinel,
+        // which VersionTag treats as the zero version → reinstall offered.
+        val session = FakeSshSession(
+            execResponses = mapOf(
+                "command -v termx" to FakeExecChannel(stdout = "/home/user/.local/bin/termx\n"),
+                "/home/user/.local/bin/termx" to FakeExecChannel(stdout = "\n"),
+                "uname -m" to FakeExecChannel(stdout = "x86_64\n"),
+            ),
+        )
+        val sshClient = FakeSshClient(sessionProvider = { session })
+        val impl = makeImpl(servers = servers, sshClient = sshClient)
+
+        val states = impl.run(
+            serverId,
+            InstallCompanionUseCase.Stage.Detect,
+            InstallCompanionUseCase.Context(passwordOverride = "pw"),
+        ).toList()
+
+        val ready = states.filterIsInstance<InstallStep3State.AlreadyInstalled>().firstOrNull()
+        assertNotNull("expected AlreadyInstalled, got $states", ready)
+        assertTrue(
+            "expected version-unknown sentinel, got ${ready!!.version}",
+            ready.version.contains("version unknown"),
+        )
+        assertNotNull("unknown version must offer a reinstall", ready.updateUrl)
+        assertEquals("termxd-v0.1.0", ready.latestTag)
     }
 
     @Test

@@ -1,6 +1,7 @@
 package dev.kuch.termx.feature.updater
 
 import android.util.Log
+import dev.kuch.termx.core.common.version.VersionTag
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlinx.coroutines.Dispatchers

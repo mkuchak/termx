@@ -370,8 +370,14 @@ class SetupWizardViewModel @Inject constructor(
                 InstallCompanionUseCase.Stage.Detect,
                 InstallCompanionUseCase.Context(passwordOverride = passwordOverrideForInstall()),
             ).collect { state ->
-                if (state is InstallStep3State.ReadyToDownload) {
-                    cachedDownloadUrl = state.downloadUrl
+                when (state) {
+                    is InstallStep3State.ReadyToDownload -> cachedDownloadUrl = state.downloadUrl
+                    // An outdated companion surfaces an updateUrl alongside the
+                    // AlreadyInstalled card. Cache it so the existing
+                    // runCompanionPreview()/runCompanionInstall() pipeline works
+                    // unchanged when the user taps Update.
+                    is InstallStep3State.AlreadyInstalled -> state.updateUrl?.let { cachedDownloadUrl = it }
+                    else -> Unit
                 }
                 _installStep3State.value = state
             }

@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import dev.kuch.termx.core.common.version.VersionTag
 import dev.kuch.termx.core.domain.model.PlannedAction
 import dev.kuch.termx.core.domain.usecase.InstallStep3State
 
@@ -98,18 +99,43 @@ fun SetupStep3InstallTermxd(
             )
 
             is InstallStep3State.AlreadyInstalled -> Column {
-                StatusCard(
-                    title = "Already installed",
-                    body = state.version,
-                    icon = Icons.Filled.CheckCircle,
-                    iconTint = MaterialTheme.colorScheme.primary,
-                )
-                Spacer(Modifier.height(16.dp))
-                PrimarySkipRow(
-                    primaryLabel = "Next",
-                    onPrimary = onNext,
-                    onSkip = onSkip,
-                )
+                if (state.updateUrl != null) {
+                    // Outdated (or "version unknown") binary: offer an in-place
+                    // Update that reuses the download → preview → install flow.
+                    // Render clean dotted versions; the installed side may be
+                    // unparseable ("version unknown"), so fall back to the raw
+                    // string when VersionTag can't extract one.
+                    val installed = VersionTag.companionInstalledVersion(state.version)
+                        ?.let { "v$it" } ?: state.version
+                    val latest = state.latestTag
+                        ?.let { tag -> VersionTag.companionLatestVersion(tag)?.let { "v$it" } ?: tag }
+                        ?: ""
+                    StatusCard(
+                        title = "Update available",
+                        body = "$installed → $latest",
+                        icon = Icons.Filled.CloudDownload,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    PrimarySkipRow(
+                        primaryLabel = "Update",
+                        onPrimary = onPreview,
+                        onSkip = onSkip,
+                    )
+                } else {
+                    StatusCard(
+                        title = "Already installed",
+                        body = state.version,
+                        icon = Icons.Filled.CheckCircle,
+                        iconTint = MaterialTheme.colorScheme.primary,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    PrimarySkipRow(
+                        primaryLabel = "Next",
+                        onPrimary = onNext,
+                        onSkip = onSkip,
+                    )
+                }
             }
 
             InstallStep3State.FetchingRelease -> StatusCard(

@@ -107,6 +107,14 @@ fun ServerListScreen(
      * banner self-hides when there's no update to surface.
      */
     updateBanner: @Composable () -> Unit = {},
+    /**
+     * Slot for the on-connect companion (termxd) update banner (OPT-2,
+     * Task #32). The :app NavHost composes this with
+     * `dev.kuch.termx.companion.CompanionUpdateBanner` (backed by
+     * CompanionUpdateRepository's StateFlow) so :feature:servers stays free
+     * of the banner. Self-hides unless a connect surfaced an offer.
+     */
+    companionUpdateBanner: @Composable () -> Unit = {},
     viewModel: ServerListViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
@@ -203,6 +211,10 @@ fun ServerListScreen(
                 // server list so the user sees update offers without
                 // visiting Settings.
                 updateBanner()
+                // On-connect companion (termxd) update offer (Task #32).
+                // Same hoist as the APK banner; self-hides unless a recent
+                // connect found the VPS companion missing or out of date.
+                companionUpdateBanner()
                 // Task #45: nudge the user to exclude termx from Doze so
                 // background tails keep running with the screen off.
                 // Hoisted above the list so it's the first thing they see

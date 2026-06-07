@@ -1,5 +1,6 @@
 package dev.kuch.termx.core.data.remote
 
+import dev.kuch.termx.core.common.version.VersionTag
 import dev.kuch.termx.core.data.network.TermxReleaseFetcher
 import dev.kuch.termx.core.data.di.KnownHostsPath
 import dev.kuch.termx.core.data.vault.SecretVault
@@ -120,37 +121,92 @@ class InstallCompanionUseCaseImpl @Inject constructor(
 
             if (pathLine.isNotBlank()) {
                 val quoted = shellQuote(pathLine)
-                val version = execCapture(session, "$quoted --version 2>/dev/null || true")
-                    .trim()
-                    .ifBlank { "termx (version unknown)" }
-                emit(InstallStep3State.AlreadyInstalled(version))
+                // RAW `termx --version` output — pass it untouched to the
+                // comparator, which parses it. A blank capture becomes the
+                // "version unknown" sentinel that VersionTag treats as the zero
+                // version, so an unparseable/missing version always offers an
+                // update rather than reading as up-to-date.
+                val rawVersion = execCapture(session, "$quoted --version 2>/dev/null || true").trim()
+                val version = rawVersion.ifBlank { "termx (version unknown)" }
+
+                // One extra HTTP call only when a binary already exists: resolve
+                // the latest release + arch-matched asset so we can compare and,
+                // if outdated, hand the UI an updateUrl that drives the existing
+                // download → preview → install pipeline unchanged.
+                val resolved = resolveLatestAsset(session)
+                if (resolved != null &&
+                    VersionTag.isCompanionUpdateAvailable(version, resolved.releaseTag)
+                ) {
+                    emit(
+                        InstallStep3State.AlreadyInstalled(
+                            version = version,
+                            updateUrl = resolved.downloadUrl,
+                            latestTag = resolved.releaseTag,
+                        ),
+                    )
+                } else {
+                    // Up to date, or we couldn't resolve a release to compare
+                    // against — keep today's plain "Already installed" card.
+                    emit(InstallStep3State.AlreadyInstalled(version))
+                }
                 return
             }
 
-            val archRaw = execCapture(session, "uname -m").trim()
-            val arch = normalizeArch(archRaw)
-            if (arch == null) {
-                emit(InstallStep3State.Error("Unsupported architecture: $archRaw"))
-                return
-            }
-
-            emit(InstallStep3State.FetchingRelease)
-            val rel = try {
-                releaseFetcher.fetchLatest()
-            } catch (t: Throwable) {
-                emit(InstallStep3State.Error("GitHub release fetch failed: ${t.message ?: t.javaClass.simpleName}"))
-                return
-            }
-            val url = rel.assetForArch(arch)
-            if (url.isNullOrBlank()) {
-                emit(InstallStep3State.Error("No asset for architecture $arch in release ${rel.tag}"))
-                return
-            }
-            emit(InstallStep3State.ReadyToDownload(arch = arch, downloadUrl = url, releaseTag = rel.tag))
+            val resolved = resolveLatestAsset(session) ?: return
+            emit(
+                InstallStep3State.ReadyToDownload(
+                    arch = resolved.arch,
+                    downloadUrl = resolved.downloadUrl,
+                    releaseTag = resolved.releaseTag,
+                ),
+            )
         } finally {
             runCatching { session.close() }
         }
     }
+
+    /**
+     * Resolve the latest companion release and the asset matching the VPS's
+     * architecture, emitting [InstallStep3State.FetchingRelease] before the
+     * network hop.
+     *
+     * Shared by both detect branches: the missing-binary path (offer a fresh
+     * install) and the binary-found path (compare versions, maybe offer an
+     * update). On any failure — unsupported arch, release fetch error, or no
+     * asset for the arch — it emits the corresponding
+     * [InstallStep3State.Error] and returns `null`, so callers can `?: return`.
+     */
+    private suspend fun kotlinx.coroutines.flow.FlowCollector<InstallStep3State>.resolveLatestAsset(
+        session: SshSession,
+    ): ResolvedAsset? {
+        val archRaw = execCapture(session, "uname -m").trim()
+        val arch = normalizeArch(archRaw)
+        if (arch == null) {
+            emit(InstallStep3State.Error("Unsupported architecture: $archRaw"))
+            return null
+        }
+
+        emit(InstallStep3State.FetchingRelease)
+        val rel = try {
+            releaseFetcher.fetchLatest()
+        } catch (t: Throwable) {
+            emit(InstallStep3State.Error("GitHub release fetch failed: ${t.message ?: t.javaClass.simpleName}"))
+            return null
+        }
+        val url = rel.assetForArch(arch)
+        if (url.isNullOrBlank()) {
+            emit(InstallStep3State.Error("No asset for architecture $arch in release ${rel.tag}"))
+            return null
+        }
+        return ResolvedAsset(arch = arch, downloadUrl = url, releaseTag = rel.tag)
+    }
+
+    /** Arch-matched asset for the latest release; see [resolveLatestAsset]. */
+    private data class ResolvedAsset(
+        val arch: String,
+        val downloadUrl: String,
+        val releaseTag: String,
+    )
 
     // --- Stage: preview -----------------------------------------------------
 
