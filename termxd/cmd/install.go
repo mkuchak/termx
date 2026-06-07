@@ -461,11 +461,17 @@ const herdrWatchUnitName = "termx-herdr-watch.service"
 // running 24/7 (survives logout/reboot, restarts on crash) so Tier-2 agent
 // completions are caught even with no active login. `%h` is systemd's
 // home-dir specifier, so no path interpolation is needed here.
+//
+// Environment=PATH explicitly includes %h/.local/bin: systemd --user runs
+// services with a sanitized PATH that omits ~/.local/bin, and the watcher
+// shells out to the `herdr` CLI which is commonly installed there. Without
+// this the daemon can't find herdr and silently retries forever.
 const herdrWatchUnit = `[Unit]
 Description=termx herdr watcher
 After=network-online.target
 
 [Service]
+Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.local/bin/termx watch-herdr
 Restart=always
 RestartSec=2

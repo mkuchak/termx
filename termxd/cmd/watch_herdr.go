@@ -489,9 +489,41 @@ func jitterBackoff(d *time.Duration) time.Duration {
 
 // ---- real herdr CLI seams ----
 
+// herdrBin resolves the herdr CLI path. systemd --user services run with a
+// sanitized PATH that omits ~/.local/bin (a common herdr install location), so
+// a bare "herdr" exec fails there. Resolution order: $HERDR_BIN, then PATH,
+// then well-known install dirs; falls back to "herdr" so a genuinely missing
+// binary still surfaces a clear error. Re-resolved per call (cheap) so a herdr
+// installed after the daemon starts is picked up on the next retry.
+func herdrBin() string {
+	if env := strings.TrimSpace(os.Getenv("HERDR_BIN")); env != "" {
+		return env
+	}
+	if p, err := exec.LookPath("herdr"); err == nil {
+		return p
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if cand := filepath.Join(home, ".local", "bin", "herdr"); isExecutableFile(cand) {
+			return cand
+		}
+	}
+	for _, cand := range []string{"/usr/local/bin/herdr", "/usr/bin/herdr"} {
+		if isExecutableFile(cand) {
+			return cand
+		}
+	}
+	return "herdr"
+}
+
+// isExecutableFile reports whether path is a non-dir file with any execute bit.
+func isExecutableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
+}
+
 // cliAgentLister runs `herdr agent list` and parses the JSON envelope.
 func cliAgentLister(ctx context.Context) ([]herdrAgent, error) {
-	out, err := exec.CommandContext(ctx, "herdr", "agent", "list").Output()
+	out, err := exec.CommandContext(ctx, herdrBin(), "agent", "list").Output()
 	if err != nil {
 		return nil, fmt.Errorf("herdr agent list: %w", err)
 	}
@@ -512,7 +544,7 @@ func parseAgentList(out []byte) ([]herdrAgent, error) {
 // pane.agent_status_changed match; timeout / pane-gone / parse failure all
 // return ok=false so the supervisor just re-lists.
 func cliAgentWaiter(ctx context.Context, paneID, status string) (herdrStatusFrame, bool) {
-	cmd := exec.CommandContext(ctx, "herdr", "wait", "agent-status", paneID,
+	cmd := exec.CommandContext(ctx, herdrBin(), "wait", "agent-status", paneID,
 		"--status", status, "--timeout", fmt.Sprintf("%d", waitTimeoutMs))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

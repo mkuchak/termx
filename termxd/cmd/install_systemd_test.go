@@ -20,6 +20,7 @@ func TestHerdrWatchUnitBody(t *testing.T) {
 		"After=network-online.target\n" +
 		"\n" +
 		"[Service]\n" +
+		"Environment=PATH=%h/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n" +
 		"ExecStart=%h/.local/bin/termx watch-herdr\n" +
 		"Restart=always\n" +
 		"RestartSec=2\n" +
@@ -32,6 +33,7 @@ func TestHerdrWatchUnitBody(t *testing.T) {
 	// Guard the individual must-have directives explicitly so a future
 	// reformat can't quietly drop one.
 	for _, sub := range []string{
+		"Environment=PATH=%h/.local/bin:",
 		"ExecStart=%h/.local/bin/termx watch-herdr",
 		"Restart=always",
 		"WantedBy=default.target",

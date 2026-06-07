@@ -11,6 +11,33 @@ import (
 	"github.com/mkuchak/termx/termxd/cmd/internal"
 )
 
+// TestHerdrBinHonorsEnv verifies $HERDR_BIN overrides PATH/dir resolution, so a
+// systemd-user service (sanitized PATH that omits ~/.local/bin) can still
+// locate herdr.
+func TestHerdrBinHonorsEnv(t *testing.T) {
+	t.Setenv("HERDR_BIN", "/custom/path/to/herdr")
+	if got := herdrBin(); got != "/custom/path/to/herdr" {
+		t.Errorf("herdrBin() with $HERDR_BIN = %q, want /custom/path/to/herdr", got)
+	}
+}
+
+// TestHerdrBinFallsBackToName confirms that with no env override, nothing on
+// PATH, and no ~/.local/bin/herdr, herdrBin returns the bare name so exec
+// surfaces a normal not-found error rather than a fabricated path.
+func TestHerdrBinFallsBackToName(t *testing.T) {
+	t.Setenv("HERDR_BIN", "")
+	t.Setenv("PATH", t.TempDir()) // empty dir: no herdr on PATH
+	t.Setenv("HOME", t.TempDir()) // no ~/.local/bin/herdr
+	// The well-known dirs may legitimately hold herdr on some hosts; only
+	// assert the bare-name fallback when they don't.
+	if isExecutableFile("/usr/local/bin/herdr") || isExecutableFile("/usr/bin/herdr") {
+		t.Skip("herdr present in a well-known dir on this host; fallback not exercisable")
+	}
+	if got := herdrBin(); got != "herdr" {
+		t.Errorf("herdrBin() fallback = %q, want \"herdr\"", got)
+	}
+}
+
 // doneFrame builds a herdr done frame for tests.
 func doneFrame(pane, ws, agent string) herdrStatusFrame {
 	var f herdrStatusFrame
