@@ -1,5 +1,217 @@
 # Changelog
 
+## [0.1.2](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-06-07)
+
+### Features
+
+* replace tmux auto-attach with an optional startup command ([c6a0e7f](https://github.com/mkuchak/termx/commit/c6a0e7f57f82b185f1958a7c29fd2a710c75668a))
+
+### Refactoring
+
+* **termxd:** drop tmux install, hooks, and session tracking ([de1fa09](https://github.com/mkuchak/termx/commit/de1fa09492031925a5c01ec053e0e4b8e9a7ba98))
+
+## [1.3.4](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-25)
+
+### Bug Fixes
+
+* **ptt:** bump Gemini model to GA after preview retirement ([2e7c93c](https://github.com/mkuchak/termx/commit/2e7c93c26520a8c8e40fecabc9f84622ee4fa973))
+
+## [1.3.3](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-10)
+
+### Bug Fixes
+
+* **ptt:** collapse all line-break codepoints to CR so Send always submits ([638104a](https://github.com/mkuchak/termx/commit/638104a9f6e681b7e20a1b8fcc69f2f14a17c2c5))
+
+## [1.3.2](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-07)
+
+### Bug Fixes
+
+* **theme:** apply Sorcerer to terminal palette via static-defaults install ([c06253c](https://github.com/mkuchak/termx/commit/c06253c63fa51f5d6ac9ceae41b308d5b59158fd))
+
+## [1.3.1](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-07)
+
+### Bug Fixes
+
+* **theme:** apply Sorcerer to terminal palette + sweep remaining color leaks ([af0a4e7](https://github.com/mkuchak/termx/commit/af0a4e7922a8d30bc151853aeb85f9e918eceaa8)), closes [#4CAF50](https://github.com/mkuchak/termx/issues/4CAF50) [#7C3AED](https://github.com/mkuchak/termx/issues/7C3AED) [#3DD68C](https://github.com/mkuchak/termx/issues/3DD68C) [#E4B740](https://github.com/mkuchak/termx/issues/E4B740) [#E5484D](https://github.com/mkuchak/termx/issues/E5484D) [#E5484D](https://github.com/mkuchak/termx/issues/E5484D)
+
+## [1.3.0](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-07)
+
+### Features
+
+* **theme:** ship Sorcerer as the only theme; remove theme picker and dormant editor ([16fb748](https://github.com/mkuchak/termx/commit/16fb748e09479d8182cc885854e4a7daa6ce3855)), closes [#0F1115](https://github.com/mkuchak/termx/issues/0F1115) [#0E141A](https://github.com/mkuchak/termx/issues/0E141A)
+
+## [1.2.0](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-07)
+
+### Features
+
+* **terminal:** bundle JetBrains Mono NL with real bold/italic glyphs ([b4a95b6](https://github.com/mkuchak/termx/commit/b4a95b61d222836f11024fa45a8d66a9397cf278)), closes [termux/termux-app#107](https://github.com/termux/termux-app/issues/107) [#4318](https://github.com/mkuchak/termx/issues/4318) [#4757](https://github.com/mkuchak/termx/issues/4757) [#4779](https://github.com/mkuchak/termx/issues/4779)
+
+## [1.1.23](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-05-01)
+
+### Bug Fixes
+
+* **mosh:** revert SSP transport rewrite, restore v1.1.17 native client ([9b00fcb](https://github.com/mkuchak/termx/commit/9b00fcbd5b843413777618a9cc666f44b5978820))
+
+## [1.1.22](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-28)
+
+### Bug Fixes
+
+* **mosh:** buffer pre-init bytes so the initial state-sync isn't lost ([c87088d](https://github.com/mkuchak/termx/commit/c87088dcf1f8ff48b434bdc39c0a93fc72d70e59))
+
+## [1.1.21](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-28)
+
+### ⚠ BREAKING CHANGES
+
+* **mosh:** replace native mosh-client with pure-Kotlin SSP transport
+
+### Features
+
+* **mosh:** replace native mosh-client with pure-Kotlin SSP transport ([3a04233](https://github.com/mkuchak/termx/commit/3a04233a86f78fc91cc026752d6bf766ab657af2)), closes [#73](https://github.com/mkuchak/termx/issues/73)
+
+## [1.1.20](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-27)
+
+### Bug Fixes
+
+* **mosh:** decode signals + firstOrNull preflight + broader logcat ([d7fe6ae](https://github.com/mkuchak/termx/commit/d7fe6ae8e30db81635278b11ebfb448074e99a8e))
+
+## [1.1.19](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-27)
+
+### Bug Fixes
+
+* **mosh:** race fix on exit diagnostic + mosh-aware Test Connection ([a508775](https://github.com/mkuchak/termx/commit/a50877563378f7e7b8174a139d8cf194a4813775))
+
+## [1.1.18](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-27)
+
+### Bug Fixes
+
+* **mosh:** surface late + clean-fast exits and handshake fall-through ([53bdfc5](https://github.com/mkuchak/termx/commit/53bdfc5445339b7d53e9a0848aaa782dd74a52c6))
+
+## [1.1.17](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-27)
+
+### Features
+
+* **updater:** in-app GitHub-Release auto-updater ([0097aa8](https://github.com/mkuchak/termx/commit/0097aa86cf4fc26079ddde1dddc4b989ce5e3c42))
+
+## [1.1.16](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### Bug Fixes
+
+* **mosh:** capture linker / native-crash logcat lines on early exit ([552bbd0](https://github.com/mkuchak/termx/commit/552bbd01a1ee377f80799f91526803603939d363))
+
+## [1.1.15](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### Bug Fixes
+
+* **terminal:** keyboard chip tap toggles IME again ([d793538](https://github.com/mkuchak/termx/commit/d793538ad00d720bcd815176f9ca3da9f662b440))
+
+## [1.1.14](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### Bug Fixes
+
+* **terminal:** sticky CTRL/ALT reaches commitText letters + Send hex Toast ([b0d9303](https://github.com/mkuchak/termx/commit/b0d9303681262a07d28c59e1bc53c54cd99afa1b))
+
+## [1.1.13](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### Features
+
+* **terminal+ptt:** three v1.1.13 fixes -- compose-text, sticky-modifier IME, write observability + SSH heartbeat ([3e64a1e](https://github.com/mkuchak/termx/commit/3e64a1ee08a2edd3de7496a269c7b2764660b3af))
+
+## [1.1.12](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### Bug Fixes
+
+* **terminal:** send CR not LF for PTT Send so the line actually executes ([88b17ee](https://github.com/mkuchak/termx/commit/88b17ee30db8546bf4fa7c648b603030ca3d0aa9))
+
+## [1.1.11](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### ⚠ BREAKING CHANGES
+
+* **ptt:** editable transcript + per-utterance Insert/Send buttons
+
+### Features
+
+* **ptt:** editable transcript + per-utterance Insert/Send buttons ([cd972c7](https://github.com/mkuchak/termx/commit/cd972c7dcf6b578a01ae480187d7ad7b37c341c0))
+
+## [1.1.10](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-26)
+
+### Bug Fixes
+
+* **ptt:** keep FAB rendered through Recording so the gesture survives ([3467716](https://github.com/mkuchak/termx/commit/3467716d2bb1dbb775769a4bfdfec85508ff724d))
+
+## [1.1.9](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-25)
+
+### Features
+
+* **ptt:** per-language transcribe/translate + retry + context ([0044083](https://github.com/mkuchak/termx/commit/00440839b923e6df862f9cff3702b742f0c470c5))
+
+### Bug Fixes
+
+* **ptt:** hold-to-record actually holds + reject silent-audio hallucinations ([431b3f6](https://github.com/mkuchak/termx/commit/431b3f69428f8c03242c734e627ac33cbba24af2))
+
+## [1.1.8](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-25)
+
+### Bug Fixes
+
+* **vault:** drop write-side lock gate + bump auto-lock default to 24h ([5c06525](https://github.com/mkuchak/termx/commit/5c0652527419a5fad6c5d72ee788aa8f9b056d21))
+
+## [1.1.7](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **auth:** stop nuking passwordAlias on blank-field edits + self-heal ([6ac4fab](https://github.com/mkuchak/termx/commit/6ac4fabbdcccddf3f5e2d5686b849008089cda8d))
+* **vault:** drop AndroidKeystore, store vault as plaintext JSON in filesDir ([9e2f724](https://github.com/mkuchak/termx/commit/9e2f724cfd563627d0cbd6fcba9912c6fcfee3c4))
+
+## [1.1.6](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Features
+
+* **mosh:** launch mosh-client under a pseudo-terminal (fixes tcgetattr) ([a964ce5](https://github.com/mkuchak/termx/commit/a964ce5c022eaabe1082148d64c0b18f6c29184f))
+
+## [1.1.5](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **auth:** persist prompted password + migration + CryptoObject invariant ([b915e44](https://github.com/mkuchak/termx/commit/b915e44cf7d1dd77844b02c07d3667ea6b175888))
+* **vault:** deterministic v2-alias migration + record lastConnected ([9c7226f](https://github.com/mkuchak/termx/commit/9c7226f3ec17883e580a08eeb5257eb8a7c420c9))
+
+## [1.1.4](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **vault:** don't crash save when legacy-key migration misbehaves ([159ffe0](https://github.com/mkuchak/termx/commit/159ffe0b43bfdadc84ab515a237bc5cdbcf04ca4))
+
+## [1.1.3](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **vault:** drop per-op user-auth from master key + auto-migrate legacy ([cb096b7](https://github.com/mkuchak/termx/commit/cb096b7ebf6dfb92a9be421a32d4e914d0c2fa2f))
+
+## [1.1.2](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **terminal:** make keyboard toggle work on every tap ([3df64a6](https://github.com/mkuchak/termx/commit/3df64a6f437ff1a0f42f4e3fd98cfc779c76a4fb))
+
+## [1.1.1](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Bug Fixes
+
+* **terminal:** pad status + nav bar insets and move keyboard toggle ([dad814a](https://github.com/mkuchak/termx/commit/dad814a4e1a83e71d716f96a9594a0d4245e6436))
+
+## [1.1.0](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
+### Features
+
+* **auth:** persist SSH passwords in Keystore vault + fix Step 3 race ([8c8be0a](https://github.com/mkuchak/termx/commit/8c8be0ac236e54968bca774897fcf15c7dccc240))
+* **keyboard:** show IME on tap + adjustResize + toggle button in tab bar ([e4de44f](https://github.com/mkuchak/termx/commit/e4de44ff50a8f308bdf0bb10e43b146257d14548)), closes [#1](https://github.com/mkuchak/termx/issues/1)
+
+### Bug Fixes
+
+* **mosh:** bundle minimal terminfo DB + diagnostic logging on early exit ([0ffcc7a](https://github.com/mkuchak/termx/commit/0ffcc7a1b76ee6d6a61ad2c1878905bdad7ef2be))
+* **terminal:** wire view invalidate on remote bytes + PtyChannel backpressure ([a49e890](https://github.com/mkuchak/termx/commit/a49e8909b62a40cea7f9381a320551e9dc98a48b))
+
+## [1.0.0](https://github.com/mkuchak/termx/compare/termxd-v0.1.1...termxd-v0.1.2) (2026-04-24)
+
 ## [0.1.1](https://github.com/mkuchak/termx/compare/termxd-v0.1.0...termxd-v0.1.1) (2026-04-24)
 
 ### Features
