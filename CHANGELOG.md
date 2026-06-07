@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/mkuchak/termx/compare/v1.5.0...v1.6.0) (2026-06-07)
+
+### Features
+
+* deliver alerts over mosh and offer VPS companion updates ([718468d](https://github.com/mkuchak/termx/commit/718468da1067fdd06e57978dd39415384b2a537e))
+
+### Bug Fixes
+
+* **notifications:** only supersede the in-app alert when push is deliverable ([4f45925](https://github.com/mkuchak/termx/commit/4f45925b7285bdc0f47298ea505570270408a013))
+* **termxd:** catch idle-finishes and unify events.ndjson rotation ([b9e55e6](https://github.com/mkuchak/termx/commit/b9e55e6f009aec4ab2a586c8a29ff5d7dff61f4c))
+* **termxd:** make watch-herdr locate herdr under systemd PATH ([a08323d](https://github.com/mkuchak/termx/commit/a08323dab6c62dea3c532314c1d5bfb587d94b9d))
+
 ## [1.5.0](https://github.com/mkuchak/termx/compare/v1.4.0...v1.5.0) (2026-06-07)
 
 ### Features
