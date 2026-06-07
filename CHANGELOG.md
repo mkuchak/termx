@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/mkuchak/termx/compare/v1.4.0...v1.5.0) (2026-06-07)
+
+### Features
+
+* alert when herdr agents finish, even when app is closed ([7e43899](https://github.com/mkuchak/termx/commit/7e438990c1314bbea23afad2cfc8d544e72ae089))
+* **termxd:** add watch-herdr daemon emitting agent_finished events ([5c8841c](https://github.com/mkuchak/termx/commit/5c8841cff98d28b80d6e0a19bc00474dc0c23d98))
+
 ## [1.4.0](https://github.com/mkuchak/termx/compare/v1.3.4...v1.4.0) (2026-06-07)
 
 ### Features
