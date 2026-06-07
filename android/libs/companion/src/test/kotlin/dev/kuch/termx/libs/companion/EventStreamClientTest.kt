@@ -197,7 +197,7 @@ class EventStreamClientTest {
     }
 
     @Test
-    fun `sendCommand round-trips InjectPrompt payload`() = runTest {
+    fun `sendCommand round-trips DenyPermission payload`() = runTest {
         val session = FakeSshSession()
         session.queueExec("printf %s \"\$HOME\"") {
             FakeExecChannel(stdout = bytesFlowOf("/root"))
@@ -206,10 +206,10 @@ class EventStreamClientTest {
         session.setSftpFactory { sftp }
         val client = EventStreamClient(session)
 
-        val cmd = CompanionCommand.InjectPrompt(
+        val cmd = CompanionCommand.DenyPermission(
             id = "cmd-2",
-            session = "main",
-            text = "hello from phone",
+            requestId = "req-99",
+            reason = "unsafe path",
         )
 
         client.sendCommand(cmd)
@@ -217,9 +217,9 @@ class EventStreamClientTest {
         val bytes = sftp.writes["/root/.termx/commands/cmd-2.json"]
         assertNotNull(bytes)
         val decoded = Json.parseToJsonElement(bytes!!.toString(Charsets.UTF_8)).jsonObject
-        assertEquals("inject_prompt", decoded["type"]?.jsonPrimitive?.content)
-        assertEquals("main", decoded["session"]?.jsonPrimitive?.content)
-        assertEquals("hello from phone", decoded["text"]?.jsonPrimitive?.content)
+        assertEquals("deny_permission", decoded["type"]?.jsonPrimitive?.content)
+        assertEquals("req-99", decoded["request_id"]?.jsonPrimitive?.content)
+        assertEquals("unsafe path", decoded["reason"]?.jsonPrimitive?.content)
     }
 
     @Test
@@ -233,10 +233,9 @@ class EventStreamClientTest {
         val client = EventStreamClient(session)
 
         client.sendCommand(
-            CompanionCommand.InjectPrompt(
+            CompanionCommand.ApprovePermission(
                 id = "cmd-atomic",
-                session = "main",
-                text = "atomic",
+                requestId = "req-atomic",
             ),
         )
 

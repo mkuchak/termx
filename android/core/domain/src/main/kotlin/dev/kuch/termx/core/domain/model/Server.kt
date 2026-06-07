@@ -27,8 +27,14 @@ data class Server(
     val passwordAlias: String? = null,
     val groupId: UUID?,
     val useMosh: Boolean = true,
-    val autoAttachTmux: Boolean = true,
-    val tmuxSessionName: String = "main",
+    /**
+     * When enabled, [startupCommand] is sent to the remote shell immediately
+     * after the session opens — a generic hook the user can point at a
+     * multiplexer (tmux/zellij/screen) or any other command. Off by default.
+     */
+    val startupCommandEnabled: Boolean = false,
+    /** Free-text command run on connect when [startupCommandEnabled]. */
+    val startupCommand: String = "",
     val lastConnected: Instant?,
     val pingMs: Int?,
     val sortOrder: Int = 0,

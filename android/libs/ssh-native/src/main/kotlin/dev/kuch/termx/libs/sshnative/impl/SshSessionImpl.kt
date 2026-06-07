@@ -38,10 +38,10 @@ internal class SshSessionImpl(
                         val shell = session.startShell()
                         PtyChannelImpl(session, shell = shell, command = null)
                     } else {
-                        // Exec-with-PTY: tmux new-session -A etc. The PTY was
-                        // allocated on the same sshj Session right above, so
-                        // the remote process gets a real TTY — interactive
-                        // programs like tmux and vim behave correctly.
+                        // Exec-with-PTY. The PTY was allocated on the same
+                        // sshj Session right above, so the remote process
+                        // gets a real TTY — interactive full-screen programs
+                        // like vim behave correctly.
                         val cmd = session.exec(command)
                         PtyChannelImpl(session, shell = null, command = cmd)
                     }

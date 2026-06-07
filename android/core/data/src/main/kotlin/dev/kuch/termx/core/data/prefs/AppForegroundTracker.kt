@@ -12,10 +12,9 @@ import javax.inject.Singleton
  * Process-wide foreground/background signal exposed as a StateFlow.
  *
  * Registered against `ProcessLifecycleOwner` in
- * [dev.kuch.termx.TermxApplication.onCreate]. Consumers (e.g. the tmux
- * session poller in [dev.kuch.termx.core.data.remote.TmuxSessionRepositoryImpl])
- * read [isForeground] to throttle background work — 30 s polling in the
- * foreground, 5 min in the background.
+ * [dev.kuch.termx.TermxApplication.onCreate]. Consumers read [isForeground]
+ * to throttle background work — polling faster in the foreground and
+ * backing off when the app is backgrounded.
  *
  * The StateFlow starts `false`; `ProcessLifecycleOwner.onStart` fires on
  * the first Activity start (which happens immediately after Hilt wires

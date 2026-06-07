@@ -29,9 +29,9 @@ import dev.kuch.termx.core.domain.theme.TerminalTheme
  * triggered by an escape sequence — `ESC c` (RIS), `ESC [!p` (DECSTR),
  * `OSC 104` (palette reset), `OSC 110/111/112` (fg/bg/cursor reset) —
  * restores the theme instead of stock xterm. Without this step, a
- * single `tmux detach`, `:colorscheme default` in vim, or a `reset`
- * call from the user's shell would silently flip the live palette
- * back to xterm defaults.
+ * single `:colorscheme default` in vim or a `reset`/`clear` call from
+ * the user's shell would silently flip the live palette back to xterm
+ * defaults.
  *
  * [apply] is the live-paint variant for runtime theme changes after a
  * session is already running. It writes into the live emulator's

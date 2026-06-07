@@ -4,6 +4,7 @@ import androidx.room.testing.MigrationTestHelper
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -20,6 +21,10 @@ import org.robolectric.annotation.Config
  *    passwords can round-trip via the Keystore-backed vault.
  *  - v3 to v4 drops the (always-orphaned) `custom_themes` table when
  *    shipping Sorcerer as the only theme.
+ *  - v4 to v5 drops the `autoAttachTmux` and `tmuxSessionName` columns from
+ *    `servers` after the tmux integration was removed and, in the same
+ *    recreate, adds the generic `startupCommandEnabled` / `startup_command`
+ *    pair (recreate-table migration; `useMosh` and `password_alias` survive).
  *
  * A silent regression here during a user upgrade would wipe their entire
  * Room DB — servers, key pairs, groups, themes and now stored-password
@@ -294,6 +299,86 @@ class MigrationTest {
         assertEquals("prod-web", serverLabel)
         assertEquals(1, keyCount)
         assertEquals(1, groupCount)
+    }
+
+    @Test
+    fun migrate_4_to_5_drops_tmux_columns_and_preserves_rows() {
+        val keyId = "00000000-0000-0000-0000-0000000000d1"
+        val groupId = "00000000-0000-0000-0000-0000000000d2"
+        val serverId = "00000000-0000-0000-0000-0000000000d3"
+
+        // v4 DB — `servers` still carries the tmux columns plus password_alias.
+        helper.createDatabase(dbName, 4).apply {
+            execSQL(
+                "INSERT INTO key_pairs (id, label, algorithm, publicKey, keystoreAlias, createdAt) " +
+                    "VALUES ('$keyId', 'primary', 'ED25519', 'AAAA', 'alias-1', 1700000000000)",
+            )
+            execSQL(
+                "INSERT INTO server_groups (id, name, sortOrder, isCollapsed) " +
+                    "VALUES ('$groupId', 'prod', 0, 0)",
+            )
+            execSQL(
+                "INSERT INTO servers (id, label, host, port, username, authType, keyPairId, groupId, " +
+                    "useMosh, autoAttachTmux, tmuxSessionName, lastConnected, pingMs, sortOrder, " +
+                    "companionInstalled, password_alias) " +
+                    "VALUES ('$serverId', 'prod-web', 'example.com', 22, 'root', 'KEY', " +
+                    "'$keyId', '$groupId', 1, 1, 'main', 1700000000000, 42, 0, 1, NULL)",
+            )
+            close()
+        }
+
+        val db = helper.runMigrationsAndValidate(dbName, 5, true, MIGRATION_4_5)
+
+        // The tmux columns are gone; the surviving columns keep their values.
+        val columns = mutableMapOf<String, Pair<String, Int>>()
+        db.query("PRAGMA table_info(servers)").use { cursor ->
+            while (cursor.moveToNext()) {
+                val name = cursor.getString(1)
+                val type = cursor.getString(2)
+                val notNull = cursor.getInt(3)
+                columns[name] = type to notNull
+            }
+        }
+        assertTrue("autoAttachTmux should be gone", !columns.containsKey("autoAttachTmux"))
+        assertTrue("tmuxSessionName should be gone", !columns.containsKey("tmuxSessionName"))
+        assertEquals("INTEGER" to 1, columns["useMosh"])
+        assertEquals("TEXT" to 0, columns["password_alias"])
+        // The generic startup-command pair lands in the same recreate:
+        // an INTEGER NOT NULL flag and a TEXT NOT NULL command body.
+        assertEquals("INTEGER" to 1, columns["startupCommandEnabled"])
+        assertEquals("TEXT" to 1, columns["startup_command"])
+
+        // The existing row survives the recreate, including useMosh + FK column,
+        // and picks up the new columns' DEFAULTs (0 / '').
+        db.query(
+            "SELECT label, host, useMosh, keyPairId, groupId, password_alias, " +
+                "startupCommandEnabled, startup_command FROM servers " +
+                "WHERE id = '$serverId'",
+        ).use {
+            assertTrue(it.moveToFirst())
+            assertEquals("prod-web", it.getString(0))
+            assertEquals("example.com", it.getString(1))
+            assertEquals(1, it.getInt(2))
+            assertEquals(keyId, it.getString(3))
+            assertEquals(groupId, it.getString(4))
+            assertTrue("expected NULL password_alias", it.isNull(5))
+            assertEquals("startupCommandEnabled should default to 0", 0, it.getInt(6))
+            assertEquals("startup_command should default to ''", "", it.getString(7))
+        }
+
+        // Querying a dropped column must now fail — proves the columns are gone.
+        try {
+            db.query("SELECT autoAttachTmux FROM servers").use { it.moveToFirst() }
+            fail("expected query on dropped autoAttachTmux column to fail")
+        } catch (expected: Exception) {
+            // SQLite raises "no such column" — exactly what we want.
+        }
+        try {
+            db.query("SELECT tmuxSessionName FROM servers").use { it.moveToFirst() }
+            fail("expected query on dropped tmuxSessionName column to fail")
+        } catch (expected: Exception) {
+            // no such column
+        }
     }
 
     @Test

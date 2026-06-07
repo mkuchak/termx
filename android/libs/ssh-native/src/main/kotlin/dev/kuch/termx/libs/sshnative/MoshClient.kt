@@ -42,11 +42,13 @@ open class MoshClient @Inject constructor(
         bindIp: String = "0.0.0.0",
         portRange: String = "60000:60010",
         handshakeTimeoutMs: Long = 8_000,
+        startupCommand: String? = null,
     ): MoshSession? = MoshClientImpl(context, sshClient).tryConnect(
         target = target,
         auth = auth,
         bindIp = bindIp,
         portRange = portRange,
         handshakeTimeoutMs = handshakeTimeoutMs,
+        startupCommand = startupCommand,
     )
 }

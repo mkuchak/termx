@@ -124,8 +124,8 @@ class AddEditServerViewModel @Inject constructor(
                             passwordVaultLocked = vaultLocked,
                             selectedGroupId = server.groupId,
                             useMosh = server.useMosh,
-                            autoAttachTmux = server.autoAttachTmux,
-                            tmuxSessionName = server.tmuxSessionName,
+                            startupCommandEnabled = server.startupCommandEnabled,
+                            startupCommand = server.startupCommand,
                             isLoading = false,
                         )
                     }
@@ -151,8 +151,8 @@ class AddEditServerViewModel @Inject constructor(
     fun onPasswordChange(v: String) = mutate { copy(password = v, testResult = TestResult.Idle) }
     fun onPasswordVisibilityToggle() = mutate { copy(passwordVisible = !passwordVisible) }
     fun onUseMoshChange(v: Boolean) = mutate { copy(useMosh = v) }
-    fun onAutoAttachTmuxChange(v: Boolean) = mutate { copy(autoAttachTmux = v) }
-    fun onTmuxSessionNameChange(v: String) = mutate { copy(tmuxSessionName = v) }
+    fun onStartupEnabledChange(v: Boolean) = mutate { copy(startupCommandEnabled = v) }
+    fun onStartupCommandChange(v: String) = mutate { copy(startupCommand = v) }
     fun onGroupSelected(id: UUID?) = mutate { copy(selectedGroupId = id) }
 
     private inline fun mutate(block: AddEditServerUiState.() -> AddEditServerUiState) {
@@ -320,8 +320,8 @@ class AddEditServerViewModel @Inject constructor(
             passwordAlias = alias,
             groupId = s.selectedGroupId,
             useMosh = s.useMosh,
-            autoAttachTmux = s.autoAttachTmux,
-            tmuxSessionName = s.tmuxSessionName.ifBlank { "main" },
+            startupCommandEnabled = s.startupCommandEnabled,
+            startupCommand = s.startupCommand,
             lastConnected = existing?.lastConnected,
             pingMs = existing?.pingMs,
             sortOrder = existing?.sortOrder ?: 0,

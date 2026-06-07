@@ -11,8 +11,8 @@ import javax.inject.Singleton
  * The vault (Task #20) doesn't yet persist server passwords — adding that
  * surface needs a migration plus a biometric-gated unlock flow and we
  * haven't shipped either. Until then we need SOMEWHERE to hold a password
- * the user typed so follow-up SSH channels (tmux poll, reconnect after
- * background) don't make them re-enter it.
+ * the user typed so follow-up SSH channels (reconnect after background)
+ * don't make them re-enter it.
  *
  * Values live in-memory for the process lifetime and are **never** written
  * to disk. A process kill or app reinstall clears the cache; that's the

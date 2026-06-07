@@ -31,13 +31,9 @@ import kotlinx.coroutines.launch
  * Orchestrates the wizard-driven termxd install flow.
  *
  * Each [run] invocation opens a short-lived [SshSession] for the stage, then
- * closes it. We don't piggyback on `TmuxSessionRepositoryImpl`'s cache because
- *
- *  1. the wizard runs before the server has been persisted's `autoAttachTmux`
- *     path fires, so nothing has pre-warmed a session for this server;
- *  2. reusing the tmux cache would require exposing it as a public API, and
- *     the install flow is at most three round-trips per stage — a fresh
- *     session is cheap enough.
+ * closes it. The install flow is at most three round-trips per stage, so a
+ * fresh session per stage is cheap enough and keeps the wizard independent of
+ * any longer-lived connection cache.
  *
  *  The impl is public + non-`internal` so Hilt's `@Binds` can resolve the
  *  domain interface against it (mirrors the fix documented in commit 074cb68).

@@ -9,8 +9,8 @@ import org.junit.Test
  * specific bytes here are load-bearing:
  *
  *  - We send `\r` (CR / 0x0D) for Enter, never `\n` (LF / 0x0A). LF
- *    renders as a literal newline glyph in raw-mode shells over
- *    tmux/mosh and doesn't submit the line. v1.1.10–v1.1.11 shipped
+ *    renders as a literal newline glyph in raw-mode shells (including
+ *    over mosh) and doesn't submit the line. v1.1.10–v1.1.11 shipped
  *    LF and the user reported "Send doesn't fire Enter."
  *  - Embedded `\n`s (from pressing Enter inside the editable transcript
  *    field) get the same treatment so multi-line dictation runs each

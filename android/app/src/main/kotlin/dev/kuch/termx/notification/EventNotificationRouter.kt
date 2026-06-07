@@ -284,7 +284,7 @@ class EventNotificationRouter @Inject constructor(
         val notification = NotificationCompat.Builder(context, NotificationChannels.DISCONNECT)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Session dropped — $serverLabel")
-            .setContentText("tmux session ${event.session} disconnected")
+            .setContentText("Session ${event.session} disconnected")
             .setCategory(NotificationCompat.CATEGORY_ERROR)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(openIntent)

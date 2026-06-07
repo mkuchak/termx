@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
  * Commands the phone writes back to the VPS as JSON files in
  * `~/.termx/commands/<id>.json`. `termxd` polls that directory, processes
  * each file, then deletes it; the resulting state change (a permission
- * resolution, an injected prompt) surfaces back to the phone via the
+ * resolution) surfaces back to the phone via the
  * [TermxEvent] stream so every channel flows through the same tail.
  *
  * Wire format: JSON with a top-level `type` discriminator matching the
@@ -18,8 +18,6 @@ import kotlinx.serialization.Serializable
  * Subclasses:
  *  - [ApprovePermission]: resolves a pending PreToolUse request (Phase 5).
  *  - [DenyPermission]: counterpart for a rejection.
- *  - [InjectPrompt]: injects text into a running tmux session's PTY
- *    (used by push-to-talk in Phase 6, but also by generic "send" flows).
  */
 @Serializable
 sealed class CompanionCommand {
@@ -52,19 +50,6 @@ sealed class CompanionCommand {
         override val id: String,
         @SerialName("request_id") val requestId: String,
         val reason: String? = null,
-    ) : CompanionCommand()
-
-    /**
-     * Inject [text] verbatim into the PTY of the named tmux [session]
-     * (equivalent to `tmux send-keys -t <session> <text> Enter` on the
-     * server side). Used by the PTT flow to deliver transcribed audio.
-     */
-    @Serializable
-    @SerialName("inject_prompt")
-    data class InjectPrompt(
-        override val id: String,
-        val session: String,
-        val text: String,
     ) : CompanionCommand()
 
     /**

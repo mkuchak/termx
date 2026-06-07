@@ -50,7 +50,7 @@ internal class PtyChannelImpl(
             // `send` (not `trySend`) so the producer suspends when the
             // collector falls behind. With trySend the default RENDEZVOUS
             // channel silently drops frames when the emulator coroutine
-            // is slower than the shell — a tmux full-screen repaint
+            // is slower than the shell — a full-screen TUI repaint
             // would lose cells and the UI would look stale forever. A
             // suspending producer is the correct back-pressure story for
             // a stream where "every byte matters".

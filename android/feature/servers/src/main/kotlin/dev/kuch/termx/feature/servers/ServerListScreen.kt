@@ -184,7 +184,7 @@ fun ServerListScreen(
             onRefresh = {
                 // Phase 2 stub: flip a flag so the spinner renders for a
                 // frame, then settle. Phase 3 will trigger a real ping
-                // pass here via the tmux/ssh refresh machinery.
+                // pass here via the ssh refresh machinery.
                 scope.launch {
                     isRefreshing = true
                     viewModel.onRefresh()

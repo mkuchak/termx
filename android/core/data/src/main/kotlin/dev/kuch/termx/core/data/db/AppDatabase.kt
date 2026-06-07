@@ -25,6 +25,12 @@ import dev.kuch.termx.core.data.db.entity.ServerGroupEntity
  *   round-trip via [dev.kuch.termx.core.data.vault.SecretVault].
  * - v4: drops the (always-orphaned) `custom_themes` table when shipping
  *   Sorcerer as the only theme.
+ * - v5: drops the `autoAttachTmux` and `tmuxSessionName` columns from
+ *   `servers` after tmux integration was removed; termx is now a plain-
+ *   shell terminal. The same recreate adds the generic
+ *   `startupCommandEnabled` / `startup_command` pair — an optional command
+ *   sent to the shell on connect. Recreate-table migration since minSdk
+ *   28's SQLite predates `ALTER TABLE ... DROP COLUMN`.
  */
 @Database(
     entities = [
@@ -32,7 +38,7 @@ import dev.kuch.termx.core.data.db.entity.ServerGroupEntity
         KeyPairEntity::class,
         ServerGroupEntity::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(Converters::class)

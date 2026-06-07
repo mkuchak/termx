@@ -18,8 +18,8 @@ import javax.inject.Inject
  * Registers two process-wide lifecycle observers against
  * [ProcessLifecycleOwner]:
  *  - [VaultLifecycleObserver] drives the vault auto-lock timer (Task #20).
- *  - [AppForegroundTracker] exposes a StateFlow that the tmux session
- *    poller reads to switch its polling cadence (Task #25).
+ *  - [AppForegroundTracker] exposes a StateFlow of foreground/background
+ *    state that observers read to switch their polling cadence.
  *
  * Also primes [SessionServiceLauncher] so the foreground service spins
  * up the first time a ViewModel registers an active tab (Task #43).

@@ -7,18 +7,16 @@ import kotlinx.serialization.Serializable
 /**
  * Persistent per-session state that `termxd` writes to
  * `~/.termx/sessions/<name>.json`. The phone reads this directory over SFTP
- * to paint the tab bar with richer metadata than `tmux ls` can provide:
- * whether Claude is running, whether Claude is idle/working, whether it's
- * currently blocked on a permission prompt.
+ * to surface richer metadata than the shell alone can provide: whether
+ * Claude is running, whether Claude is idle/working, whether it's currently
+ * blocked on a permission prompt.
  *
- * Note: distinct from `dev.kuch.termx.core.domain.model.TmuxSession` — that
- * one is the plain-tmux flavor (Task #25, no termxd required). This struct
- * exists only when termxd is installed on the VPS, and carries the Claude
- * discriminator plus status enum.
+ * This struct exists only when termxd is installed on the VPS, and carries
+ * the Claude discriminator plus status enum.
  *
  * Status legend:
- *  - `idle`: Claude is running but waiting for a prompt (or plain tmux with
- *    no activity for N seconds).
+ *  - `idle`: Claude is running but waiting for a prompt (or the session has
+ *    had no activity for N seconds).
  *  - `working`: Claude is mid-tool-call, or a long-running shell command is
  *    in flight.
  *  - `awaiting_permission`: Claude's PreToolUse hook is blocked on a

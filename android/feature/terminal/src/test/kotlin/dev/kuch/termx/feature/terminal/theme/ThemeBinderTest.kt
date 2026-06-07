@@ -87,7 +87,7 @@ class ThemeBinderTest {
 
     @Test
     fun `mColors-reset after installAsDefault restores theme not xterm`() {
-        // This is the load-bearing scenario: shells / vim / tmux frequently
+        // This is the load-bearing scenario: shells / vim frequently
         // emit reset escapes (RIS, DECSTR, OSC 104, OSC 110/111/112) which
         // call mColors.reset() on the live emulator. Reset reads from the
         // STATIC mDefaultColors — so a per-session-only fix would let the

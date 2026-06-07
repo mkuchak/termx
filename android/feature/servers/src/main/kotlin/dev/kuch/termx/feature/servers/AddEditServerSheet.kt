@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -18,6 +19,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -26,6 +28,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -48,6 +51,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -58,6 +63,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.kuch.termx.core.domain.model.AuthType
 import kotlinx.coroutines.launch
 import java.util.UUID
+
+/**
+ * One-tap presets for the "Run command on connect" field. Each chip FILLS the
+ * (still-editable) command field with its value. Ordered most-common first.
+ */
+private val STARTUP_PRESETS: List<Pair<String, String>> = listOf(
+    "herdr" to "herdr",
+    "tmux" to "tmux new-session -A -s main",
+    "zellij" to "zellij attach --create main",
+    "screen" to "screen -DR main",
+)
 
 /**
  * Modal bottom sheet that adds a new [dev.kuch.termx.core.domain.model.Server]
@@ -115,8 +131,8 @@ fun AddEditServerSheet(
             onPasswordChange = viewModel::onPasswordChange,
             onPasswordVisibilityToggle = viewModel::onPasswordVisibilityToggle,
             onUseMoshChange = viewModel::onUseMoshChange,
-            onAutoAttachTmuxChange = viewModel::onAutoAttachTmuxChange,
-            onTmuxSessionNameChange = viewModel::onTmuxSessionNameChange,
+            onStartupEnabledChange = viewModel::onStartupEnabledChange,
+            onStartupCommandChange = viewModel::onStartupCommandChange,
             onGroupSelected = viewModel::onGroupSelected,
             onManageKeys = {
                 // Task #23: route to the keys screen. Callers that don't
@@ -217,8 +233,8 @@ private fun AddEditServerSheetContent(
     onPasswordChange: (String) -> Unit,
     onPasswordVisibilityToggle: () -> Unit,
     onUseMoshChange: (Boolean) -> Unit,
-    onAutoAttachTmuxChange: (Boolean) -> Unit,
-    onTmuxSessionNameChange: (String) -> Unit,
+    onStartupEnabledChange: (Boolean) -> Unit,
+    onStartupCommandChange: (String) -> Unit,
     onGroupSelected: (UUID?) -> Unit,
     onManageKeys: () -> Unit,
     onTestConnection: () -> Unit,
@@ -346,20 +362,54 @@ private fun AddEditServerSheetContent(
             checked = state.useMosh,
             onCheckedChange = onUseMoshChange,
         )
+
+        Spacer(Modifier.height(8.dp))
+
         SwitchRow(
-            label = "Auto-attach tmux on connect",
-            checked = state.autoAttachTmux,
-            onCheckedChange = onAutoAttachTmuxChange,
+            label = "Run command on connect",
+            checked = state.startupCommandEnabled,
+            onCheckedChange = onStartupEnabledChange,
         )
 
-        if (state.autoAttachTmux) {
+        if (state.startupCommandEnabled) {
             Spacer(Modifier.height(8.dp))
+
             OutlinedTextField(
-                value = state.tmuxSessionName,
-                onValueChange = onTmuxSessionNameChange,
-                label = { Text("tmux session name") },
+                value = state.startupCommand,
+                onValueChange = onStartupCommandChange,
+                label = { Text("Command") },
+                placeholder = { Text("herdr") },
                 singleLine = true,
+                textStyle = LocalTextStyle.current.copy(fontFamily = FontFamily.Monospace),
+                keyboardOptions = KeyboardOptions(
+                    autoCorrectEnabled = false,
+                    capitalization = KeyboardCapitalization.None,
+                ),
                 modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                STARTUP_PRESETS.forEach { (preset, command) ->
+                    AssistChip(
+                        onClick = { onStartupCommandChange(command) },
+                        label = { Text(preset) },
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            Text(
+                text = "Runs in a login shell when the session opens (SSH and mosh).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
@@ -642,8 +692,8 @@ private fun AddEditServerSheetContentPreview() {
             username = "ubuntu",
             authType = AuthType.KEY,
             useMosh = true,
-            autoAttachTmux = true,
-            tmuxSessionName = "main",
+            startupCommandEnabled = true,
+            startupCommand = "tmux new-session -A -s main",
             testResult = TestResult.Idle,
         ),
         onLabelChange = {},
@@ -655,8 +705,8 @@ private fun AddEditServerSheetContentPreview() {
         onPasswordChange = {},
         onPasswordVisibilityToggle = {},
         onUseMoshChange = {},
-        onAutoAttachTmuxChange = {},
-        onTmuxSessionNameChange = {},
+        onStartupEnabledChange = {},
+        onStartupCommandChange = {},
         onGroupSelected = {},
         onManageKeys = {},
         onTestConnection = {},

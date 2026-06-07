@@ -44,9 +44,10 @@ internal class MoshClientImpl(
         bindIp: String,
         portRange: String,
         handshakeTimeoutMs: Long,
+        startupCommand: String? = null,
     ): MoshSession? {
         val handshake = withTimeoutOrNull(handshakeTimeoutMs) {
-            handshake(target, auth, bindIp, portRange)
+            handshake(target, auth, bindIp, portRange, startupCommand)
         } ?: return null
 
         return spawnMoshClient(target.host, handshake.port, handshake.key)
@@ -61,10 +62,11 @@ internal class MoshClientImpl(
         auth: SshAuth,
         bindIp: String,
         portRange: String,
+        startupCommand: String?,
     ): Handshake? = withContext(Dispatchers.IO) {
         val session: SshSession = sshClient.connect(target, auth)
         try {
-            val cmd = "mosh-server new -s -c 256 -i $bindIp -p $portRange"
+            val cmd = moshServerCommand(bindIp, portRange, startupCommand)
             session.openExec(cmd).use { exec ->
                 val stdout = StringBuilder()
                 var handshake: Handshake? = null
@@ -168,10 +170,37 @@ internal class MoshClientImpl(
     /** Alias used at the throw site to keep the name grammatical. */
     private val HandshakeFound: HandshakeFoundException get() = HandshakeFoundException
 
-    private companion object {
+    internal companion object {
         const val LOG_TAG = "MoshClientImpl"
         const val MOSH_CLIENT_SO = "libmoshclient.so"
         val MOSH_CONNECT_REGEX = Regex("""MOSH CONNECT (\d+) (\S+)""")
+
+        /**
+         * Build the server-side bootstrap line that termx runs over SSH:
+         * `mosh-server new -s -c 256 -i <bindIp> -p <portRange>`.
+         *
+         * When [startupCommand] is non-null and non-blank, mosh-server is
+         * told to run it instead of the login shell by appending
+         * `-- <startupCommand>`. The command is appended VERBATIM: it
+         * arrives already wrapped by the caller (e.g.
+         * `${'$'}{SHELL:-/bin/sh} -lc '…'`) and the remote SSH login shell
+         * that parses this whole line is what expands `${'$'}{SHELL}` and
+         * strips the single quotes before mosh-server execvp's the argv.
+         * Re-quoting or escaping here would break that. Pure + side-effect
+         * free so it can be unit-tested on the JVM.
+         */
+        internal fun moshServerCommand(
+            bindIp: String,
+            portRange: String,
+            startupCommand: String?,
+        ): String {
+            val base = "mosh-server new -s -c 256 -i $bindIp -p $portRange"
+            return if (!startupCommand.isNullOrBlank()) {
+                "$base -- $startupCommand"
+            } else {
+                base
+            }
+        }
 
         // Reasonable default geometry for the initial pty size. The
         // composable-side emulator calls resize() with the real cell

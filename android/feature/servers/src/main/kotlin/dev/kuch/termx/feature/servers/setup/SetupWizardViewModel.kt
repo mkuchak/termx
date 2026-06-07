@@ -116,8 +116,8 @@ class SetupWizardViewModel @Inject constructor(
     fun onKeyPairSelected(id: UUID?) = mutateResetTest { copy(draft = draft.copy(keyPairId = id)) }
     fun onPasswordChange(v: String) = mutateResetTest { copy(draft = draft.copy(password = v)) }
     fun onUseMoshChange(v: Boolean) = mutate { copy(draft = draft.copy(useMosh = v)) }
-    fun onAutoAttachTmuxChange(v: Boolean) = mutate { copy(draft = draft.copy(autoAttachTmux = v)) }
-    fun onTmuxSessionNameChange(v: String) = mutate { copy(draft = draft.copy(tmuxSessionName = v)) }
+    fun onStartupEnabledChange(v: Boolean) = mutate { copy(draft = draft.copy(startupCommandEnabled = v)) }
+    fun onStartupCommandChange(v: String) = mutate { copy(draft = draft.copy(startupCommand = v)) }
     fun onGroupSelected(id: UUID?) = mutate { copy(draft = draft.copy(groupId = id)) }
 
     private inline fun mutate(block: SetupWizardUiState.() -> SetupWizardUiState) {
@@ -510,8 +510,8 @@ data class ServerDraft(
     val keyPairId: UUID? = null,
     val password: String = "",
     val useMosh: Boolean = true,
-    val autoAttachTmux: Boolean = true,
-    val tmuxSessionName: String = "main",
+    val startupCommandEnabled: Boolean = false,
+    val startupCommand: String = "",
     val groupId: UUID? = null,
 ) {
     fun toServer(id: UUID = UUID.randomUUID()): Server = Server(
@@ -524,8 +524,8 @@ data class ServerDraft(
         keyPairId = if (authType == AuthType.KEY) keyPairId else null,
         groupId = groupId,
         useMosh = useMosh,
-        autoAttachTmux = autoAttachTmux,
-        tmuxSessionName = tmuxSessionName.ifBlank { "main" },
+        startupCommandEnabled = startupCommandEnabled,
+        startupCommand = startupCommand,
         lastConnected = null,
         pingMs = null,
         sortOrder = Int.MAX_VALUE,

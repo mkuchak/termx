@@ -256,8 +256,6 @@ private fun ServerCardPreview() {
             keyPairId = null,
             groupId = null,
             useMosh = true,
-            autoAttachTmux = true,
-            tmuxSessionName = "main",
             lastConnected = Instant.now().minusSeconds(180),
             pingMs = 42,
             sortOrder = 0,

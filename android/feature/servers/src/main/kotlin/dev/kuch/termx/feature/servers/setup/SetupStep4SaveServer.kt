@@ -101,8 +101,9 @@ fun SetupStep4SaveServer(
             title = "Session",
             rows = listOf(
                 "Use mosh" to if (state.draft.useMosh) "Yes" else "No",
-                "Auto-attach tmux" to if (state.draft.autoAttachTmux) "Yes" else "No",
-                "tmux session" to state.draft.tmuxSessionName.ifBlank { "main" },
+                "On connect" to (
+                    if (state.draft.startupCommandEnabled) state.draft.startupCommand else "(none)"
+                    ),
                 "Group" to (
                     state.availableGroups.firstOrNull { it.id == state.draft.groupId }?.name
                         ?: "Ungrouped"

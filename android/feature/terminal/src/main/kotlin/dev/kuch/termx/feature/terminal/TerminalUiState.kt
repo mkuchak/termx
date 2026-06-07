@@ -6,33 +6,20 @@ import java.util.UUID
 /**
  * View-facing state for `TerminalScreen`.
  *
- * Task #15 shipped a sealed hierarchy (`Idle`, `Connecting`,
- * `Connected(session)`, `Error`, `Disconnected`); Task #26 flattens that
- * into a single data class because the multi-session tab bar needs to
- * render concurrent per-status fields — e.g. one tab active-and-connected
- * while another is still spinning up. The status enum absorbs what the
- * old sealed interface carried.
+ * Each connection is backed by a single plain login shell, so this is a
+ * flat data class rather than a sealed hierarchy: [status] carries the
+ * lifecycle that an `Idle`/`Connecting`/`Connected`/`Error`/`Disconnected`
+ * sealed interface used to.
  *
  *  - [status] drives the whole-screen chrome (connecting spinner,
  *    disconnected banner, error pane).
  *  - [activeSession] is the Termux [TerminalSession] currently bound
  *    to the on-screen [com.termux.view.TerminalView]. Null when we
- *    haven't opened any PTY yet (pre-connect or mid-swap). The
- *    concrete subclass is either
- *    [com.termux.terminal.RemoteTerminalSession] (sshj PTY) or
+ *    haven't opened the PTY yet (pre-connect). The concrete subclass is
+ *    either [com.termux.terminal.RemoteTerminalSession] (sshj PTY) or
  *    [com.termux.terminal.MoshRemoteTerminalSession] (local
  *    mosh-client process) depending on which transport won the
  *    Phase 3 handshake race.
- *  - [activeTabName] is the tmux session name the active PTY attached
- *    to. Drives the tab-bar highlight.
- *  - [openTabs] is the set of tmux session names we currently have an
- *    open [dev.kuch.termx.libs.sshnative.PtyChannel] for. Used to gate
- *    swipe-up-detach and kill-session affordances.
- *  - [tmuxMissing] surfaces the "we wanted tmux but it's not installed"
- *    banner from the auto-attach path (Task #25).
- *  - [tmuxBacked] is `true` once the initial PTY successfully attached
- *    to a tmux session (Task #28 gate for the copy-mode scrollback
- *    gesture). Mutually exclusive with [tmuxMissing] in practice.
  *  - [moshBacked] is `true` when the active connection is a
  *    mosh-client child process (Phase 3 Task #27). Drives the small
  *    "via mosh" badge / subtitle in the terminal header.
@@ -42,10 +29,6 @@ import java.util.UUID
 data class TerminalUiState(
     val status: Status = Status.Idle,
     val activeSession: TerminalSession? = null,
-    val activeTabName: String? = null,
-    val openTabs: Set<String> = emptySet(),
-    val tmuxMissing: Boolean = false,
-    val tmuxBacked: Boolean = false,
     val moshBacked: Boolean = false,
     val error: String? = null,
     /**

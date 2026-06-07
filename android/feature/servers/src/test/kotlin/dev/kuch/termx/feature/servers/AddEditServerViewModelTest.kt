@@ -97,7 +97,6 @@ class AddEditServerViewModelTest {
             persisted.label,
             persisted.host,
             persisted.username,
-            persisted.tmuxSessionName,
         )
         assertFalse(
             "password must not appear in any persisted string field",

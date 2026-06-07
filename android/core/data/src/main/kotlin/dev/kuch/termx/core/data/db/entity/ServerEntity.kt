@@ -50,11 +50,11 @@ data class ServerEntity(
     val keyPairId: UUID?,
     val groupId: UUID?,
     val useMosh: Boolean,
-    val autoAttachTmux: Boolean,
-    val tmuxSessionName: String,
+    val startupCommandEnabled: Boolean = false,
     val lastConnected: Instant?,
     val pingMs: Int?,
     val sortOrder: Int,
     val companionInstalled: Boolean,
     @ColumnInfo(name = "password_alias") val passwordAlias: String? = null,
+    @ColumnInfo(name = "startup_command") val startupCommand: String = "",
 )

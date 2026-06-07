@@ -222,7 +222,7 @@ private fun AddServerPage(
         )
         Spacer(Modifier.height(16.dp))
         Text(
-            text = "Add your first server to start streaming a tmux session from your VPS. The Setup Wizard walks you through host, port, credentials, and an optional termxd install.",
+            text = "Add your first server to start a terminal session on your VPS. The Setup Wizard walks you through host, port, credentials, and an optional termxd install.",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -15,6 +15,7 @@ captures/
 
 # Kotlin
 *.kotlin_module
+.kotlin/
 
 # JetBrains
 .idea/

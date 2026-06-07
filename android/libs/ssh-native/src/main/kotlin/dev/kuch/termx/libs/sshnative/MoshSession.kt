@@ -13,8 +13,8 @@ import kotlinx.coroutines.flow.StateFlow
  *
  * Unlike [SshSession], a mosh session is single-channel by design — one
  * process, one PTY, one UDP tuple. Tabs that want a second remote shell
- * either piggy-back on tmux inside the same mosh session or open a
- * fresh [MoshSession] from a fresh [MoshClient.tryConnect].
+ * either piggy-back on a multiplexer inside the same mosh session or open
+ * a fresh [MoshSession] from a fresh [MoshClient.tryConnect].
  */
 interface MoshSession : AutoCloseable {
     /** Cold Flow of raw bytes emitted by the local mosh-client stdout. */

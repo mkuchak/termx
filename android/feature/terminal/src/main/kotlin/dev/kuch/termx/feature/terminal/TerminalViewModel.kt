@@ -22,7 +22,6 @@ import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
-import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
 import dev.kuch.termx.libs.sshnative.MoshClient
 import dev.kuch.termx.libs.sshnative.MoshSession
 import dev.kuch.termx.libs.sshnative.PtyChannel
@@ -30,11 +29,9 @@ import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
 import dev.kuch.termx.libs.sshnative.SshSession
 import dev.kuch.termx.libs.sshnative.SshTarget
-import dev.kuch.termx.libs.sshnative.tmuxAutoAttachCommand
 import java.io.FileNotFoundException
 import java.time.Instant
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -50,25 +47,13 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 /**
- * Owns the live SSH transport plus one [PtyChannel] per open tmux tab.
+ * Owns the live SSH (or mosh) transport plus the single [PtyChannel]
+ * backing this connection's plain login shell.
  *
- * Task #15 shipped a single-PTY VM; Task #26 extends it to a
- * `Map<String, SessionPty>` keyed by tmux session name so tab swaps
- * don't tear down the remote shell. Closed tabs (user-initiated
- * detach or kill) drop their entry; switching back to a detached tab
- * opens a fresh `tmux attach-session -t '<name>'`.
- *
- * Important invariants:
- *  - One [SshSession] is shared across every tab on this server.
- *    `cleanupQuietly()` closes the session, which implicitly closes
- *    every [PtyChannel] under it.
- *  - Each [SessionPty] holds its own [RemoteTerminalSession] +
- *    [TerminalEmulator] so scrollback / cursor state survives a tab
- *    swap (memory-cap is a follow-up — see Task #54 / the roadmap
- *    Phase 3.2 notes).
- *  - Only the tab named by [uiState.activeTabName] is bound to the
- *    Android `TerminalView`; the others keep feeding their emulators
- *    in the background so re-binding on swap shows up-to-date output.
+ * Each connection is one [SshSession] feeding one [SessionPty]. Closing
+ * the session via `cleanupQuietly()` implicitly closes the [PtyChannel]
+ * under it; the [SessionPty] holds the [RemoteTerminalSession] +
+ * emulator bound to the on-screen `TerminalView`.
  */
 /**
  * Thrown by `resolveConnection` when the selected server uses password auth
@@ -119,19 +104,17 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * One open tab. [outputJob] collects the transport's byte stream
-     * into [emulator] until the channel ends or we cancel it; dropping
-     * the tab cancels the job and closes the transport handle.
+     * The single open shell. [outputJob] collects the transport's byte
+     * stream into [emulator] until the channel ends or we cancel it;
+     * tearing the session down cancels the job and closes the transport
+     * handle.
      *
      * Either [pty] (sshj PTY) or [moshSession] (local mosh-client
-     * process) is non-null — never both, never neither. The mosh path
-     * is single-channel, so a mosh-backed connection has exactly one
-     * tab for now; multi-tab multiplexing still happens via tmux
-     * running inside the mosh session.
+     * process) is non-null — never both, never neither.
      *
      * [serverIdForRegistry] + [serverLabel] mirror what we pushed into
      * [SessionRegistry] on open so the matching unregister call can be
-     * made from [detachTab] / [cleanupQuietly] without another repo hit.
+     * made from [cleanupQuietly] without another repo hit.
      */
     private data class SessionPty(
         val name: String,
@@ -172,17 +155,6 @@ class TerminalViewModel @Inject constructor(
     val writeErrors: SharedFlow<String> = _writeErrors.asSharedFlow()
 
     /**
-     * Task #28 — true between the two-finger scrollback gesture entering
-     * tmux `copy-mode` (prefix `[`) and the `q` keystroke that exits it.
-     * The gesture layer flips this on pointerDown, forwards drag deltas
-     * as arrow keys, then flips it off on pointerUp. Kept as a StateFlow
-     * so future UI (e.g. a "copy-mode" chip) can observe it without
-     * coupling to the gesture handler.
-     */
-    private val _inCopyMode = MutableStateFlow(false)
-    val inCopyMode: StateFlow<Boolean> = _inCopyMode.asStateFlow()
-
-    /**
      * Currently-selected terminal font size in sp. Read eagerly so the
      * first composition of [dev.kuch.termx.feature.terminal.TerminalScreen]
      * doesn't flicker from the Room/DataStore default of 14.
@@ -193,7 +165,7 @@ class TerminalViewModel @Inject constructor(
     private var currentServerId: UUID? = null
     /**
      * Cached display label + stable UUID for the active connection, used
-     * to tag every tab pushed into [SessionRegistry]. The stable UUID is
+     * to tag the session pushed into [SessionRegistry]. The stable UUID is
      * the persisted server id when we have one, or [FALLBACK_SERVER_ID]
      * for the BuildConfig test-server path — either way the registry
      * (and the service's notification) sees a consistent key.
@@ -203,15 +175,14 @@ class TerminalViewModel @Inject constructor(
     private var sshClient: SshClient? = null
     private var sshSession: SshSession? = null
 
-    private val tabs = ConcurrentHashMap<String, SessionPty>()
+    /** The single open shell for this connection, or null when down. */
+    private var activeShell: SessionPty? = null
 
     private var connectJob: Job? = null
 
     /**
      * Start a connection. Idempotent across Connecting/Connected. Sets
-     * up the shared [SshSession] and opens the first PTY against the
-     * tmux session declared on the server row (creating-if-needed via
-     * `tmux new-session -A`).
+     * up the [SshSession] and opens a single plain login shell.
      */
     fun connect(serverId: UUID?) {
         val s = _state.value.status
@@ -242,8 +213,6 @@ class TerminalViewModel @Inject constructor(
                         status = TerminalUiState.Status.Disconnected,
                         error = t.message ?: "connection failed",
                         activeSession = null,
-                        activeTabName = null,
-                        openTabs = emptySet(),
                     )
                 }
         }
@@ -306,32 +275,36 @@ class TerminalViewModel @Inject constructor(
         currentServerRegistryId = server?.id ?: FALLBACK_SERVER_ID
         currentServerLabel = server?.label ?: "Test server"
 
+        // Optional "run a command on connect" — same wire string for both
+        // transports (SSH execs it with a PTY; the mosh path appends it
+        // after `mosh-server new … --`). null when disabled/blank, which
+        // falls back to a plain login shell on either path.
+        val startup = buildStartupCommand(
+            server?.startupCommandEnabled == true,
+            server?.startupCommand ?: "",
+        )
+
         // Phase 3 mosh race. If the Server row opts into mosh, try the
         // mosh-server handshake first with an 8s cap; if that returns
         // null (server missing, UDP blocked, timeout), fall through to
-        // the sshj PTY path below. Mosh is single-channel so it opens
-        // exactly one tab; multi-session needs are handled by tmux
-        // running inside the mosh session on the remote.
+        // the sshj PTY path below.
         if (server?.useMosh == true) {
             val mosh = runCatching {
                 moshClient.tryConnect(
                     target = target,
                     auth = auth,
                     handshakeTimeoutMs = MOSH_HANDSHAKE_TIMEOUT_MS,
+                    startupCommand = startup,
                 )
             }.onFailure { Log.w(LOG_TAG, "mosh tryConnect threw", it) }
                 .getOrNull()
 
             if (mosh != null) {
-                val tab = openMoshTab(mosh, server.tmuxSessionName)
+                val shell = openMoshTab(mosh)
                 touchLastConnected(server.id)
                 _state.value = _state.value.copy(
                     status = TerminalUiState.Status.Connected,
-                    activeSession = tab.emulator,
-                    activeTabName = tab.name,
-                    openTabs = tabs.keys.toSet(),
-                    tmuxMissing = false,
-                    tmuxBacked = server.autoAttachTmux,
+                    activeSession = shell.emulator,
                     moshBacked = true,
                     error = null,
                 )
@@ -341,8 +314,8 @@ class TerminalViewModel @Inject constructor(
         }
 
         val client = SshClient().also { sshClient = it }
-        val session = client.connect(target, auth)
-        sshSession = session
+        val sshSession = client.connect(target, auth)
+        this.sshSession = sshSession
 
         // Publish the live session so `EventNotificationRouter` (and any
         // future consumer) can tail `events.ndjson` without coordinating
@@ -351,26 +324,14 @@ class TerminalViewModel @Inject constructor(
         eventStreamHub.publish(
             serverId = currentServerRegistryId,
             serverLabel = currentServerLabel,
-            client = eventStreamRepository.clientFor(session),
+            client = eventStreamRepository.clientFor(sshSession),
         )
 
-        val wantsTmux = server?.autoAttachTmux == true
-        val tmuxAvailable = if (wantsTmux) probeTmux(session) else true
-        val initialTabName = if (wantsTmux && tmuxAvailable) server!!.tmuxSessionName else DEFAULT_TAB
-        val attachCommand = if (wantsTmux && tmuxAvailable) {
-            tmuxAutoAttachCommand(server!!.tmuxSessionName)
-        } else null
-        val tmuxMissing = wantsTmux && !tmuxAvailable
-
-        val tab = openTab(initialTabName, attachCommand)
+        val shell = openTab(attachCommand = startup)
         server?.id?.let { touchLastConnected(it) }
         _state.value = _state.value.copy(
             status = TerminalUiState.Status.Connected,
-            activeSession = tab.emulator,
-            activeTabName = tab.name,
-            openTabs = tabs.keys.toSet(),
-            tmuxMissing = tmuxMissing,
-            tmuxBacked = wantsTmux && tmuxAvailable,
+            activeSession = shell.emulator,
             moshBacked = false,
             error = null,
         )
@@ -390,90 +351,23 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * Switch to an already-open tab or open a fresh `tmux attach-session`
-     * for [name].
-     *
-     * Open-tab case: just rebind the emulator. The background output
-     * job is still running, so the emulator already has up-to-date
-     * scrollback — the view's `update` callback picks up the new
-     * session reference and re-attaches on the next frame.
-     *
-     * Missing-tab case: we assume the session actually exists on the
-     * remote (the caller is reacting to a tab-bar row that came from
-     * the poller) and open a new PTY attached to it. Failing that,
-     * the PTY open will throw and we surface the error via a snackbar
-     * at the call site.
+     * The remote shell exited (user typed `exit`, transport dropped).
+     * Tear down the single session and transition to Disconnected so the
+     * UI can prompt a reconnect. Idempotent — a late EOF after an
+     * explicit [disconnect] finds no [activeShell] and no-ops.
      */
-    fun selectTab(name: String) {
-        val existing = tabs[name]
-        if (existing != null) {
-            _state.value = _state.value.copy(
-                activeSession = existing.emulator,
-                activeTabName = existing.name,
-                openTabs = tabs.keys.toSet(),
-            )
-            return
-        }
-        val serverId = currentServerId
-        if (sshSession == null) {
-            // Mosh transport is single-channel — no way to open a
-            // second remote shell from the phone once mosh has the
-            // only UDP tuple. Users open more tabs via tmux running
-            // inside the mosh session on the remote.
-            Log.w(LOG_TAG, "selectTab without live ssh session (mosh transport?)")
-            return
-        }
-        viewModelScope.launch {
-            runCatching {
-                val command = "tmux attach-session -t '${name.replace("'", "")}'"
-                openTab(name, command)
-            }.onSuccess { tab ->
-                _state.value = _state.value.copy(
-                    activeSession = tab.emulator,
-                    activeTabName = tab.name,
-                    openTabs = tabs.keys.toSet(),
-                )
-            }.onFailure { t ->
-                Log.w(LOG_TAG, "selectTab failed for $name on $serverId", t)
-                _state.value = _state.value.copy(error = "Couldn't open '$name': ${t.message}")
-            }
-        }
-    }
-
-    /**
-     * Drop the PtyChannel for [name] without killing the remote tmux
-     * session. If the dropped tab was active, we fall back to any
-     * other open tab; otherwise we transition to Disconnected so the
-     * UI can prompt a reconnect.
-     */
-    fun detachTab(name: String) {
-        val tab = tabs.remove(name) ?: return
-        tab.outputJob.cancel()
-        runCatching { tab.pty?.close() }
-        runCatching { tab.moshSession?.close() }
-        notifyTabEmulatorFinished(tab.emulator)
-        sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
-
-        val active = _state.value.activeTabName
-        if (active == name) {
-            val fallback = tabs.values.firstOrNull()
-            if (fallback != null) {
-                _state.value = _state.value.copy(
-                    activeSession = fallback.emulator,
-                    activeTabName = fallback.name,
-                    openTabs = tabs.keys.toSet(),
-                )
-            } else {
-                _state.value = _state.value.copy(
-                    activeSession = null,
-                    activeTabName = null,
-                    openTabs = tabs.keys.toSet(),
-                    status = TerminalUiState.Status.Disconnected,
-                )
-            }
-        } else {
-            _state.value = _state.value.copy(openTabs = tabs.keys.toSet())
-        }
+    private fun onShellFinished() {
+        val shell = activeShell ?: return
+        activeShell = null
+        shell.outputJob.cancel()
+        runCatching { shell.pty?.close() }
+        runCatching { shell.moshSession?.close() }
+        notifyTabEmulatorFinished(shell.emulator)
+        sessionRegistry.unregister(shell.serverIdForRegistry, shell.name)
+        _state.value = _state.value.copy(
+            activeSession = null,
+            status = TerminalUiState.Status.Disconnected,
+        )
     }
 
     /** Clear a one-shot error once the UI has rendered it. */
@@ -520,25 +414,26 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * Open a PTY for [tabName], wiring bytes in both directions into
-     * a fresh [RemoteTerminalSession], and register the tab in
-     * [tabs]. Caller updates UI state.
+     * Open the shell PTY, wiring bytes in both directions into a fresh
+     * [RemoteTerminalSession], and stash it as [activeShell]. Caller
+     * updates UI state. [attachCommand] is the optional remote command
+     * to exec instead of the login shell — always null on the plain
+     * shell path today.
      */
-    private suspend fun openTab(tabName: String, command: String?): SessionPty {
-        val session = sshSession ?: throw IllegalStateException("No live ssh session")
-        val channel = session.openShell(
+    private suspend fun openTab(attachCommand: String?): SessionPty {
+        val sshSession = sshSession ?: throw IllegalStateException("No live ssh session")
+        val channel = sshSession.openShell(
             cols = INITIAL_COLS,
             rows = INITIAL_ROWS,
-            command = command,
+            command = attachCommand,
         )
 
         val sessionClient = SshSessionClient(
             context = appContext,
             onSessionFinished = {
-                // Remote shell exited (user typed `exit`, tmux was
-                // killed, transport dropped). Clean just this tab; the
-                // rest of the transport may still be healthy.
-                detachTab(tabName)
+                // Remote shell exited (user typed `exit`, transport
+                // dropped). Tear the session down.
+                onShellFinished()
             },
         )
         val emulator = RemoteTerminalSession(
@@ -562,12 +457,12 @@ class TerminalViewModel @Inject constructor(
                 channel.output.collect { chunk ->
                     emulator.feedRemoteBytes(chunk)
                 }
-            }.onFailure { t -> Log.w(LOG_TAG, "pty output ended for $tabName", t) }
+            }.onFailure { t -> Log.w(LOG_TAG, "pty output ended", t) }
             emulator.onRemoteSessionClosed()
         }
 
-        val tab = SessionPty(
-            name = tabName,
+        val shell = SessionPty(
+            name = DEFAULT_TAB,
             pty = channel,
             moshSession = null,
             emulator = emulator,
@@ -575,29 +470,27 @@ class TerminalViewModel @Inject constructor(
             serverIdForRegistry = currentServerRegistryId,
             serverLabel = currentServerLabel,
         )
-        tabs[tabName] = tab
+        activeShell = shell
         sessionRegistry.register(
-            serverId = tab.serverIdForRegistry,
-            serverLabel = tab.serverLabel,
-            tabName = tab.name,
+            serverId = shell.serverIdForRegistry,
+            serverLabel = shell.serverLabel,
+            tabName = shell.name,
         )
-        return tab
+        return shell
     }
 
     /**
-     * Wire a live [MoshSession] into a single tab. The mosh transport
-     * is single-channel; any further tabs rely on tmux running inside
-     * the mosh session on the remote.
+     * Wire a live [MoshSession] into the single shell.
      *
      * Resize + keypress bytes go straight into mosh-client's stdin /
      * SIGWINCH path. Output is piped from the child process stdout
      * into the emulator by [outputJob].
      */
-    private fun openMoshTab(session: MoshSession, tabName: String): SessionPty {
+    private fun openMoshTab(session: MoshSession): SessionPty {
         val sessionClient = SshSessionClient(
             context = appContext,
             onSessionFinished = {
-                detachTab(tabName)
+                onShellFinished()
             },
         )
         val emulator = MoshRemoteTerminalSession(
@@ -621,7 +514,7 @@ class TerminalViewModel @Inject constructor(
                 session.output.collect { chunk ->
                     emulator.feedRemoteBytes(chunk)
                 }
-            }.onFailure { t -> Log.w(LOG_TAG, "mosh output ended for $tabName", t) }
+            }.onFailure { t -> Log.w(LOG_TAG, "mosh output ended", t) }
             emulator.onRemoteSessionClosed()
             // mosh-client stdout EOF ⇒ the child process either exited
             // cleanly (user typed `exit` on the remote) or died during
@@ -636,14 +529,12 @@ class TerminalViewModel @Inject constructor(
                     status = TerminalUiState.Status.Disconnected,
                     error = "mosh-client exited after ${diag.elapsedMs}ms (exit ${diag.exitCode}): $reason",
                     activeSession = null,
-                    activeTabName = null,
-                    openTabs = emptySet(),
                 )
             }
         }
 
-        val tab = SessionPty(
-            name = tabName,
+        val shell = SessionPty(
+            name = DEFAULT_TAB,
             pty = null,
             moshSession = session,
             emulator = emulator,
@@ -651,13 +542,13 @@ class TerminalViewModel @Inject constructor(
             serverIdForRegistry = currentServerRegistryId,
             serverLabel = currentServerLabel,
         )
-        tabs[tabName] = tab
+        activeShell = shell
         sessionRegistry.register(
-            serverId = tab.serverIdForRegistry,
-            serverLabel = tab.serverLabel,
-            tabName = tab.name,
+            serverId = shell.serverIdForRegistry,
+            serverLabel = shell.serverLabel,
+            tabName = shell.name,
         )
-        return tab
+        return shell
     }
 
     /**
@@ -754,53 +645,16 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
-     * Task #28 — invoked by the two-finger scroll gesture on the first
-     * drag delta. Enters tmux `copy-mode` on the active PTY and flips
-     * [inCopyMode] so repeated drags don't re-enter. No-op if there's
-     * no active tab or we're already in copy-mode.
-     */
-    fun startCopyMode() {
-        if (_inCopyMode.value) return
-        val active = _state.value.activeTabName ?: return
-        // Only the sshj PTY path has a structural way to send the
-        // tmux copy-mode prefix today. The mosh transport relies on
-        // tmux running inside the mosh session — it already has a
-        // native binding for copy-mode, so the gesture becomes a
-        // no-op rather than double-dispatching the prefix.
-        val channel = tabs[active]?.pty ?: return
-        _inCopyMode.value = true
-        viewModelScope.launch(Dispatchers.IO) {
-            TerminalGestureHandler.enterTmuxCopyMode(channel)
-        }
-    }
-
-    /**
-     * Task #28 — invoked by the gesture's drag-end callback. Sends `q`
-     * to leave tmux `copy-mode` and clears [inCopyMode]. No-op if we
-     * weren't in copy-mode.
-     */
-    fun endCopyMode() {
-        if (!_inCopyMode.value) return
-        _inCopyMode.value = false
-        val active = _state.value.activeTabName ?: return
-        val channel = tabs[active]?.pty ?: return
-        viewModelScope.launch(Dispatchers.IO) {
-            TerminalGestureHandler.exitTmuxCopyMode(channel)
-        }
-    }
-
-    /**
-     * Forward raw bytes to the currently-active PTY. Used by the
-     * extra-keys toolbar and the Volume-Down=Ctrl binding.
+     * Forward raw bytes to the shell PTY. Used by the extra-keys
+     * toolbar and the Volume-Down=Ctrl binding.
      */
     fun writeToPty(bytes: ByteArray) {
         if (bytes.isEmpty()) return
-        val active = _state.value.activeTabName ?: return
-        val tab = tabs[active] ?: return
+        val shell = activeShell ?: return
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                tab.pty?.write(bytes)
-                tab.moshSession?.write(bytes)
+                shell.pty?.write(bytes)
+                shell.moshSession?.write(bytes)
             }.onFailure { t ->
                 Log.w(LOG_TAG, "pty write failed", t)
                 // Best-effort UI signal: don't suspend here, just emit.
@@ -819,8 +673,6 @@ class TerminalViewModel @Inject constructor(
         _state.value = _state.value.copy(
             status = TerminalUiState.Status.Disconnected,
             activeSession = null,
-            activeTabName = null,
-            openTabs = emptySet(),
         )
     }
 
@@ -830,14 +682,14 @@ class TerminalViewModel @Inject constructor(
     }
 
     private fun cleanupQuietly() {
-        tabs.values.forEach { tab ->
-            tab.outputJob.cancel()
-            runCatching { tab.pty?.close() }
-            runCatching { tab.moshSession?.close() }
-            notifyTabEmulatorFinished(tab.emulator)
-            sessionRegistry.unregister(tab.serverIdForRegistry, tab.name)
+        activeShell?.let { shell ->
+            shell.outputJob.cancel()
+            runCatching { shell.pty?.close() }
+            runCatching { shell.moshSession?.close() }
+            notifyTabEmulatorFinished(shell.emulator)
+            sessionRegistry.unregister(shell.serverIdForRegistry, shell.name)
         }
-        tabs.clear()
+        activeShell = null
         // Drop the hub entry before closing the session so any router
         // subscriber cancels its collection first and doesn't get a
         // transient exec failure on the way out.
@@ -851,7 +703,7 @@ class TerminalViewModel @Inject constructor(
      * Both [RemoteTerminalSession] and [MoshRemoteTerminalSession]
      * expose [onRemoteSessionClosed] but don't share a common base
      * method for it — the parent [TerminalSession] doesn't declare the
-     * hook. A tiny when-branch keeps the call site in [detachTab] /
+     * hook. A tiny when-branch keeps the call site in [onShellFinished] /
      * [cleanupQuietly] readable without forcing a shared mini-interface.
      */
     private fun notifyTabEmulatorFinished(emulator: TerminalSession) {
@@ -866,20 +718,6 @@ class TerminalViewModel @Inject constructor(
     }.getOrElse { t ->
         if (t is FileNotFoundException) null else throw t
     }
-
-    /**
-     * Pre-flight check: does `tmux` exist on the remote $PATH?
-     */
-    private suspend fun probeTmux(session: SshSession): Boolean =
-        runCatching {
-            session.openExec("command -v tmux").use { exec ->
-                exec.stdout.collect { /* drain */ }
-                exec.exitCode.await() == 0
-            }
-        }.getOrElse { t ->
-            Log.w(LOG_TAG, "tmux probe failed; falling back to plain shell", t)
-            false
-        }
 
     private companion object {
         const val LOG_TAG = "TerminalViewModel"

@@ -32,7 +32,7 @@ import kotlinx.serialization.json.Json
  *    SFTP channels over it but never closes the session itself.
  *  - [stream] is a cold Flow; nothing happens until a collector subscribes.
  *    It re-opens the tail forever with a 1 s backoff if the exec dies
- *    (network flap, log-rotate, tmux kill of a stray `tail`), until the
+ *    (network flap, log-rotate, a killed stray `tail`), until the
  *    collecting coroutine is cancelled.
  *
  * Resilience characteristics:

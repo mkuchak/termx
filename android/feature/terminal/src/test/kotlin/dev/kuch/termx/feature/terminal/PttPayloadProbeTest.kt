@@ -14,7 +14,7 @@ import org.junit.Test
  * The single absolute invariant we assert: the output bytes for the
  * Send button (appendNewline=true) must NEVER contain a literal LF
  * (0x0A) — that's the byte sequence that, sent to a raw-mode shell
- * over tmux/mosh, produces the "text appears, line breaks, doesn't
+ * (including over mosh), produces the "text appears, line breaks, doesn't
  * execute" symptom v1.1.12 already shipped a fix for. If any of these
  * cases produces an LF, the encoder has a real hole.
  */

@@ -19,7 +19,7 @@ interface SshSession : AutoCloseable {
      *   `session.exec(command)` runs it — the returned [PtyChannel]
      *   behaves identically (bytes, writes, resize) except the remote
      *   process tree is rooted at [command] instead of the user's login
-     *   shell. Used by the tmux auto-attach path (Task #25).
+     *   shell.
      */
     suspend fun openShell(
         term: String = "xterm-256color",

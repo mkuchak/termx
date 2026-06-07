@@ -146,8 +146,6 @@ class ServerDaoTest {
         keyPairId = keyPairId,
         groupId = groupId,
         useMosh = false,
-        autoAttachTmux = false,
-        tmuxSessionName = "main",
         lastConnected = null,
         pingMs = null,
         sortOrder = sortOrder,

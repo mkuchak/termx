@@ -5,6 +5,7 @@ import dev.kuch.termx.core.domain.model.Server
 import dev.kuch.termx.core.domain.model.ServerGroup
 import dev.kuch.termx.core.domain.theme.TerminalTheme
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 /**
  * Plain-JSON shape of a termx configuration bundle (Task #47). Private
@@ -27,6 +28,15 @@ data class ConfigBundle(
 ) {
     companion object {
         const val VERSION: Int = 1
+
+        /**
+         * Serializer for every config bundle read or written by the
+         * export/import flow. `ignoreUnknownKeys` keeps imports
+         * forward/backward compatible: older backups in the wild still
+         * carry retired fields (e.g. the dropped tmux server settings),
+         * and decoding one must not throw.
+         */
+        val JSON: Json = Json { ignoreUnknownKeys = true }
     }
 }
 
@@ -41,10 +51,10 @@ data class ExportedServer(
     val keyPairId: String?,
     val groupId: String?,
     val useMosh: Boolean,
-    val autoAttachTmux: Boolean,
-    val tmuxSessionName: String,
     val sortOrder: Int,
     val companionInstalled: Boolean,
+    val startupCommandEnabled: Boolean = false,
+    val startupCommand: String = "",
 )
 
 @Serializable
@@ -102,10 +112,10 @@ fun Server.toExported(): ExportedServer = ExportedServer(
     keyPairId = keyPairId?.toString(),
     groupId = groupId?.toString(),
     useMosh = useMosh,
-    autoAttachTmux = autoAttachTmux,
-    tmuxSessionName = tmuxSessionName,
     sortOrder = sortOrder,
     companionInstalled = companionInstalled,
+    startupCommandEnabled = startupCommandEnabled,
+    startupCommand = startupCommand,
 )
 
 fun ServerGroup.toExported(): ExportedGroup = ExportedGroup(

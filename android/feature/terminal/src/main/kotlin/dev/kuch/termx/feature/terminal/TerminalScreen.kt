@@ -46,7 +46,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,48 +70,33 @@ import com.termux.terminal.RemoteTerminalSession
 import com.termux.terminal.TerminalSession
 import com.termux.view.TerminalView
 import com.termux.view.TerminalViewClient
-import dev.kuch.termx.core.domain.model.TmuxSession
 import dev.kuch.termx.core.domain.theme.Sorcerer
 import dev.kuch.termx.feature.terminal.gestures.TerminalGestureHandler
 import dev.kuch.termx.feature.terminal.gestures.UrlTapConfirmDialog
 import dev.kuch.termx.feature.terminal.keys.ExtraKey
 import dev.kuch.termx.feature.terminal.keys.ExtraKeyBytes
 import dev.kuch.termx.feature.terminal.keys.ExtraKeysBar
-import dev.kuch.termx.feature.terminal.sessions.KillSessionDialog
-import dev.kuch.termx.feature.terminal.sessions.NewSessionDialog
-import dev.kuch.termx.feature.terminal.sessions.RenameSessionDialog
-import dev.kuch.termx.feature.terminal.sessions.SessionTabActionsMenu
-import dev.kuch.termx.feature.terminal.sessions.SessionTabBar
-import dev.kuch.termx.feature.terminal.sessions.SessionTabBarViewModel
 import dev.kuch.termx.feature.ptt.PttSurface
 import java.util.UUID
-import kotlinx.coroutines.launch
 
 /**
  * The app's only terminal surface.
  *
- * Task #26 layered the multi-session tab bar on top of the original
- * Task #15 composable. Layout top-to-bottom:
+ * A single plain login shell per connection. Layout top-to-bottom:
  *
- *  1. [SessionTabBar] — tmux session pills with activity indicators +
- *     "+" button.
- *  2. The active tab's `TerminalView` via [AndroidView].
- *  3. [ExtraKeysBar] docked above the soft keyboard.
+ *  1. The active session's `TerminalView` via [AndroidView], which
+ *     fills the available space.
+ *  2. [ExtraKeysBar] docked above the soft keyboard.
  *
- * Two ViewModels collaborate here:
- *  - [TerminalViewModel] owns the shared sshj [dev.kuch.termx.libs.sshnative.SshSession]
- *    plus a map of open [dev.kuch.termx.libs.sshnative.PtyChannel] by tab name,
- *    and exposes the currently-bound emulator as [TerminalUiState.activeSession].
- *  - [SessionTabBarViewModel] drives the tab list (via
- *    [dev.kuch.termx.core.domain.repository.TmuxSessionRepository.observeSessions])
- *    and the activity-flash set, plus the tmux write verbs
- *    (new/rename/kill) for the tab's context menu.
+ * [TerminalViewModel] owns the shared sshj
+ * [dev.kuch.termx.libs.sshnative.SshSession] plus the single open
+ * [dev.kuch.termx.libs.sshnative.PtyChannel], and exposes the
+ * currently-bound emulator as [TerminalUiState.activeSession].
  */
 @Composable
 fun TerminalScreen(
     serverId: UUID? = null,
     viewModel: TerminalViewModel = hiltViewModel(),
-    tabBarViewModel: SessionTabBarViewModel = hiltViewModel(),
 ) {
     // Share the PTT view-model instance with PttSurface (which grabs
     // its own via hiltViewModel() too — same NavBackStackEntry → same
@@ -121,12 +105,6 @@ fun TerminalScreen(
     // without coupling ExtraKeysBar to :feature:ptt.
     val pttViewModel: dev.kuch.termx.feature.ptt.PttViewModel = hiltViewModel()
     val uiState by viewModel.state.collectAsStateWithLifecycle()
-    val activityFlashes by tabBarViewModel.activityFlashes.collectAsStateWithLifecycle()
-    val sessionsFlow = remember(serverId) {
-        serverId?.let { tabBarViewModel.sessions(it) }
-    }
-    val sessionList by (sessionsFlow?.collectAsStateWithLifecycle(initialValue = emptyList())
-        ?: remember { mutableStateOf<List<TmuxSession>>(emptyList()) })
 
     LaunchedEffect(serverId) {
         viewModel.connect(serverId)
@@ -136,18 +114,10 @@ fun TerminalScreen(
         onDispose { viewModel.disconnect() }
     }
 
-    // Dialog state — the tab bar long-press opens a dropdown menu which
-    // kicks off one of these flows.
-    var menuForSession by remember { mutableStateOf<TmuxSession?>(null) }
-    var renameTarget by remember { mutableStateOf<TmuxSession?>(null) }
-    var killTarget by remember { mutableStateOf<TmuxSession?>(null) }
-    var showNewSession by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-
     // Hoisted reference to the currently-mounted [TerminalView] so the
-    // tap-to-focus handler here AND the keyboard-toggle button in the
-    // SessionTabBar can both target it. Assigned from the AndroidView
-    // factory block in [TerminalPane]; nulled on dispose.
+    // tap-to-focus handler here and the extra-keys bar's keyboard-toggle
+    // button can both target it. Assigned from the AndroidView factory
+    // block in [TerminalPane]; nulled on dispose.
     val terminalViewRef = remember { mutableStateOf<TerminalView?>(null) }
     val context = LocalContext.current
     val imm = remember(context) {
@@ -213,35 +183,6 @@ fun TerminalScreen(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
-            if (serverId != null) {
-                SessionTabBar(
-                    sessions = sessionList,
-                    activeSessionName = uiState.activeTabName,
-                    activityFlashes = activityFlashes,
-                    onTabSelected = viewModel::selectTab,
-                    onNewSession = { showNewSession = true },
-                    onLongPressTab = { menuForSession = it },
-                    onSwipeUpTab = { viewModel.detachTab(it.name) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                SessionTabActionsMenu(
-                    session = menuForSession,
-                    onDismiss = { menuForSession = null },
-                    onRename = {
-                        renameTarget = it
-                        menuForSession = null
-                    },
-                    onKill = {
-                        killTarget = it
-                        menuForSession = null
-                    },
-                    onClose = {
-                        viewModel.detachTab(it.name)
-                        menuForSession = null
-                    },
-                )
-            }
-
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -258,7 +199,6 @@ fun TerminalScreen(
                         if (active != null) {
                             ConnectedPane(
                                 session = active,
-                                tmuxBacked = uiState.tmuxBacked,
                                 onWriteToPty = viewModel::writeToPty,
                                 viewModel = viewModel,
                                 terminalViewRef = terminalViewRef,
@@ -305,63 +245,6 @@ fun TerminalScreen(
                     ),
             )
         }
-    }
-
-    if (showNewSession && serverId != null) {
-        NewSessionDialog(
-            onConfirm = { name ->
-                showNewSession = false
-                scope.launch {
-                    runCatching {
-                        tabBarViewModel.newSession(serverId, name)
-                        // Force a refresh so the tab appears immediately,
-                        // then auto-switch to it.
-                        tabBarViewModel.refresh(serverId)
-                        viewModel.selectTab(name)
-                    }
-                }
-            },
-            onDismiss = { showNewSession = false },
-        )
-    }
-
-    val renaming = renameTarget
-    if (renaming != null && serverId != null) {
-        RenameSessionDialog(
-            currentName = renaming.name,
-            onConfirm = { newName ->
-                renameTarget = null
-                scope.launch {
-                    runCatching {
-                        tabBarViewModel.renameSession(serverId, renaming.name, newName)
-                        tabBarViewModel.refresh(serverId)
-                    }
-                }
-            },
-            onDismiss = { renameTarget = null },
-        )
-    }
-
-    val killing = killTarget
-    if (killing != null && serverId != null) {
-        KillSessionDialog(
-            sessionName = killing.name,
-            onConfirm = {
-                killTarget = null
-                scope.launch {
-                    runCatching {
-                        // Detach locally first so we don't try to write
-                        // to a channel whose tmux target is gone.
-                        if (uiState.openTabs.contains(killing.name)) {
-                            viewModel.detachTab(killing.name)
-                        }
-                        tabBarViewModel.killSession(serverId, killing.name)
-                        tabBarViewModel.refresh(serverId)
-                    }
-                }
-            },
-            onDismiss = { killTarget = null },
-        )
     }
 
     val pendingUrl = uiState.pendingUrlTap
@@ -438,7 +321,6 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
 @Composable
 private fun ConnectedPane(
     session: TerminalSession,
-    tmuxBacked: Boolean,
     onWriteToPty: (ByteArray) -> Unit,
     viewModel: TerminalViewModel,
     terminalViewRef: androidx.compose.runtime.MutableState<TerminalView?>,
@@ -485,9 +367,6 @@ private fun ConnectedPane(
             fontSizeSp = fontSizeSp,
             onFontSizeChanged = viewModel::onFontSizeChanged,
             onUrlDoubleTap = viewModel::onUrlDoubleTap,
-            tmuxBacked = tmuxBacked,
-            onStartCopyMode = viewModel::startCopyMode,
-            onEndCopyMode = viewModel::endCopyMode,
             terminalViewRef = terminalViewRef,
             onTap = onTerminalTapShowKeyboard,
             modifier = Modifier
@@ -619,9 +498,6 @@ private fun TerminalPane(
     fontSizeSp: Int,
     onFontSizeChanged: (Int) -> Unit,
     onUrlDoubleTap: (String) -> Unit,
-    tmuxBacked: Boolean,
-    onStartCopyMode: () -> Unit,
-    onEndCopyMode: () -> Unit,
     terminalViewRef: androidx.compose.runtime.MutableState<TerminalView?>,
     onTap: () -> Unit,
     modifier: Modifier = Modifier,
@@ -631,16 +507,6 @@ private fun TerminalPane(
     // DataStore on every frame — the persist happens once in
     // `onScaleEnd`.
     val pinchState = remember { PinchZoomState(fontSizeSp) }
-
-    // Task #28 — tmux-aware two-finger scrollback. The state bag holds
-    // the rolling per-pointer Y anchor so we can forward arrow keys as
-    // the user drags. Re-created per composition so a tab swap resets.
-    val tmuxScrollState = remember { TmuxScrollState() }
-    // Keep the latest [tmuxBacked] in a mutable holder so the
-    // onTouchListener (installed in `factory` once) always sees the
-    // current value without being recreated on every recomposition.
-    val tmuxBackedRef = remember { BooleanHolder(tmuxBacked) }
-    tmuxBackedRef.value = tmuxBacked
 
     // Track the first time the view is attached so the caller's
     // onTap handler can skip re-requesting focus if it's already
@@ -743,33 +609,18 @@ private fun TerminalPane(
 
             view.setOnTouchListener { _, ev ->
                 // Feed both detectors first so pinch + double-tap win
-                // when they apply; otherwise fall through to Termux's
-                // native onTouchEvent for single-finger selection, scroll,
-                // fling, etc. We deliberately don't consume on match —
-                // scaleDetector returns true for in-progress scales, which
-                // would starve single-finger moves if we returned from here.
+                // when they apply, then always fall through to Termux's
+                // native onTouchEvent. That handler drives the emulator's
+                // own transcript ring buffer: a vertical drag (one or two
+                // fingers) reaches GestureAndScaleRecognizer.onScroll →
+                // TerminalView.doScroll, which walks `mTopRow` back
+                // through the scrollback, and a flick feeds onFling.
+                // We deliberately don't consume on match — scaleDetector
+                // returns true for in-progress scales, which would starve
+                // single-finger moves if we returned from here.
                 scaleDetector.onTouchEvent(ev)
                 doubleTapDetector.onTouchEvent(ev)
-                // Task #28 — two-finger vertical scroll on a tmux-backed
-                // tab enters tmux copy-mode and forwards drag deltas as
-                // arrow keys. Consumes the event (doesn't forward to
-                // Termux's onTouchEvent) so the local ring-buffer scroll
-                // doesn't fight tmux's larger scrollback.
-                val consumedByTmux = if (tmuxBackedRef.value) {
-                    handleTmuxScrollGesture(
-                        ev = ev,
-                        scaleInProgress = scaleDetector.isInProgress,
-                        state = tmuxScrollState,
-                        onStart = onStartCopyMode,
-                        onEnd = onEndCopyMode,
-                        onWriteToPty = onWriteToPty,
-                    )
-                } else {
-                    false
-                }
-                if (!consumedByTmux) {
-                    view.onTouchEvent(ev)
-                }
+                view.onTouchEvent(ev)
                 true
             }
 
@@ -851,122 +702,6 @@ private fun unbindViewFromSession(session: TerminalSession) {
 private class PinchZoomState(var currentSp: Int)
 
 /**
- * Mutable holder so the long-lived [android.view.View.OnTouchListener]
- * installed once in the AndroidView factory always sees the current
- * value of a Compose prop. Re-assigning the value in the outer body
- * costs nothing (no recomposition).
- */
-private class BooleanHolder(var value: Boolean)
-
-/**
- * Per-tab rolling state for the Task #28 two-finger scroll gesture.
- *
- *  - [active]: `true` once we've seen a 2-pointer ACTION_MOVE that
- *    crossed [TMUX_SCROLL_SLOP_PX] of vertical travel. Stays true until
- *    the gesture ends (last pointer up or ACTION_CANCEL).
- *  - [lastY]: average Y of the two pointers at the last frame we
- *    emitted an arrow key for. Drag deltas smaller than
- *    [TMUX_SCROLL_STEP_PX] are accumulated, not forwarded.
- *  - [anchorY]: initial average Y on the first 2-pointer DOWN. Used
- *    to decide "first drag direction" for the slop check.
- */
-private class TmuxScrollState {
-    var active: Boolean = false
-    var anchorY: Float = 0f
-    var lastY: Float = 0f
-}
-
-/**
- * Task #28 — handle a raw [MotionEvent] as part of the two-finger
- * vertical-scroll gesture. Returns `true` when the event belongs to
- * the gesture (and the caller should *not* forward it to
- * [TerminalView.onTouchEvent]).
- *
- * Flow:
- *  1. Two fingers land → remember anchor Y; don't enter copy-mode yet
- *     (the user might be pinching).
- *  2. As they drag vertically past [TMUX_SCROLL_SLOP_PX] without a
- *     pinch, flip [TmuxScrollState.active], fire [onStart] so the VM
- *     sends Ctrl-B `[`.
- *  3. Each subsequent [TMUX_SCROLL_STEP_PX] of drag emits one arrow
- *     key (up = scroll history up, down = scroll history down).
- *  4. Pointer count drops to <2 or ACTION_CANCEL → fire [onEnd] so
- *     the VM sends `q` to quit copy-mode.
- */
-private fun handleTmuxScrollGesture(
-    ev: MotionEvent,
-    scaleInProgress: Boolean,
-    state: TmuxScrollState,
-    onStart: () -> Unit,
-    onEnd: () -> Unit,
-    onWriteToPty: (ByteArray) -> Unit,
-): Boolean {
-    val pointerCount = ev.pointerCount
-    when (ev.actionMasked) {
-        MotionEvent.ACTION_POINTER_DOWN -> {
-            if (pointerCount == 2) {
-                val avgY = (ev.getY(0) + ev.getY(1)) / 2f
-                state.anchorY = avgY
-                state.lastY = avgY
-                // Don't claim the event yet — the user might pinch, and
-                // the scale detector already saw the ACTION_POINTER_DOWN.
-            }
-            return false
-        }
-        MotionEvent.ACTION_MOVE -> {
-            if (scaleInProgress) {
-                // Pinch wins — abandon any in-progress scrollback and
-                // bail out of copy-mode if we entered it.
-                if (state.active) {
-                    state.active = false
-                    onEnd()
-                }
-                return false
-            }
-            if (pointerCount < 2) return state.active // still consume if active
-            val avgY = (ev.getY(0) + ev.getY(1)) / 2f
-            if (!state.active) {
-                if (kotlin.math.abs(avgY - state.anchorY) > TMUX_SCROLL_SLOP_PX) {
-                    state.active = true
-                    state.lastY = avgY
-                    onStart()
-                    return true
-                }
-                return false
-            }
-            val delta = avgY - state.lastY
-            val steps = (delta / TMUX_SCROLL_STEP_PX).toInt()
-            if (steps != 0) {
-                state.lastY += steps * TMUX_SCROLL_STEP_PX
-                val bytes = if (steps > 0) TerminalGestureHandler.ARROW_UP
-                else TerminalGestureHandler.ARROW_DOWN
-                repeat(kotlin.math.abs(steps)) { onWriteToPty(bytes) }
-            }
-            return true
-        }
-        MotionEvent.ACTION_POINTER_UP,
-        MotionEvent.ACTION_UP,
-        MotionEvent.ACTION_CANCEL -> {
-            if (state.active) {
-                state.active = false
-                onEnd()
-                return true
-            }
-            return false
-        }
-        else -> return state.active
-    }
-}
-
-private const val TMUX_SCROLL_SLOP_PX = 24f
-private const val TMUX_SCROLL_STEP_PX = 32f
-
-/**
- * Placeholder client for TerminalView. Task #17 adds real gesture
- * handling (pinch-zoom, two-finger scroll, long-press select, URL
- * tap). For now we return sane defaults and forward nothing.
- */
-/**
  * Minimal [TerminalViewClient] for the embedded Termux view.
  *
  * Pre-v1.1.14 this was a stateless `object`. v1.1.14 makes it a class
@@ -985,7 +720,10 @@ private class MinimalTerminalViewClient(
     override fun shouldEnforceCharBasedInput(): Boolean = false
     override fun shouldUseCtrlSpaceWorkaround(): Boolean = false
     override fun isTerminalViewSelected(): Boolean = true
-    override fun copyModeChanged(copyMode: Boolean) {}
+    // Vendored Termux [TerminalViewClient] hook fired on text-selection
+    // start/stop (the fork calls it with isSelectingText()); nothing to
+    // do here.
+    override fun copyModeChanged(selecting: Boolean) {}
     override fun onKeyDown(keyCode: Int, e: KeyEvent?, session: com.termux.terminal.TerminalSession?): Boolean = false
     override fun onKeyUp(keyCode: Int, e: KeyEvent?): Boolean = false
     override fun onLongPress(event: MotionEvent?): Boolean = false
@@ -1020,7 +758,7 @@ private const val VOL_DOWN_PASSTHROUGH_MS = 500L
  *
  *  - `\r` (CR, U+000D) — kept as the canonical Enter byte; not a leak.
  *  - `\n` (LF, U+000A) — original target; bash readline accepts it but
- *    raw-mode shells over tmux/mosh render the literal newline glyph
+ *    raw-mode shells over mosh render the literal newline glyph
  *    without submitting (v1.1.12 fix).
  *  - `` (NEL, Next Line) — IBM legacy; some terminals advance.
  *  - `` (VT, Vertical Tab) — xterm interprets as cursor-down-1.
@@ -1035,7 +773,7 @@ private const val VOL_DOWN_PASSTHROUGH_MS = 500L
  * pre-v1.3.3 encoder leaked all of these untouched into the byte
  * stream. With the widened regex below, any run of mixed line-break
  * codepoints collapses to a single `\r` — the only thing readline +
- * tmux + mosh agree means "submit this line."
+ * mosh agree means "submit this line."
  */
 private val ANY_LINE_BREAK = Regex("[\\r\\n\\u0085\\u000B\\u000C\\u2028\\u2029]+")
 

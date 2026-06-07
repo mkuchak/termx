@@ -34,7 +34,7 @@ class SessionRegistry @Inject constructor() {
 
     /**
      * One active tab. Keyed by `(serverId, tabName)` in [entries] so a
-     * single server can host multiple tmux tabs without collision.
+     * single server can host multiple tabs without collision.
      */
     data class Entry(
         val serverId: UUID,

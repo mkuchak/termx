@@ -79,23 +79,6 @@ class CompanionCommandSerializationTest {
     }
 
     @Test
-    fun `InjectPrompt round-trips with multi-line text`() {
-        val original = CompanionCommand.InjectPrompt(
-            id = "i-1",
-            session = "main",
-            text = "line1\nline2\n",
-        )
-        val encoded = json.encodeToString(CompanionCommand.serializer(), original)
-        val obj = json.parseToJsonElement(encoded).jsonObject
-        assertEquals("inject_prompt", obj["type"]?.jsonPrimitive?.content)
-        assertEquals("main", obj["session"]?.jsonPrimitive?.content)
-        assertEquals("line1\nline2\n", obj["text"]?.jsonPrimitive?.content)
-
-        val decoded = json.decodeFromString(CompanionCommand.serializer(), encoded)
-        assertEquals(original, decoded)
-    }
-
-    @Test
     fun `decodes via sealed-class serializer using type discriminator`() {
         val raw = """
             {"type":"approve_permission","id":"x","request_id":"r","remember":false}

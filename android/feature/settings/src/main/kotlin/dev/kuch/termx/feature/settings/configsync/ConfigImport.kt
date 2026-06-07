@@ -165,12 +165,12 @@ internal fun ExportedServer.toDomain(): Server = Server(
     keyPairId = keyPairId?.let(UUID::fromString),
     groupId = groupId?.let(UUID::fromString),
     useMosh = useMosh,
-    autoAttachTmux = autoAttachTmux,
-    tmuxSessionName = tmuxSessionName,
     lastConnected = null,
     pingMs = null,
     sortOrder = sortOrder,
     companionInstalled = companionInstalled,
+    startupCommandEnabled = startupCommandEnabled,
+    startupCommand = startupCommand,
 )
 
 internal fun ExportedGroup.toDomain(): ServerGroup = ServerGroup(

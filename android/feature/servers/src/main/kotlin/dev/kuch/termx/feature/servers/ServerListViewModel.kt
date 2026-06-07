@@ -178,7 +178,7 @@ class ServerListViewModel @Inject constructor(
      * subscription so Room replays, it doesn't hit the network.
      */
     fun onRefresh() {
-        // No-op for Phase 2. Task #26/#27 will wire real ping + tmux refresh.
+        // No-op for Phase 2. Task #26/#27 will wire a real ping refresh.
     }
 
     private fun buildGrouped(
