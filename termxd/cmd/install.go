@@ -90,11 +90,6 @@ fi
 const bashrcBlockBody = `export PATH="$HOME/.local/bin:$PATH"
 [ -f "$HOME/.termx/termx-shell-hooks.sh" ] && . "$HOME/.termx/termx-shell-hooks.sh"`
 
-const tmuxBlockBody = `set-hook -g session-created  'run-shell "~/.local/bin/termx _on-session-created #{session_name}"'
-set-hook -g session-closed   'run-shell "~/.local/bin/termx _on-session-closed #{session_name}"'
-set-hook -g window-linked    'run-shell "~/.local/bin/termx _on-window-linked #{session_name} #{window_name}"'
-set-hook -g window-unlinked  'run-shell "~/.local/bin/termx _on-window-unlinked #{session_name} #{window_name}"'`
-
 // Change is one entry of the --dry-run JSON output.
 type Change struct {
 	Type string `json:"type"`
@@ -120,7 +115,7 @@ func newInstallCmd() *cobra.Command {
 		},
 	}
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print JSON diff of proposed changes; no disk mutation")
-	c.Flags().BoolVar(&installDeps, "install-deps", false, "attempt sudo install of missing system packages (mosh, tmux)")
+	c.Flags().BoolVar(&installDeps, "install-deps", false, "attempt sudo install of missing system packages (mosh)")
 	return c
 }
 
@@ -147,7 +142,7 @@ func runInstall(stdout, stderr io.Writer, dryRun, installDeps bool) error {
 		fmt.Fprintf(stderr, "warning: could not read /etc/os-release: %v\n", derr)
 	}
 	if distro == internal.DistroUnknown {
-		fmt.Fprintln(stderr, "warning: unknown distro — shell/tmux/claude steps will still run, system packages not installed")
+		fmt.Fprintln(stderr, "warning: unknown distro — shell/claude steps will still run, system packages not installed")
 	} else {
 		fmt.Fprintf(stdout, "distro: %s\n", distro)
 	}
@@ -174,10 +169,14 @@ func runInstall(stdout, stderr io.Writer, dryRun, installDeps bool) error {
 		}
 		reportFileOp(stdout, "inject_block", p, changed)
 	}
-	if changed, err := internal.UpsertMarkedBlock(paths.TmuxConf, tmuxBlockBody, 0o644); err != nil {
-		return fmt.Errorf("inject %s: %w", paths.TmuxConf, err)
+	// Cleanup: machines provisioned by an older installer carry a stale
+	// 4-line tmux hook block in ~/.tmux.conf. termx no longer manages tmux,
+	// so strip that block on every install. Non-fatal — a failure here must
+	// not abort the rest of the install.
+	if changed, err := internal.RemoveMarkedBlock(paths.TmuxConf); err != nil {
+		fmt.Fprintf(stderr, "warning: could not clean stale tmux block from %s: %v\n", paths.TmuxConf, err)
 	} else {
-		reportFileOp(stdout, "inject_block", paths.TmuxConf, changed)
+		reportFileOp(stdout, "remove_block", paths.TmuxConf, changed)
 	}
 	if changed, err := internal.UpsertClaudeSettings(paths.ClaudeSettings); err != nil {
 		return fmt.Errorf("update %s: %w", paths.ClaudeSettings, err)
@@ -216,7 +215,6 @@ var requiredCommands = []struct {
 	ClaudeExtra bool   // true for `claude` (installed via npm, not apt)
 }{
 	{Name: "mosh-server", SystemPkg: "mosh"},
-	{Name: "tmux", SystemPkg: "tmux"},
 	{Name: "node", SystemPkg: "nodejs"},
 	{Name: "npm", SystemPkg: "npm"},
 	{Name: "claude", SystemPkg: "", ClaudeExtra: true},
@@ -489,16 +487,15 @@ func buildDryRun(p *internal.Paths) (dryRunReport, error) {
 		}
 		changes = append(changes, ch)
 	}
-	// tmux.
-	ch := Change{
-		Type: "inject_block",
-		Path: short(p.TmuxConf),
-		Diff: fmt.Sprintf("+ 4 lines in `%s / %s`", internal.BeginMarker, internal.EndMarker),
-	}
+	// Stale tmux block cleanup (only emitted when an old installer left one).
 	if internal.HasMarkedBlock(p.TmuxConf) {
-		ch.Note = "block already present (will be replaced in place)"
+		changes = append(changes, Change{
+			Type: "remove_block",
+			Path: short(p.TmuxConf),
+			Diff: fmt.Sprintf("- block between `%s / %s` (stale tmux hooks)", internal.BeginMarker, internal.EndMarker),
+			Note: "left by an older termx installer; tmux is no longer managed",
+		})
 	}
-	changes = append(changes, ch)
 
 	// Claude settings.json.
 	sc := Change{Type: "update_json", Path: short(p.ClaudeSettings), Mode: "0600", Diff: "add hooks.PreToolUse + hooks.PostToolUse entries tagged `_termx_managed: true`"}

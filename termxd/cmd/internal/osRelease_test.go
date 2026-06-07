@@ -52,15 +52,15 @@ func TestInstallCmdFor(t *testing.T) {
 		d    Distro
 		want string
 	}{
-		{DistroUbuntu, "sudo apt install -y mosh tmux"},
-		{DistroDebian, "sudo apt install -y mosh tmux"},
-		{DistroAlpine, "sudo apk add mosh tmux"},
-		{DistroArch, "sudo pacman -S --noconfirm mosh tmux"},
-		{DistroFedora, "sudo dnf install -y mosh tmux"},
-		{DistroCentOS, "sudo yum install -y mosh tmux"},
+		{DistroUbuntu, "sudo apt install -y mosh"},
+		{DistroDebian, "sudo apt install -y mosh"},
+		{DistroAlpine, "sudo apk add mosh"},
+		{DistroArch, "sudo pacman -S --noconfirm mosh"},
+		{DistroFedora, "sudo dnf install -y mosh"},
+		{DistroCentOS, "sudo yum install -y mosh"},
 	}
 	for _, tc := range cases {
-		got := InstallCmdFor(tc.d, "mosh", "tmux")
+		got := InstallCmdFor(tc.d, "mosh")
 		if got != tc.want {
 			t.Errorf("%s: got %q want %q", tc.d, got, tc.want)
 		}

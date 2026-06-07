@@ -52,66 +52,6 @@ func readEvents(t *testing.T, termxDir string) []map[string]any {
 	return out
 }
 
-func TestOnSessionCreatedWritesRegistryAndEvent(t *testing.T) {
-	dir := isolateHome(t)
-
-	if err := runOnSessionCreated("main"); err != nil {
-		t.Fatalf("runOnSessionCreated: %v", err)
-	}
-
-	// Session file.
-	path := filepath.Join(dir, "sessions", "main.json")
-	b, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read session: %v", err)
-	}
-	var sess map[string]any
-	if err := json.Unmarshal(b, &sess); err != nil {
-		t.Fatalf("decode session: %v", err)
-	}
-	if sess["name"] != "main" {
-		t.Errorf("session name = %v", sess["name"])
-	}
-	if sess["status"] != "idle" {
-		t.Errorf("session status = %v", sess["status"])
-	}
-
-	// Event.
-	events := readEvents(t, dir)
-	if len(events) != 1 {
-		t.Fatalf("events = %d, want 1", len(events))
-	}
-	if events[0]["type"] != "session_created" {
-		t.Errorf("event type = %v", events[0]["type"])
-	}
-	if events[0]["session"] != "main" {
-		t.Errorf("event session = %v", events[0]["session"])
-	}
-}
-
-func TestOnSessionClosedRemovesRegistryAndEmitsEvent(t *testing.T) {
-	dir := isolateHome(t)
-
-	if err := runOnSessionCreated("work"); err != nil {
-		t.Fatal(err)
-	}
-	if err := runOnSessionClosed("work"); err != nil {
-		t.Fatalf("runOnSessionClosed: %v", err)
-	}
-
-	// Session file gone.
-	if _, err := os.Stat(filepath.Join(dir, "sessions", "work.json")); !os.IsNotExist(err) {
-		t.Errorf("session file should have been deleted")
-	}
-	events := readEvents(t, dir)
-	if len(events) != 2 {
-		t.Fatalf("events = %d, want 2 (created + closed)", len(events))
-	}
-	if events[1]["type"] != "session_closed" {
-		t.Errorf("last event type = %v", events[1]["type"])
-	}
-}
-
 func TestPreexecPrecmdFlowEmitsLongCommand(t *testing.T) {
 	dir := isolateHome(t)
 

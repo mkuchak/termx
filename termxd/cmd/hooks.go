@@ -36,137 +36,16 @@ const (
 	errorMinCommandMs int64 = 2000
 )
 
-// hookCmds returns the cobra commands implementing tmux + shell hooks.
-// Registered as Hidden: true on the root cmd (they're invoked by the
-// rc-file marked block, not by users directly).
+// hookCmds returns the cobra commands implementing the shell + Claude
+// hooks. Registered as Hidden: true on the root cmd (they're invoked by
+// the rc-file marked block / Claude settings, not by users directly).
 func hookCmds() []*cobra.Command {
 	return []*cobra.Command{
-		newOnSessionCreatedCmd(),
-		newOnSessionClosedCmd(),
-		newOnWindowLinkedCmd(),
-		newOnWindowUnlinkedCmd(),
 		newPreexecCmd(),
 		newPrecmdCmd(),
 		newHookPreToolUseCmd(),
 		newHookPostToolUseCmd(),
 	}
-}
-
-// ---- tmux: session-created ----
-
-func newOnSessionCreatedCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:    "_on-session-created <session>",
-		Short:  "tmux session-created hook",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOnSessionCreated(args[0])
-		},
-	}
-}
-
-func runOnSessionCreated(name string) error {
-	_ = internal.RotateIfNeeded(internal.DefaultRotateBytes)
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	sess := internal.Session{
-		Name:      name,
-		CreatedAt: now,
-		Windows:   countWindows(name),
-		Status:    "idle",
-		Claude:    false,
-	}
-	if err := internal.WriteSession(sess); err != nil {
-		return fmt.Errorf("write session: %w", err)
-	}
-	return internal.AppendEvent("session_created", name, map[string]any{
-		"created_at": now,
-		"windows":    sess.Windows,
-	})
-}
-
-// ---- tmux: session-closed ----
-
-func newOnSessionClosedCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:    "_on-session-closed <session>",
-		Short:  "tmux session-closed hook",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runOnSessionClosed(args[0])
-		},
-	}
-}
-
-func runOnSessionClosed(name string) error {
-	_ = internal.RotateIfNeeded(internal.DefaultRotateBytes)
-	if err := internal.DeleteSession(name); err != nil {
-		return err
-	}
-	return internal.AppendEvent("session_closed", name, nil)
-}
-
-// ---- tmux: window-linked / window-unlinked ----
-
-func newOnWindowLinkedCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:    "_on-window-linked <session> <window>",
-		Short:  "tmux window-linked hook",
-		Hidden: true,
-		Args:   cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdateWindows(args[0])
-		},
-	}
-}
-
-func newOnWindowUnlinkedCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:    "_on-window-unlinked <session> <window>",
-		Short:  "tmux window-unlinked hook",
-		Hidden: true,
-		Args:   cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return runUpdateWindows(args[0])
-		},
-	}
-}
-
-func runUpdateWindows(session string) error {
-	// No event for Phase 4.3 — window churn is noisy and the phone
-	// refreshes the session file itself. Just keep the counter fresh.
-	existing, err := internal.ReadSession(session)
-	if err != nil {
-		return err
-	}
-	if existing == nil {
-		// session-created may fire *after* the first window-linked for
-		// tmux <3.3; create a minimal record so the counter still lands.
-		existing = &internal.Session{
-			Name:      session,
-			CreatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-			Status:    "idle",
-		}
-	}
-	existing.Windows = countWindows(session)
-	return internal.WriteSession(*existing)
-}
-
-// countWindows asks tmux. Zero on failure (tmux may not be in PATH when
-// running tests; the session still writes, just with 0 windows).
-func countWindows(session string) int {
-	out, err := exec.Command("tmux", "list-windows", "-t", session, "-F", "x").Output()
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, line := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
-		if line != "" {
-			n++
-		}
-	}
-	return n
 }
 
 // ---- shell: preexec ----
@@ -220,10 +99,11 @@ func runPreexec(b64 string, ppid int, now time.Time) error {
 	return os.Rename(tmp, path)
 }
 
-// resolveSessionName returns the active tmux session name, or a
-// pseudo-session keyed on the shell PID when not inside tmux. The
-// pseudo-session lets the phone attribute plain-shell events to a
-// stable "tab" even when no tmux is involved.
+// resolveSessionName returns a stable per-shell session name. It prefers a
+// multiplexer-supplied name (via the tmux display-message probe, harmless
+// and a no-op when tmux isn't present) and otherwise falls back to a
+// pseudo-session keyed on the shell PID. The pseudo-session lets the phone
+// attribute plain-shell events to a stable "tab" regardless of multiplexer.
 func resolveSessionName(ppid int) string {
 	if out, err := exec.Command("tmux", "display-message", "-p", "#S").Output(); err == nil {
 		s := strings.TrimSpace(string(out))

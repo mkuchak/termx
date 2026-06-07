@@ -30,15 +30,15 @@ Replace `vX.Y.Z` with the latest termxd tag from the
 termx --version
 ```
 
-More subcommands (`install`, `uninstall`, tmux/shell hooks) land in Phase
-4.2+ of the roadmap.
+More subcommands (`install`, `uninstall`, shell preexec/precmd hooks) land
+in Phase 4.2+ of the roadmap.
 
 ## Architecture
 
-- **No daemon.** termxd is a short-lived CLI invoked by tmux hooks, shell
-  preexec/precmd, and Claude Code's `PreToolUse`/`PostToolUse` hooks.
+- **No daemon.** termxd is a short-lived CLI invoked by shell
+  preexec/precmd hooks and Claude Code's `PreToolUse`/`PostToolUse` hooks.
 - **File-based protocol** under `~/.termx/`:
-  - `sessions/<id>.json` — one file per tmux session (status, metadata)
+  - `sessions/<id>.json` — one file per shell session (status, metadata)
   - `events.ndjson` — append-only event stream the phone `tail -F`s
   - `commands/<uuid>.json` — phone→VPS inbox
   - `approvals/<id>.json` — permission broker decisions

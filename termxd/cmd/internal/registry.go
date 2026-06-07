@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 )
 
-// Session describes a tmux session (or plain-shell pseudo-session) as
-// persisted to ~/.termx/sessions/<name>.json. The phone reads this tree
-// to render tabs.
+// Session describes a shell session (a plain-shell pseudo-session keyed
+// on PID, or a name supplied via $TMUX_SESSION) as persisted to
+// ~/.termx/sessions/<name>.json. The phone reads this tree to render tabs.
 type Session struct {
 	Name      string `json:"name"`
 	CreatedAt string `json:"created_at"`
@@ -19,8 +19,8 @@ type Session struct {
 	// awaiting_permission (P5). Kept as a string so schema can evolve
 	// without a Go enum change breaking older phone readers.
 	Status string `json:"status"`
-	// Claude flags whether a claude-code REPL is the tmux session's
-	// foreground process. Populated in P5; false in P4.3.
+	// Claude flags whether a claude-code REPL is the session's foreground
+	// process. Populated in P5; false in P4.3.
 	Claude bool `json:"claude"`
 }
 
@@ -34,7 +34,7 @@ func SessionPath(name string) (string, error) {
 }
 
 // WriteSession persists a session atomically via write-then-rename.
-// Creates the parent sessions dir if missing so tmux hooks fired before
+// Creates the parent sessions dir if missing so hooks fired before
 // `termx install` ran won't error out silently.
 func WriteSession(s Session) error {
 	if s.Name == "" {
@@ -91,8 +91,7 @@ func ReadSessionAt(path string) (*Session, error) {
 }
 
 // DeleteSession removes a session's registry file. Idempotent — a
-// missing file is not an error (tmux may fire session-closed after the
-// user already ran `termx uninstall`).
+// missing file is not an error.
 func DeleteSession(name string) error {
 	path, err := SessionPath(name)
 	if err != nil {
