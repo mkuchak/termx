@@ -152,4 +152,10 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
     implementation(libs.hilt.navigation.compose)
+
+    // UnifiedPush connector (Tier 2 agent-finished alerts). 3.x exposes the
+    // `PushService` integration point + typed PushEndpoint/PushMessage with
+    // built-in decryption; see TermxPushService. Resolves from Maven Central
+    // (org.unifiedpush.android group).
+    implementation("org.unifiedpush.android:connector:3.3.2")
 }

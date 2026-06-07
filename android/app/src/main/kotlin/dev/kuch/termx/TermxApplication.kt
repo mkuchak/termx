@@ -9,6 +9,7 @@ import dev.kuch.termx.core.domain.theme.Sorcerer
 import dev.kuch.termx.feature.terminal.theme.ThemeBinder
 import dev.kuch.termx.feature.updater.UpdaterRepository
 import dev.kuch.termx.notification.NotificationChannels
+import dev.kuch.termx.push.UnifiedPushManager
 import dev.kuch.termx.service.SessionServiceLauncher
 import javax.inject.Inject
 
@@ -32,6 +33,7 @@ class TermxApplication : Application() {
     @Inject lateinit var sessionServiceLauncher: SessionServiceLauncher
     @Inject lateinit var notificationChannels: NotificationChannels
     @Inject lateinit var updaterRepository: UpdaterRepository
+    @Inject lateinit var unifiedPushManager: UnifiedPushManager
 
     override fun onCreate() {
         super.onCreate()
@@ -59,5 +61,9 @@ class TermxApplication : Application() {
         // gated by 24h DataStore cache + F-Droid suppression. The
         // server-list banner observes the resulting state.
         updaterRepository.checkOnLaunch(installedVersion = BuildConfig.VERSION_NAME)
+        // Tier-2 push (UnifiedPush): a distributor only keeps us subscribed
+        // while we keep asking, so re-assert the registration on every cold
+        // start. No-op unless the user opted in (reads the master switch).
+        unifiedPushManager.ensureRegisteredIfEnabled()
     }
 }

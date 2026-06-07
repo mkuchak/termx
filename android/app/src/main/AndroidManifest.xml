@@ -50,6 +50,19 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+          UnifiedPush (Tier 2 agent-finished alerts) integration point.
+          connector 3.x routes distributor events to this PushService via the
+          single PUSH_EVENT action. Not exported (required by the connector).
+        -->
+        <service
+            android:name=".push.TermxPushService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
         <receiver
             android:name=".notification.ApprovalActionReceiver"
             android:exported="false">

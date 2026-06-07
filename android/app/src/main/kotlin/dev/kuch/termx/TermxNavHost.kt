@@ -30,12 +30,20 @@ import dev.kuch.termx.feature.settings.SettingsScreen
 import dev.kuch.termx.feature.terminal.TerminalScreen
 import dev.kuch.termx.feature.terminal.diff.DiffViewerScreen
 import dev.kuch.termx.feature.terminal.permission.PermissionDialogHost
+import dev.kuch.termx.notification.AgentAlertPoster
+import dev.kuch.termx.notification.NotificationChannels
+import dev.kuch.termx.push.UnifiedPushManager
 import dev.kuch.termx.service.NotificationPermissionRequester
+import android.content.Intent
+import android.provider.Settings
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 
 /**
  * App-wide navigation graph.
@@ -198,9 +206,26 @@ fun TermxNavHost() {
             )
         }
         composable(Routes.Settings) {
+            val settingsGate: NavGateViewModel = hiltViewModel()
+            val pushDistributors by settingsGate.pushDistributors.collectAsStateWithLifecycle()
+            val pushAck by settingsGate.pushAckDistributor.collectAsStateWithLifecycle()
+            val context = androidx.compose.ui.platform.LocalContext.current
             SettingsScreen(
                 onBack = { navController.popBackStack() },
                 updaterCard = { SettingsUpdateCard(installedVersion = BuildConfig.VERSION_NAME) },
+                onTestAlert = settingsGate::testAgentAlert,
+                onAgentBypassDndChange = { enabled ->
+                    settingsGate.setAgentBypassDnd(enabled) {
+                        val intent = Intent(
+                            Settings.ACTION_NOTIFICATION_POLICY_ACCESS_SETTINGS,
+                        ).apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        runCatching { context.startActivity(intent) }
+                    }
+                },
+                pushDistributors = pushDistributors,
+                pushAckDistributor = pushAck,
+                onPushEnabledChange = settingsGate::setUnifiedPushEnabled,
+                onChoosePushDistributor = settingsGate::choosePushDistributor,
             )
         }
         composable(Routes.Unlock) {
@@ -255,6 +280,9 @@ fun TermxNavHost() {
 class NavGateViewModel @Inject constructor(
     val vaultLockState: VaultLockState,
     appPreferences: AppPreferences,
+    private val agentAlertPoster: AgentAlertPoster,
+    private val notificationChannels: NotificationChannels,
+    private val unifiedPushManager: UnifiedPushManager,
 ) : ViewModel() {
     /**
      * True once the user has completed or skipped first-run onboarding.
@@ -270,6 +298,62 @@ class NavGateViewModel @Inject constructor(
             started = SharingStarted.Eagerly,
             initialValue = true,
         )
+
+    // --- herdr agent alerts (Task #25) ------------------------------------
+    //
+    // `:feature:settings` cannot depend on `:app`, so the SettingsScreen
+    // accepts these `:app`-only actions as callbacks (same seam as the
+    // updater card). This host VM owns the singletons and exposes them.
+    //
+    // UnifiedPush distributor info is a *synchronous* query against the
+    // platform (it changes when the user installs/picks a push app), with
+    // no Flow — so cache it in StateFlows refreshed on enter / after a pick.
+
+    private val _pushDistributors = MutableStateFlow<List<String>>(emptyList())
+    val pushDistributors: StateFlow<List<String>> = _pushDistributors.asStateFlow()
+
+    private val _pushAckDistributor = MutableStateFlow<String?>(null)
+    val pushAckDistributor: StateFlow<String?> = _pushAckDistributor.asStateFlow()
+
+    init {
+        refreshPushDistributors()
+    }
+
+    fun refreshPushDistributors() {
+        _pushDistributors.value = unifiedPushManager.distributors()
+        _pushAckDistributor.value = unifiedPushManager.ackDistributor()
+    }
+
+    /** Post a sample agent alert so the user can preview sound + vibration. */
+    fun testAgentAlert() {
+        viewModelScope.launch {
+            agentAlertPoster.postRaw("herdr", "Test: an agent finished")
+        }
+    }
+
+    /**
+     * Rebuild the agent channel with the new bypass-DND flag. The matching
+     * preference write happens in [SettingsViewModel.setAgentBypassDnd];
+     * this only owns the `:app` channel rebuild. When turning the flag ON
+     * we ALSO need to launch the policy-access screen — that requires an
+     * Activity context, so the screen passes [launchPolicyAccess].
+     */
+    fun setAgentBypassDnd(enabled: Boolean, launchPolicyAccess: () -> Unit) {
+        notificationChannels.setAgentBypassDnd(enabled)
+        if (enabled) launchPolicyAccess()
+    }
+
+    fun setUnifiedPushEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            if (enabled) unifiedPushManager.enable() else unifiedPushManager.disable()
+            refreshPushDistributors()
+        }
+    }
+
+    fun choosePushDistributor(pkg: String) {
+        unifiedPushManager.choose(pkg)
+        refreshPushDistributors()
+    }
 }
 
 private object Routes {

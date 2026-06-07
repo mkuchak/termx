@@ -10,6 +10,7 @@ import com.termux.terminal.RemoteTerminalSession
 import com.termux.terminal.TerminalSession
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import dev.kuch.termx.core.data.prefs.AlertPreferences
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.PasswordCache
 import dev.kuch.termx.core.data.remote.EventStreamRepository
@@ -22,6 +23,7 @@ import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
 import dev.kuch.termx.feature.terminal.BuildConfig
+import dev.kuch.termx.libs.companion.writeAtomic
 import dev.kuch.termx.libs.sshnative.MoshClient
 import dev.kuch.termx.libs.sshnative.MoshSession
 import dev.kuch.termx.libs.sshnative.PtyChannel
@@ -43,6 +45,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -74,6 +77,7 @@ class TerminalViewModel @Inject constructor(
     private val secretVault: SecretVault,
     private val passwordCache: PasswordCache,
     private val appPreferences: AppPreferences,
+    private val alertPreferences: AlertPreferences,
     private val sessionRegistry: SessionRegistry,
     private val eventStreamHub: EventStreamHub,
     private val eventStreamRepository: EventStreamRepository,
@@ -327,6 +331,15 @@ class TerminalViewModel @Inject constructor(
             client = eventStreamRepository.clientFor(sshSession),
         )
 
+        // Tier-2 push: write the phone's UnifiedPush endpoint to
+        // `~/.termx/ntfy-endpoint` so the VPS watcher knows where to POST
+        // agent-done. UnifiedPush registration can land with no live
+        // session, so we (re)write on every SSH connect — it's idempotent.
+        // Best-effort: launched off the connect path and fully swallowing
+        // failures so a slow/unwritable VPS can never block or break the
+        // session coming up.
+        syncUnifiedPushEndpoint(sshSession)
+
         val shell = openTab(attachCommand = startup)
         server?.id?.let { touchLastConnected(it) }
         _state.value = _state.value.copy(
@@ -347,6 +360,75 @@ class TerminalViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { serverRepository.updateLastConnected(serverId, Instant.now()) }
                 .onFailure { Log.w(LOG_TAG, "updateLastConnected failed for $serverId", it) }
+        }
+    }
+
+    /**
+     * Best-effort sync of the UnifiedPush (Tier 2) endpoint to the VPS.
+     *
+     * The VPS watcher reads `~/.termx/ntfy-endpoint` to learn where to POST
+     * the agent-done push. UnifiedPush registration on the phone can happen
+     * with no live SSH session, so the canonical moment to publish the
+     * endpoint is here, on each connect — the write is idempotent.
+     *
+     * Mechanics mirror the companion write path exactly (see
+     * `EventStreamClient.resolveHomeDir` / `sendCommand`): resolve `$HOME`
+     * with `printf %s "$HOME"` because sshj's SFTP layer doesn't expand
+     * `~`, ensure `~/.termx` exists, then publish the endpoint via the
+     * shared atomic temp-file-plus-rename [writeAtomic] so the watcher
+     * never observes a torn read.
+     *
+     * Strictly best-effort: it runs on a detached [viewModelScope] launch
+     * and swallows every failure to [Log.w]. Nothing here may block or fail
+     * the connection — a missing companion dir, an unwritable home, or a
+     * dropped SFTP channel just leaves the prior endpoint file in place.
+     */
+    private fun syncUnifiedPushEndpoint(session: SshSession) {
+        viewModelScope.launch {
+            runCatching {
+                if (!alertPreferences.unifiedPushEnabled.first()) return@launch
+                val endpoint = alertPreferences.unifiedPushEndpoint.first()
+                if (endpoint.isBlank()) return@launch
+
+                val home = resolveRemoteHome(session)
+                val dir = "$home/.termx"
+                // Ensure the parent dir exists so the atomic rename has a
+                // home even on a VPS where the companion isn't installed yet.
+                runCatching {
+                    val mkdir = session.openExec("mkdir -p \"$dir\"")
+                    try {
+                        mkdir.exitCode.await()
+                    } finally {
+                        runCatching { mkdir.close() }
+                    }
+                }
+                val sftp = session.openSftp()
+                try {
+                    sftp.writeAtomic("$dir/ntfy-endpoint", endpoint.toByteArray(Charsets.UTF_8))
+                } finally {
+                    runCatching { sftp.close() }
+                }
+            }.onFailure { Log.w(LOG_TAG, "UnifiedPush endpoint sync failed", it) }
+        }
+    }
+
+    /**
+     * Resolve the authenticated user's `$HOME` on [session]. sshj's SFTP
+     * layer doesn't expand `~`, so every phone-originated SFTP path has to
+     * go through an absolute path; `printf` (not `echo`) avoids baking a
+     * trailing newline into it. Mirrors `EventStreamClient.resolveHomeDir`.
+     */
+    private suspend fun resolveRemoteHome(session: SshSession): String {
+        val exec = session.openExec("printf %s \"\$HOME\"")
+        return try {
+            val sb = StringBuilder()
+            exec.stdout.collect { chunk -> sb.append(chunk.toString(Charsets.UTF_8)) }
+            exec.exitCode.await()
+            sb.toString().trim().ifEmpty {
+                throw IllegalStateException("Remote \$HOME resolved to empty string")
+            }
+        } finally {
+            runCatching { exec.close() }
         }
     }
 

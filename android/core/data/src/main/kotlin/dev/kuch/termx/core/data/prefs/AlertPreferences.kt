@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -65,6 +66,30 @@ class AlertPreferences @Inject constructor(
     val batteryOptPromptDismissed: Flow<Boolean> =
         ds.data.map { it[KEY_BATTERY_OPT_DISMISSED] ?: false }
 
+    /** Global master switch for agent-finished alerts. Default on. */
+    val agentFinishedEnabled: Flow<Boolean> =
+        ds.data.map { it[KEY_AGENT_ENABLED] ?: true }
+
+    /** Set of server ids whose agent-finished alerts are muted (per-server override). */
+    val agentFinishedMuted: Flow<Set<UUID>> =
+        ds.data.map { prefs -> (prefs[KEY_AGENT_MUTED] ?: emptySet()).toUuidSet() }
+
+    /** Whether agent-finished alerts use the stronger vibration pattern. Default on. */
+    val agentStrongVibration: Flow<Boolean> =
+        ds.data.map { it[KEY_AGENT_STRONG_VIBE] ?: true }
+
+    /** Whether agent-finished alerts bypass Do-Not-Disturb. Default off. */
+    val agentBypassDnd: Flow<Boolean> =
+        ds.data.map { it[KEY_AGENT_BYPASS_DND] ?: false }
+
+    /** Master switch for UnifiedPush (Tier 2) push delivery. Default off. */
+    val unifiedPushEnabled: Flow<Boolean> =
+        ds.data.map { it[KEY_UP_ENABLED] ?: false }
+
+    /** Last distributor endpoint returned by UnifiedPush registration. Default empty. */
+    val unifiedPushEndpoint: Flow<String> =
+        ds.data.map { it[KEY_UP_ENDPOINT] ?: "" }
+
     suspend fun setMuteTasks(serverId: UUID, muted: Boolean) {
         ds.edit { prefs ->
             val current = prefs[KEY_MUTE_TASKS] ?: emptySet()
@@ -87,6 +112,33 @@ class AlertPreferences @Inject constructor(
         ds.edit { it[KEY_BATTERY_OPT_DISMISSED] = dismissed }
     }
 
+    suspend fun setAgentFinishedEnabled(enabled: Boolean) {
+        ds.edit { it[KEY_AGENT_ENABLED] = enabled }
+    }
+
+    suspend fun setAgentFinishedMuted(serverId: UUID, muted: Boolean) {
+        ds.edit { prefs ->
+            val current = prefs[KEY_AGENT_MUTED] ?: emptySet()
+            prefs[KEY_AGENT_MUTED] = if (muted) current + serverId.toString() else current - serverId.toString()
+        }
+    }
+
+    suspend fun setAgentStrongVibration(enabled: Boolean) {
+        ds.edit { it[KEY_AGENT_STRONG_VIBE] = enabled }
+    }
+
+    suspend fun setAgentBypassDnd(enabled: Boolean) {
+        ds.edit { it[KEY_AGENT_BYPASS_DND] = enabled }
+    }
+
+    suspend fun setUnifiedPushEnabled(enabled: Boolean) {
+        ds.edit { it[KEY_UP_ENABLED] = enabled }
+    }
+
+    suspend fun setUnifiedPushEndpoint(endpoint: String) {
+        ds.edit { it[KEY_UP_ENDPOINT] = endpoint }
+    }
+
     private fun Set<String>.toUuidSet(): Set<UUID> =
         mapNotNull { runCatching { UUID.fromString(it) }.getOrNull() }.toSet()
 
@@ -95,6 +147,12 @@ class AlertPreferences @Inject constructor(
         val KEY_MUTE_ERRORS = stringSetPreferencesKey("mute_errors_server_ids")
         val KEY_LONG_CMD_THRESHOLD_MS = intPreferencesKey("long_cmd_threshold_ms")
         val KEY_BATTERY_OPT_DISMISSED = booleanPreferencesKey("battery_opt_prompt_dismissed")
+        val KEY_AGENT_ENABLED = booleanPreferencesKey("agent_finished_enabled")
+        val KEY_AGENT_MUTED = stringSetPreferencesKey("agent_finished_muted_server_ids")
+        val KEY_AGENT_STRONG_VIBE = booleanPreferencesKey("agent_strong_vibration")
+        val KEY_AGENT_BYPASS_DND = booleanPreferencesKey("agent_bypass_dnd")
+        val KEY_UP_ENABLED = booleanPreferencesKey("unified_push_enabled")
+        val KEY_UP_ENDPOINT = stringPreferencesKey("unified_push_endpoint")
         const val DEFAULT_LONG_CMD_THRESHOLD_MS = 60_000
     }
 }

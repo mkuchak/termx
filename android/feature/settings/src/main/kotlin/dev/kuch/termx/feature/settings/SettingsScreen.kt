@@ -43,6 +43,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -85,6 +86,29 @@ fun SettingsScreen(
      * so :feature:settings stays free of a :feature:updater dep.
      */
     updaterCard: @Composable () -> Unit = {},
+    /**
+     * herdr agent-alert side-effects that need `:app`-only singletons
+     * (`AgentAlertPoster`, `NotificationChannels`, `UnifiedPushManager`).
+     * `:feature:settings` cannot depend on `:app` (apps depend on
+     * features, not vice-versa), so — exactly like [updaterCard] — the
+     * :app NavHost supplies these as callbacks/state. They default to
+     * inert values so the screen still renders in isolation/previews.
+     *
+     *  - [onTestAlert] posts a sample alert on `termx.agent` + vibrates.
+     *  - [onAgentBypassDndChange] persists the pref AND (in :app) rebuilds
+     *    the channel with setBypassDnd + launches the policy-access screen.
+     *  - [pushDistributors] / [pushAckDistributor] back the UnifiedPush
+     *    picker + "no push app installed" CTA + chosen-distributor status.
+     *  - [onPushEnabledChange] flips the master switch via
+     *    `UnifiedPushManager.enable()/disable()`.
+     *  - [onChoosePushDistributor] saves the user's distributor pick.
+     */
+    onTestAlert: () -> Unit = {},
+    onAgentBypassDndChange: (Boolean) -> Unit = {},
+    pushDistributors: List<String> = emptyList(),
+    pushAckDistributor: String? = null,
+    onPushEnabledChange: (Boolean) -> Unit = {},
+    onChoosePushDistributor: (String) -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -138,7 +162,184 @@ fun SettingsScreen(
                 )
             }
             item { updaterCard() }
+            item {
+                NotificationsSection(
+                    state = state,
+                    onAgentFinishedChange = viewModel::setAgentFinishedEnabled,
+                    onStrongVibrationChange = viewModel::setAgentStrongVibration,
+                    // Bypass-DND has two halves: persist the pref (VM, sees
+                    // :core:data) AND rebuild the channel + launch the
+                    // policy-access screen (host, sees :app). Fan out to both.
+                    onAgentBypassDndChange = { enabled ->
+                        viewModel.setAgentBypassDnd(enabled)
+                        onAgentBypassDndChange(enabled)
+                    },
+                    onTestAlert = onTestAlert,
+                    pushDistributors = pushDistributors,
+                    pushAckDistributor = pushAckDistributor,
+                    onPushEnabledChange = onPushEnabledChange,
+                    onChoosePushDistributor = onChoosePushDistributor,
+                )
+            }
         }
+    }
+}
+
+/**
+ * herdr "Notifications" section. The pref-backed switches drive the VM
+ * (which writes [dev.kuch.termx.core.data.prefs.AlertPreferences]); the
+ * actions that need `:app` singletons (test alert, bypass-DND channel
+ * rebuild + policy launch, UnifiedPush picker) are routed through the
+ * callbacks the :app NavHost passes into [SettingsScreen].
+ */
+@Composable
+private fun NotificationsSection(
+    state: SettingsUiState,
+    onAgentFinishedChange: (Boolean) -> Unit,
+    onStrongVibrationChange: (Boolean) -> Unit,
+    onAgentBypassDndChange: (Boolean) -> Unit,
+    onTestAlert: () -> Unit,
+    pushDistributors: List<String>,
+    pushAckDistributor: String?,
+    onPushEnabledChange: (Boolean) -> Unit,
+    onChoosePushDistributor: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    var pickerExpanded by remember { mutableStateOf(false) }
+
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            SectionHeader("Notifications")
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = "Alert you when a remote AI agent finishes its work.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            SwitchRow(
+                title = "Agent-finished alerts",
+                subtitle = "Notify on the herdr channel when an agent wraps up.",
+                checked = state.agentFinishedEnabled,
+                onCheckedChange = onAgentFinishedChange,
+            )
+            SwitchRow(
+                title = "Strong vibration (3s)",
+                subtitle = "Three full-strength buzzes so a pocketed phone is felt.",
+                checked = state.agentStrongVibration,
+                onCheckedChange = onStrongVibrationChange,
+            )
+            SwitchRow(
+                title = "Bypass Do Not Disturb",
+                subtitle = "Let agent alerts through while DND is on (needs policy access).",
+                checked = state.agentBypassDnd,
+                onCheckedChange = onAgentBypassDndChange,
+            )
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(onClick = onTestAlert) { Text("Test alert") }
+
+            Spacer(Modifier.height(20.dp))
+            Text(
+                text = "Push when app is closed",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Spacer(Modifier.height(8.dp))
+            SwitchRow(
+                title = "UnifiedPush",
+                subtitle = "Receive agent alerts via a push app even when termx is closed.",
+                checked = state.unifiedPushEnabled,
+                onCheckedChange = onPushEnabledChange,
+            )
+
+            Spacer(Modifier.height(8.dp))
+            if (pushDistributors.isEmpty()) {
+                Text(
+                    text = "No push app installed.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                OutlinedButton(onClick = {
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(NTFY_INSTALL_URL)).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    runCatching { context.startActivity(intent) }
+                }) {
+                    Text("Install ntfy")
+                }
+            } else {
+                Text(
+                    text = "Push app: ${pushAckDistributor ?: "not selected"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Box {
+                    OutlinedButton(onClick = { pickerExpanded = true }) {
+                        Text("Choose push app")
+                    }
+                    DropdownMenu(
+                        expanded = pickerExpanded,
+                        onDismissRequest = { pickerExpanded = false },
+                    ) {
+                        pushDistributors.forEach { pkg ->
+                            DropdownMenuItem(
+                                text = { Text(pkg) },
+                                onClick = {
+                                    onChoosePushDistributor(pkg)
+                                    pickerExpanded = false
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            Text(
+                text = if (state.unifiedPushEndpoint.isNotBlank()) {
+                    "Endpoint synced"
+                } else {
+                    "Waiting for registration"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+private const val NTFY_INSTALL_URL = "https://f-droid.org/packages/io.heckel.ntfy/"
+
+/**
+ * A title + optional subtitle on the left and a trailing [Switch],
+ * matching the card body style used by the other settings sections.
+ */
+@Composable
+private fun SwitchRow(
+    title: String,
+    subtitle: String? = null,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

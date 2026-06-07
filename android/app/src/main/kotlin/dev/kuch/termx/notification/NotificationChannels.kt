@@ -53,6 +53,7 @@ class NotificationChannels @Inject constructor(
         nm.createNotificationChannel(buildTaskChannel())
         nm.createNotificationChannel(buildErrorChannel())
         nm.createNotificationChannel(buildDisconnectChannel())
+        nm.createNotificationChannel(buildAgentChannel())
     }
 
     private fun buildPermissionChannel(): NotificationChannel =
@@ -124,12 +125,50 @@ class NotificationChannels @Inject constructor(
             )
         }
 
+    private fun buildAgentChannel(): NotificationChannel =
+        NotificationChannel(
+            AGENT,
+            "Agent finished",
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = "A remote AI agent finished its work."
+            group = GROUP_ID
+            setSound(
+                RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION),
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            // Vibration is fired from code as a controlled max-amplitude
+            // VibrationEffect for guaranteed strength; if the channel also
+            // vibrated, the user would feel a double-buzz.
+            enableVibration(false)
+        }
+
+    /**
+     * Recreate the agent channel with the given DND-bypass setting.
+     *
+     * Channel settings are immutable after creation, so we delete and
+     * rebuild the channel to flip [NotificationChannel.setBypassDnd].
+     * [setBypassDnd] is a harmless no-op until the app holds Notification
+     * Policy Access, which the settings screen requests before calling.
+     */
+    fun setAgentBypassDnd(enabled: Boolean) {
+        val nm = ContextCompat.getSystemService(context, NotificationManager::class.java) ?: return
+        nm.deleteNotificationChannel(AGENT)
+        nm.createNotificationChannel(
+            buildAgentChannel().apply { setBypassDnd(enabled) },
+        )
+    }
+
     companion object {
         const val GROUP_ID = "termx"
         const val PERMISSION = "termx.permission"
         const val TASK = "termx.task"
         const val ERROR = "termx.error"
         const val DISCONNECT = "termx.disconnect"
+        const val AGENT = "termx.agent"
 
         // Distinct vibration patterns per high-importance channel: users
         // learn the cadence over time (like ringtones) and can triage

@@ -66,6 +66,7 @@ class EventNotificationRouter @Inject constructor(
     @ApplicationContext private val context: Context,
     private val hub: EventStreamHub,
     private val alertPreferences: AlertPreferences,
+    private val agentAlertPoster: AgentAlertPoster,
 ) {
     private var rootJob: Job? = null
     private val perServerJobs = mutableMapOf<UUID, Job>()
@@ -140,6 +141,7 @@ class EventNotificationRouter @Inject constructor(
             is TermxEvent.ClaudeIdle -> {
                 if (!isTaskMuted(serverId)) postClaudeIdle(serverId, serverLabel, event)
             }
+            is TermxEvent.AgentFinished -> postAgentFinished(serverId, serverLabel, event)
             is TermxEvent.SessionCreated,
             is TermxEvent.PermissionResolved,
             is TermxEvent.ClaudeWorking,
@@ -311,6 +313,32 @@ class EventNotificationRouter @Inject constructor(
             .setAutoCancel(true)
             .build()
         nm()?.notify(notificationId, notification)
+    }
+
+    /**
+     * Tier-1 (in-connection) agent-finished alert.
+     *
+     * Supersede rule: when UnifiedPush (Tier 2) is enabled the push
+     * service will deliver this same alert, so we suppress the in-connection
+     * one to avoid a double notification — the user gets exactly one alert.
+     *
+     * Gating: honour the global enable switch and the per-server mute set,
+     * both read at emit time. Once cleared, the actual notification build +
+     * strong vibration is delegated to the shared [AgentAlertPoster] so the
+     * Tier-2 push service can post an identical alert from the same code.
+     */
+    private suspend fun postAgentFinished(
+        serverId: UUID,
+        serverLabel: String,
+        event: TermxEvent.AgentFinished,
+    ) {
+        // SUPERSEDE: Tier 2 will deliver it — don't double-notify.
+        if (alertPreferences.unifiedPushEnabled.first()) return
+        // GATE: global switch + per-server mute.
+        if (!alertPreferences.agentFinishedEnabled.first()) return
+        if (alertPreferences.agentFinishedMuted.first().contains(serverId)) return
+
+        agentAlertPoster.post(serverId, serverLabel, event.agent, event.workspace)
     }
 
     private fun stackingId(serverId: UUID, bucket: String): Int =

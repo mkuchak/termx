@@ -100,6 +100,16 @@ sealed class TermxEvent {
         override val session: String,
     ) : TermxEvent()
 
+    @Serializable
+    @SerialName("agent_finished")
+    data class AgentFinished(
+        override val ts: Instant,
+        override val session: String,
+        val source: String,            // e.g. "herdr"
+        val agent: String,             // agent label, e.g. "claude"
+        val workspace: String? = null, // herdr workspace/tab label
+    ) : TermxEvent()
+
     /**
      * Fallback bucket. Not part of the wire schema; the parser assembles this
      * when it sees an unknown `type` or cannot decode a line at all.

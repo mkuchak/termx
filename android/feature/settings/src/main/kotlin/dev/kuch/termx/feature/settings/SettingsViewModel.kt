@@ -3,6 +3,7 @@ package dev.kuch.termx.feature.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dev.kuch.termx.core.data.prefs.AlertPreferences
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.GeminiApiKeyStore
 import javax.inject.Inject
@@ -26,6 +27,7 @@ import kotlinx.coroutines.launch
 class SettingsViewModel @Inject constructor(
     private val appPreferences: AppPreferences,
     private val geminiApiKeyStore: GeminiApiKeyStore,
+    private val alertPreferences: AlertPreferences,
 ) : ViewModel() {
 
     private val geminiKeySaved = MutableStateFlow(false)
@@ -47,12 +49,36 @@ class SettingsViewModel @Inject constructor(
         appPreferences.pttContext,
     ) { source, target, context -> Triple(source, target, context) }
 
+    /**
+     * The five [AlertPreferences] flows that back the Notifications
+     * section exceed the typed 5-arg `combine`, so collapse them into a
+     * single [AlertState] holder up-front — same trick as
+     * [pttLanguageFlow] above keeps the top-level `combine` inside its
+     * typed overload instead of the `Array<Any?>` vararg form.
+     */
+    private val alertFlow = combine(
+        alertPreferences.agentFinishedEnabled,
+        alertPreferences.agentStrongVibration,
+        alertPreferences.agentBypassDnd,
+        alertPreferences.unifiedPushEnabled,
+        alertPreferences.unifiedPushEndpoint,
+    ) { enabled, strongVibe, bypassDnd, pushEnabled, endpoint ->
+        AlertState(
+            agentFinishedEnabled = enabled,
+            agentStrongVibration = strongVibe,
+            agentBypassDnd = bypassDnd,
+            unifiedPushEnabled = pushEnabled,
+            unifiedPushEndpoint = endpoint,
+        )
+    }
+
     val state: StateFlow<SettingsUiState> = combine(
         appPreferences.fontSizeSp,
         geminiKeySaved,
         geminiSaveStatus,
         pttLanguageFlow,
-    ) { fontSp, keySaved, saveStatus, ptt ->
+        alertFlow,
+    ) { fontSp, keySaved, saveStatus, ptt, alert ->
         SettingsUiState(
             fontSizeSp = fontSp,
             geminiKeyPresent = keySaved,
@@ -60,11 +86,24 @@ class SettingsViewModel @Inject constructor(
             pttSourceLanguage = ptt.first,
             pttTargetLanguage = ptt.second,
             pttContext = ptt.third,
+            agentFinishedEnabled = alert.agentFinishedEnabled,
+            agentStrongVibration = alert.agentStrongVibration,
+            agentBypassDnd = alert.agentBypassDnd,
+            unifiedPushEnabled = alert.unifiedPushEnabled,
+            unifiedPushEndpoint = alert.unifiedPushEndpoint,
         )
     }.stateIn(
         viewModelScope,
         SharingStarted.WhileSubscribed(5_000),
         SettingsUiState(),
+    )
+
+    private data class AlertState(
+        val agentFinishedEnabled: Boolean,
+        val agentStrongVibration: Boolean,
+        val agentBypassDnd: Boolean,
+        val unifiedPushEnabled: Boolean,
+        val unifiedPushEndpoint: String,
     )
 
     fun setFontSize(sp: Int) {
@@ -122,6 +161,26 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch { appPreferences.setPttContext(value) }
     }
 
+    fun setAgentFinishedEnabled(enabled: Boolean) {
+        viewModelScope.launch { alertPreferences.setAgentFinishedEnabled(enabled) }
+    }
+
+    fun setAgentStrongVibration(enabled: Boolean) {
+        viewModelScope.launch { alertPreferences.setAgentStrongVibration(enabled) }
+    }
+
+    /**
+     * Persist the bypass-DND preference. The matching channel rebuild
+     * ([NotificationChannels.setAgentBypassDnd]) and the policy-access
+     * settings launch are `:app`-only side-effects driven by the host
+     * (apps depend on features, not the reverse), so the screen invokes
+     * those through [SettingsScreen]'s `onAgentBypassDndChange` slot
+     * alongside this persistence call.
+     */
+    fun setAgentBypassDnd(enabled: Boolean) {
+        viewModelScope.launch { alertPreferences.setAgentBypassDnd(enabled) }
+    }
+
     private fun refreshGeminiKeyPresence() {
         viewModelScope.launch {
             val present = runCatching { geminiApiKeyStore.exists() }.getOrDefault(false)
@@ -137,4 +196,9 @@ data class SettingsUiState(
     val pttSourceLanguage: String = "en-US",
     val pttTargetLanguage: String = "en-US",
     val pttContext: String = "",
+    val agentFinishedEnabled: Boolean = true,
+    val agentStrongVibration: Boolean = true,
+    val agentBypassDnd: Boolean = false,
+    val unifiedPushEnabled: Boolean = false,
+    val unifiedPushEndpoint: String = "",
 )
