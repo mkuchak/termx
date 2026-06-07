@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.4.0](https://github.com/mkuchak/termx/compare/v1.3.4...v1.4.0) (2026-06-07)
+
+### Features
+
+* replace tmux auto-attach with an optional startup command ([c6a0e7f](https://github.com/mkuchak/termx/commit/c6a0e7f57f82b185f1958a7c29fd2a710c75668a))
+
+### Refactoring
+
+* **termxd:** drop tmux install, hooks, and session tracking ([de1fa09](https://github.com/mkuchak/termx/commit/de1fa09492031925a5c01ec053e0e4b8e9a7ba98))
+
 ## [1.3.4](https://github.com/mkuchak/termx/compare/v1.3.3...v1.3.4) (2026-05-25)
 
 ### Bug Fixes
