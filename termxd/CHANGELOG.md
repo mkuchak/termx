@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.5](https://github.com/mkuchak/termx/compare/termxd-v0.1.4...termxd-v0.1.5) (2026-06-07)
+
+### Features
+
+* deliver alerts over mosh and offer VPS companion updates ([718468d](https://github.com/mkuchak/termx/commit/718468da1067fdd06e57978dd39415384b2a537e))
+
+### Bug Fixes
+
+* **notifications:** only supersede the in-app alert when push is deliverable ([4f45925](https://github.com/mkuchak/termx/commit/4f45925b7285bdc0f47298ea505570270408a013))
+* **termxd:** catch idle-finishes and unify events.ndjson rotation ([b9e55e6](https://github.com/mkuchak/termx/commit/b9e55e6f009aec4ab2a586c8a29ff5d7dff61f4c))
+
 ## [0.1.4](https://github.com/mkuchak/termx/compare/termxd-v0.1.3...termxd-v0.1.4) (2026-06-07)
 
 ### Bug Fixes
