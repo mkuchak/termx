@@ -22,6 +22,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import org.unifiedpush.android.connector.UnifiedPush
 
 /**
  * Subscribes to every live [EventStreamClient] published in
@@ -122,7 +123,7 @@ class EventNotificationRouter @Inject constructor(
         perServerJobs.clear()
     }
 
-    private suspend fun handle(serverId: UUID, serverLabel: String, event: TermxEvent) {
+    internal suspend fun handle(serverId: UUID, serverLabel: String, event: TermxEvent) {
         when (event) {
             is TermxEvent.PermissionRequested -> postPermission(serverId, serverLabel, event)
             is TermxEvent.ShellCommandLong -> {
@@ -318,9 +319,14 @@ class EventNotificationRouter @Inject constructor(
     /**
      * Tier-1 (in-connection) agent-finished alert.
      *
-     * Supersede rule: when UnifiedPush (Tier 2) is enabled the push
-     * service will deliver this same alert, so we suppress the in-connection
-     * one to avoid a double notification — the user gets exactly one alert.
+     * Supersede rule: suppress this in-connection alert ONLY when Tier 2
+     * (UnifiedPush) is *genuinely deliverable* — see
+     * [tier2GenuinelyDeliverable]. A user who flips the UnifiedPush pref ON
+     * without completing distributor/endpoint setup must NOT have Tier 1
+     * suppressed, or they'd get total silence (no Tier 1, no Tier 2). The
+     * in-app alert is the floor; we only narrow suppression to the case
+     * where Tier 2 will actually fire, keeping the "exactly one alert"
+     * contract intact for correctly-configured users.
      *
      * Gating: honour the global enable switch and the per-server mute set,
      * both read at emit time. Once cleared, the actual notification build +
@@ -332,13 +338,34 @@ class EventNotificationRouter @Inject constructor(
         serverLabel: String,
         event: TermxEvent.AgentFinished,
     ) {
-        // SUPERSEDE: Tier 2 will deliver it — don't double-notify.
-        if (alertPreferences.unifiedPushEnabled.first()) return
+        // SUPERSEDE: only when Tier 2 will genuinely deliver — else fall
+        // through so the in-app alert (the floor) still fires.
+        if (tier2GenuinelyDeliverable()) return
         // GATE: global switch + per-server mute.
         if (!alertPreferences.agentFinishedEnabled.first()) return
         if (alertPreferences.agentFinishedMuted.first().contains(serverId)) return
 
         agentAlertPoster.post(serverId, serverLabel, event.agent, event.workspace)
+    }
+
+    /**
+     * True only when all three Tier-2 signals line up so a UnifiedPush
+     * delivery will actually happen:
+     *  1. the user enabled UnifiedPush ([AlertPreferences.unifiedPushEnabled]);
+     *  2. a distributor endpoint was registered and persisted
+     *     ([AlertPreferences.unifiedPushEndpoint], set in `TermxPushService`);
+     *  3. an acknowledged distributor is still installed/selected right now
+     *     ([UnifiedPush.getAckDistributor], re-queried live so an uninstalled
+     *     distributor flips this back to null).
+     *
+     * Strict AND of positive signals: any unknown/missing/error resolves to
+     * `false`, which lets the Tier-1 in-app alert fire. This only NARROWS
+     * suppression — it never introduces a new double-notification.
+     */
+    internal suspend fun tier2GenuinelyDeliverable(): Boolean {
+        if (!alertPreferences.unifiedPushEnabled.first()) return false
+        if (alertPreferences.unifiedPushEndpoint.first().isBlank()) return false
+        return UnifiedPush.getAckDistributor(context) != null
     }
 
     private fun stackingId(serverId: UUID, bucket: String): Int =
