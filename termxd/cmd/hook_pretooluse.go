@@ -159,7 +159,8 @@ func runHookPreToolUse(stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	_ = internal.RotateIfNeeded(internal.DefaultRotateBytes)
+	// Rotation is handled inside AppendEvent; the permission_resolved appends
+	// below now rotate too (they previously bypassed RotateIfNeeded).
 	_ = internal.AppendEvent("permission_requested", sessionName, map[string]any{
 		"request_id": id,
 		"tool_name":  input.ToolName,

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,15 +39,27 @@ func TestHerdrBinFallsBackToName(t *testing.T) {
 	}
 }
 
-// doneFrame builds a herdr done frame for tests.
-func doneFrame(pane, ws, agent string) herdrStatusFrame {
+// statusFrame builds a herdr pane.agent_status_changed frame for tests.
+func statusFrame(pane, ws, agent, status string) herdrStatusFrame {
 	var f herdrStatusFrame
 	f.Event = "pane.agent_status_changed"
 	f.Data.PaneID = pane
 	f.Data.WorkspaceID = ws
 	f.Data.Agent = agent
-	f.Data.AgentStatus = finishStatus
+	f.Data.AgentStatus = status
 	return f
+}
+
+// doneFrame builds a herdr "done" (finished, not-yet-seen) frame for tests.
+func doneFrame(pane, ws, agent string) herdrStatusFrame {
+	return statusFrame(pane, ws, agent, "done")
+}
+
+// idleFrame builds a herdr "idle" (finished, already-seen) frame for tests —
+// the finish flavor that lands directly in idle when a client has the agent's
+// tab focused.
+func idleFrame(pane, ws, agent string) herdrStatusFrame {
+	return statusFrame(pane, ws, agent, "idle")
 }
 
 func TestFinishFields(t *testing.T) {
@@ -176,30 +189,80 @@ func TestParseAgentList(t *testing.T) {
 	}
 }
 
+func TestIsFinishedStatus(t *testing.T) {
+	cases := map[string]bool{
+		"idle":     true,
+		"done":     true,
+		"working":  false,
+		"blocked":  false,
+		"unknown":  false,
+		"":         false,
+		"finished": false, // the internal sentinel is NOT a herdr status
+	}
+	for in, want := range cases {
+		if got := isFinishedStatus(in); got != want {
+			t.Errorf("isFinishedStatus(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 func TestScanFirstStatusFrame(t *testing.T) {
-	// Mixed stream: ack line, the human "timed out" string, then the match.
+	// Mixed stream: ack line, a working frame, then the finish frame.
 	stream := strings.Join([]string{
 		`{"id":"cli:wait:agent-status:sub:0:probe","result":{"type":"subscription_started"}}`,
 		`{"event":"pane.agent_status_changed","data":{"pane_id":"wb-1","workspace_id":"wb","agent_status":"working","agent":"claude"}}`,
 		`{"event":"pane.agent_status_changed","data":{"pane_id":"wb-1","workspace_id":"wb","agent_status":"done","agent":"claude"}}`,
 	}, "\n")
-	f, ok := scanFirstStatusFrame(strings.NewReader(stream), "done")
+	f, ok := scanFirstStatusFrame(strings.NewReader(stream), isFinishedStatus)
 	if !ok {
-		t.Fatal("expected a done match")
+		t.Fatal("expected a finish match")
 	}
 	if f.Data.PaneID != "wb-1" || f.Data.AgentStatus != "done" || f.Data.Agent != "claude" {
 		t.Errorf("frame = %+v", f)
 	}
 
-	// No matching status -> ok=false.
-	noMatch := `{"event":"pane.agent_status_changed","data":{"pane_id":"wb-1","agent_status":"idle"}}` + "\n"
-	if _, ok := scanFirstStatusFrame(strings.NewReader(noMatch), "done"); ok {
-		t.Error("expected no match for idle-only stream")
+	// THE CORE FIX: an idle-only finish frame now MATCHES (previously, waiting
+	// on the "done" literal, this was dropped and the finish was missed).
+	idleOnly := `{"event":"pane.agent_status_changed","data":{"pane_id":"wb-1","agent_status":"idle"}}` + "\n"
+	fi, ok := scanFirstStatusFrame(strings.NewReader(idleOnly), isFinishedStatus)
+	if !ok {
+		t.Fatal("expected idle frame to match isFinishedStatus (the core idle-finish fix)")
+	}
+	if fi.Data.AgentStatus != "idle" {
+		t.Errorf("idle frame = %+v", fi)
+	}
+
+	// A predicate that accepts nothing finished -> a working-only stream yields
+	// no match (confirms the predicate is actually consulted).
+	working := `{"event":"pane.agent_status_changed","data":{"pane_id":"wb-1","agent_status":"working"}}` + "\n"
+	if _, ok := scanFirstStatusFrame(strings.NewReader(working), isFinishedStatus); ok {
+		t.Error("expected no finish match for working-only stream")
 	}
 
 	// "timed out" human line + EOF -> ok=false, no panic.
-	if _, ok := scanFirstStatusFrame(strings.NewReader("timed out waiting for agent status change\n"), "done"); ok {
+	if _, ok := scanFirstStatusFrame(strings.NewReader("timed out waiting for agent status change\n"), isFinishedStatus); ok {
 		t.Error("expected no match for timeout line")
+	}
+}
+
+// TestEmitFinishEdgeGate exercises the pure edge predicate: a fresh finish
+// (prev empty / working / blocked) emits; a finish observed while the pane was
+// already finished (idle/done) or already marked finished is suppressed — so
+// the done<->idle acknowledgment never double-fires.
+func TestEmitFinishEdgeGate(t *testing.T) {
+	cases := map[string]bool{
+		"":         true,  // never seen -> emit
+		"working":  true,  // working -> finished is a real edge
+		"blocked":  true,  // blocked -> finished is a real edge
+		"unknown":  true,  // unknown -> finished is a real edge
+		"idle":     false, // already finished (seen) -> suppress
+		"done":     false, // already finished (unseen) -> suppress
+		"finished": false, // already collapsed to the sentinel -> suppress
+	}
+	for prev, want := range cases {
+		if got := shouldEmitFinish(prev); got != want {
+			t.Errorf("shouldEmitFinish(%q) = %v, want %v", prev, got, want)
+		}
 	}
 }
 
@@ -317,4 +380,122 @@ func mustPaths(t *testing.T) *internal.Paths {
 		t.Fatalf("ResolvePaths: %v", err)
 	}
 	return p
+}
+
+// newTestWatcher wires a herdrWatcher with a no-op poster and discard buffers,
+// rooted at the isolated HOME, ready for synchronous prime/reconcile driving.
+func newTestWatcher(t *testing.T) *herdrWatcher {
+	t.Helper()
+	return &herdrWatcher{
+		paths:  mustPaths(t),
+		stdout: &bytes.Buffer{},
+		stderr: &bytes.Buffer{},
+		poster: func(string, string) (int, error) { return 200, nil },
+		now:    func() time.Time { return time.Now().UTC() },
+	}
+}
+
+// scriptedLister returns a lister that yields the next scripted snapshot on each
+// call (clamping at the last once exhausted), so a test can step the daemon
+// through a status timeline by calling prime()/reconcile() in sequence.
+func scriptedLister(steps ...[]herdrAgent) agentLister {
+	i := 0
+	return func(context.Context) ([]herdrAgent, error) {
+		s := steps[i]
+		if i < len(steps)-1 {
+			i++
+		}
+		return s, nil
+	}
+}
+
+// noopSpawn is a waiter-spawn that does nothing — the integration tests drive
+// the edge logic via prime/reconcile directly, so no real waiter goroutines are
+// needed (and none must run, to keep the tests deterministic). The working->idle
+// transition is delivered by the NEXT reconcile's snapshot instead of a waiter.
+func noopSpawn(string) {}
+
+// TestRunCatchesIdleFinish is the core fix: a pane that goes working then lands
+// directly in "idle" (focused-tab finish) must emit exactly one agent_finished.
+// Pre-fix, the daemon only waited on "done" and this finish was silently lost.
+func TestRunCatchesIdleFinish(t *testing.T) {
+	dir := isolateHome(t)
+	w := newTestWatcher(t)
+	w.lister = scriptedLister(
+		[]herdrAgent{{PaneID: "wb-1", WorkspaceID: "wb", Agent: "claude", AgentStatus: "working", Cwd: "/home/u/ws/termx"}},
+		[]herdrAgent{{PaneID: "wb-1", WorkspaceID: "wb", Agent: "claude", AgentStatus: "idle", Cwd: "/home/u/ws/termx"}},
+	)
+	st := newWatchState(w)
+	ctx := context.Background()
+
+	if err := st.prime(ctx, noopSpawn); err != nil { // working: record, no emit
+		t.Fatalf("prime: %v", err)
+	}
+	if got := readEvents(t, dir); len(got) != 0 {
+		t.Fatalf("prime emitted %d events, want 0", len(got))
+	}
+	if err := st.reconcile(ctx, noopSpawn); err != nil { // working -> idle: emit
+		t.Fatalf("reconcile: %v", err)
+	}
+
+	events := readEvents(t, dir)
+	if len(events) != 1 {
+		t.Fatalf("events = %d, want exactly 1 (idle finish must fire once)", len(events))
+	}
+	if events[0]["type"] != "agent_finished" || events[0]["session"] != "wb-1" || events[0]["workspace"] != "termx" {
+		t.Errorf("event = %v", events[0])
+	}
+}
+
+// TestRunNoDoubleFireOnAck: a finish that arrives as "done" and is then
+// acknowledged to "idle" (the done->idle collapse when the human focuses the
+// tab) must emit exactly once — the edge gate suppresses the idle ack.
+func TestRunNoDoubleFireOnAck(t *testing.T) {
+	dir := isolateHome(t)
+	w := newTestWatcher(t)
+	w.lister = scriptedLister(
+		[]herdrAgent{{PaneID: "wb-1", WorkspaceID: "wb", Agent: "claude", AgentStatus: "working", Cwd: "/home/u/ws/termx"}},
+		[]herdrAgent{{PaneID: "wb-1", WorkspaceID: "wb", Agent: "claude", AgentStatus: "done", Cwd: "/home/u/ws/termx"}},
+		[]herdrAgent{{PaneID: "wb-1", WorkspaceID: "wb", Agent: "claude", AgentStatus: "idle", Cwd: "/home/u/ws/termx"}},
+	)
+	st := newWatchState(w)
+	ctx := context.Background()
+
+	if err := st.prime(ctx, noopSpawn); err != nil { // working
+		t.Fatalf("prime: %v", err)
+	}
+	if err := st.reconcile(ctx, noopSpawn); err != nil { // working -> done: emit
+		t.Fatalf("reconcile done: %v", err)
+	}
+	if err := st.reconcile(ctx, noopSpawn); err != nil { // done -> idle ack: suppress
+		t.Fatalf("reconcile idle: %v", err)
+	}
+
+	if events := readEvents(t, dir); len(events) != 1 {
+		t.Fatalf("events = %d, want exactly 1 (done then idle ack must not double-fire)", len(events))
+	}
+}
+
+// TestRunSuppressesRestingAtStartup: panes already resting finished (idle and
+// done) when the daemon starts must NOT re-alert. prime seeds their state
+// without emitting, so a restart doesn't replay every already-seen finish.
+func TestRunSuppressesRestingAtStartup(t *testing.T) {
+	dir := isolateHome(t)
+	w := newTestWatcher(t)
+	w.lister = scriptedLister(
+		[]herdrAgent{
+			{PaneID: "wa-1", WorkspaceID: "wa", Agent: "claude", AgentStatus: "idle", Cwd: "/home/u/ws/a"},
+			{PaneID: "wb-1", WorkspaceID: "wb", Agent: "codex", AgentStatus: "done", Cwd: "/home/u/ws/b"},
+		},
+	)
+	st := newWatchState(w)
+	ctx := context.Background()
+
+	if err := st.prime(ctx, noopSpawn); err != nil {
+		t.Fatalf("prime: %v", err)
+	}
+
+	if events := readEvents(t, dir); len(events) != 0 {
+		t.Fatalf("events = %d, want 0 (resting-finished panes must not replay on startup)", len(events))
+	}
 }

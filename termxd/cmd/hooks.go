@@ -186,7 +186,8 @@ func runPrecmd(exitCode, ppid int, now time.Time) error {
 		return nil
 	}
 
-	_ = internal.RotateIfNeeded(internal.DefaultRotateBytes)
+	// Rotation is handled inside AppendEvent (rename-rotation from the
+	// just-written fd's size); no separate pre-append RotateIfNeeded needed.
 	return internal.AppendEvent(eventType, entry.Session, map[string]any{
 		"cmd":         entry.Cmd,
 		"duration_ms": durationMs,

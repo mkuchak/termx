@@ -121,7 +121,7 @@ func runHookPostToolUse(stdin io.Reader, stdout, stderr io.Writer) error {
 		return nil
 	}
 
-	_ = internal.RotateIfNeeded(internal.DefaultRotateBytes)
+	// Rotation is handled inside AppendEvent (rename-rotation from the fd size).
 	_ = internal.AppendEvent("diff_created", session, map[string]any{
 		"diff_id":   id,
 		"file_path": filePath,

@@ -58,13 +58,44 @@ import (
 // fails (herdr not running yet / restarting).
 // ---------------------------------------------------------------------------
 
-// finishStatus is the herdr agent status that means "the agent stopped and
-// wants the human" — i.e. agent-finished. herdr explicitly designates "done"
-// as the UI attention state for completion (`agent wait` refuses "done" and
-// points at "idle" for *programmatic* idle waits, but `wait agent-status`
-// accepts "done" and it is the state surfaced as agent_status:"done" in
-// `agent list` when Claude finishes a turn).
-const finishStatus = "done"
+// A herdr agent finish surfaces as one of TWO public agent statuses, both
+// derived from the same internal AgentState::Idle (herdr
+// app/api_helpers.rs:75-76):
+//
+//   - "done" — finished, NOT yet seen by any interactive client (no herdr UI
+//     attached with the agent's tab focused). The common headless case.
+//   - "idle" — finished, ALREADY seen (an interactive herdr client had the
+//     agent's tab focused when it finished, so herdr immediately marked the
+//     pane seen and collapsed done->idle).
+//
+// Either means "the agent stopped and wants the human" — i.e. agent-finished.
+// We must treat BOTH as a finish, or finishes that land directly in "idle"
+// (focused-tab case) are silently dropped.
+func isFinishedStatus(s string) bool { return s == "idle" || s == "done" }
+
+// waitStatus is what we pass to `herdr wait agent-status <pane> --status`.
+// We wait on "idle": that catches the live working->idle transition (the
+// focused-tab finish) with low latency. The complementary working->done
+// transition (headless finish) is caught by the reconcile() snapshot path
+// (it edge-emits any pane found resting in a finished status on the next
+// `agent list` / 5s tick), so both finish flavors are covered.
+//
+// NB: herdr's `wait agent-status` subscription is a strict single-status
+// server-side filter (subscriptions.rs:386 `wanted != agent_status =>
+// continue`) — unlike `agent wait` it does NOT auto-include done when waiting
+// on idle. The scanner below still accepts either via isFinishedStatus so a
+// done frame on this pipe (should herdr ever deliver one) is honored, but the
+// authoritative done catch is reconcile, not this waiter.
+const waitStatus = "idle"
+
+// finishedMark is the sentinel lastStatus value emitFinish writes after firing.
+// It collapses the done<->idle pair into ONE "already finished" state so the
+// done->idle (or idle->done) acknowledgment transition never double-fires.
+// emitFinish is the sole writer of finishedMark; reconcile only ever writes
+// raw herdr statuses (working/blocked/unknown/...), so when a finished pane
+// resumes work reconcile overwrites finishedMark with the live status and
+// re-arms a waiter, re-arming the next finish as a fresh edge.
+const finishedMark = "finished"
 
 // herdrListBackoff bounds reconnect attempts when herdr is unavailable.
 const (
@@ -166,11 +197,158 @@ type herdrWatcher struct {
 	lastSnapshot atomic.Pointer[snapshot]
 }
 
-// run is the supervise loop: (re)snapshot panes, keep one done-waiter alive
+// shouldEmitFinish is the pure edge-gate: given the PRIOR lastStatus for a
+// pane, report whether a freshly observed finish should actually emit. It
+// suppresses when the pane was already in a finished status (idle/done) or was
+// already marked finished — so the done<->idle acknowledgment transition, and
+// repeated finish observations from waiter+snapshot racing, never double-fire.
+func shouldEmitFinish(prev string) bool {
+	return !(isFinishedStatus(prev) || prev == finishedMark)
+}
+
+// watchState holds the daemon's mutable edge-trigger state: which panes have a
+// live waiter goroutine, and the last status seen per pane. Splitting it out
+// (with reconcile/prime/emitFinish as methods) lets the tests drive the core
+// logic synchronously instead of through the run() goroutine soup.
+type watchState struct {
+	w *herdrWatcher
+
+	mu sync.Mutex
+	// active tracks pane_ids that currently have a live waiter goroutine, so
+	// reconciliation never double-spawns for the same pane.
+	active map[string]context.CancelFunc
+	// lastStatus is the last agent_status we observed per pane. It makes the
+	// daemon EDGE-triggered: an agent_finished event fires only on the
+	// transition INTO a finished status, never repeatedly while a pane rests
+	// finished. emitFinish writes finishedMark here; reconcile writes raw
+	// statuses. (herdr's `wait agent-status` is level-triggered — it returns
+	// instantly for an already-finished pane — so without this gate a resting
+	// finished pane would spin a hot re-arm loop emitting duplicate alerts.)
+	lastStatus map[string]string
+}
+
+func newWatchState(w *herdrWatcher) *watchState {
+	return &watchState{
+		w:          w,
+		active:     map[string]context.CancelFunc{},
+		lastStatus: map[string]string{},
+	}
+}
+
+// emitFinish fires Tier1+Tier2 finish handling for a pane, but only on the
+// finished EDGE (see shouldEmitFinish). It collapses the marker to finishedMark
+// so a following done<->idle ack is suppressed. Returns true iff it emitted.
+func (s *watchState) emitFinish(f herdrStatusFrame) bool {
+	pane := f.Data.PaneID
+	s.mu.Lock()
+	prev := s.lastStatus[pane]
+	s.lastStatus[pane] = finishedMark
+	s.mu.Unlock()
+	if !shouldEmitFinish(prev) {
+		return false // already finished / already counted; suppress duplicate.
+	}
+	s.w.onFinish(f)
+	return true
+}
+
+// prime seeds lastStatus from the FIRST snapshot WITHOUT emitting, so a daemon
+// (re)start does not re-alert every pane already resting in a finished status
+// (this matters now that we treat idle as a finish — every already-seen pane is
+// "idle" at startup). Panes resting finished are marked finishedMark (so the
+// next real edge emits); non-resting panes record their raw status and arm a
+// waiter, exactly as reconcile would. Trade-off: a finish that happened during
+// daemon downtime is lost — acceptable, as the daemon is the sole producer.
+func (s *watchState) prime(ctx context.Context, spawn func(paneID string)) error {
+	agents, err := s.w.lister(ctx)
+	if err != nil {
+		return err
+	}
+	seen := indexAgents(agents)
+	s.w.lastSnapshot.Store(snapshotPtr(seen))
+
+	for _, a := range agents {
+		if a.PaneID == "" {
+			continue
+		}
+		if isFinishedStatus(a.AgentStatus) {
+			// Resting finished at startup: record as already-finished, do NOT
+			// emit, do NOT arm a waiter (a finished pane stays finished until
+			// the human acts; reconcile will re-arm when it resumes work).
+			s.mu.Lock()
+			s.lastStatus[a.PaneID] = finishedMark
+			s.mu.Unlock()
+			continue
+		}
+		s.mu.Lock()
+		s.lastStatus[a.PaneID] = a.AgentStatus
+		s.mu.Unlock()
+		spawn(a.PaneID)
+	}
+	return nil
+}
+
+// reconcile lists panes and reconciles waiters + edge state:
+//   - records each pane's current status (so the next change is an edge);
+//   - for a pane ALREADY finished (idle/done) in the snapshot, emits once on
+//     the edge (no hot waiter — a finished pane stays finished until the human
+//     acts);
+//   - for any other pane, arms a low-latency `wait agent-status idle` goroutine
+//     to catch the working->idle transition promptly.
+//
+// Vanished panes drop out of lastStatus so a recreated pane re-edges.
+func (s *watchState) reconcile(ctx context.Context, spawn func(paneID string)) error {
+	agents, err := s.w.lister(ctx)
+	if err != nil {
+		return err
+	}
+	seen := indexAgents(agents)
+	s.w.lastSnapshot.Store(snapshotPtr(seen))
+
+	// Prune lastStatus for panes that disappeared.
+	s.mu.Lock()
+	for pane := range s.lastStatus {
+		if _, ok := seen[pane]; !ok {
+			delete(s.lastStatus, pane)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, a := range agents {
+		if a.PaneID == "" {
+			continue
+		}
+		if isFinishedStatus(a.AgentStatus) {
+			// Edge-emit for already-finished panes; no waiter.
+			s.emitFinish(frameFromAgent(a))
+			continue
+		}
+		// Not finished now — record status and arm a waiter to catch the next
+		// finish transition with low latency.
+		s.mu.Lock()
+		s.lastStatus[a.PaneID] = a.AgentStatus
+		s.mu.Unlock()
+		spawn(a.PaneID)
+	}
+	return nil
+}
+
+// indexAgents builds the pane_id->agent map, skipping entries with no pane_id.
+func indexAgents(agents []herdrAgent) map[string]herdrAgent {
+	seen := map[string]herdrAgent{}
+	for _, a := range agents {
+		if a.PaneID == "" {
+			continue
+		}
+		seen[a.PaneID] = a
+	}
+	return seen
+}
+
+// run is the supervise loop: (re)snapshot panes, keep one finish-waiter alive
 // per pane, and reconcile whenever a waiter returns. Exits cleanly on
 // ctx cancellation (SIGINT/SIGTERM via cobra's signal context).
 func (w *herdrWatcher) run(ctx context.Context) error {
-	fmt.Fprintln(w.stderr, "termx watch-herdr: starting (herdr CLI integration, status=done)")
+	fmt.Fprintln(w.stderr, "termx watch-herdr: starting (herdr CLI integration, status=idle)")
 
 	// done channel carries the pane_id of any waiter goroutine that returned,
 	// so the supervisor knows to reconcile.
@@ -181,34 +359,23 @@ func (w *herdrWatcher) run(ctx context.Context) error {
 	}
 	doneCh := make(chan waiterDone, 16)
 
-	// active tracks pane_ids that currently have a live waiter goroutine, so
-	// reconciliation never double-spawns for the same pane.
-	active := map[string]context.CancelFunc{}
-	// lastStatus is the last agent_status we observed per pane. It makes the
-	// daemon EDGE-triggered: an agent_finished event fires only on the
-	// transition INTO "done", never repeatedly while a pane sits in done.
-	// (herdr's `wait agent-status` is level-triggered — it returns instantly
-	// for an already-done pane — so without this gate an idle-but-done pane
-	// would spin a hot re-arm loop emitting duplicate alerts.)
-	lastStatus := map[string]string{}
-	var mu sync.Mutex
-
+	st := newWatchState(w)
 	backoff := herdrBackoffMin
 
-	// spawnWaiter launches one done-waiter for paneID if none is running.
-	// Only meaningful for panes NOT already in "done" — those are caught by
-	// the snapshot edge-check in reconcile, not by a waiter.
+	// spawnWaiter launches one finish-waiter for paneID if none is running.
+	// Only meaningful for panes NOT already finished — those are caught by the
+	// snapshot edge-check in reconcile, not by a waiter.
 	spawnWaiter := func(paneID string) {
-		mu.Lock()
-		if _, ok := active[paneID]; ok {
-			mu.Unlock()
+		st.mu.Lock()
+		if _, ok := st.active[paneID]; ok {
+			st.mu.Unlock()
 			return
 		}
 		wctx, cancel := context.WithCancel(ctx)
-		active[paneID] = cancel
-		mu.Unlock()
+		st.active[paneID] = cancel
+		st.mu.Unlock()
 		go func() {
-			frame, ok := w.waiter(wctx, paneID, finishStatus)
+			frame, ok := w.waiter(wctx, paneID, waitStatus)
 			select {
 			case doneCh <- waiterDone{paneID: paneID, frame: frame, match: ok}:
 			case <-ctx.Done():
@@ -216,75 +383,14 @@ func (w *herdrWatcher) run(ctx context.Context) error {
 		}()
 	}
 
-	// emitFinish fires the Tier1+Tier2 finish handling for a pane, but only on
-	// the done EDGE (prior status != done). Updates lastStatus. Returns true
-	// if it actually emitted.
-	emitFinish := func(f herdrStatusFrame) bool {
-		pane := f.Data.PaneID
-		mu.Lock()
-		prev := lastStatus[pane]
-		lastStatus[pane] = finishStatus
-		mu.Unlock()
-		if prev == finishStatus {
-			return false // already counted this done; suppress duplicate.
-		}
-		w.onFinish(f)
-		return true
-	}
-
-	// reconcile lists panes and reconciles waiters + edge state:
-	//   - records each pane's current status (so the next change is an edge);
-	//   - for a pane ALREADY "done" in the snapshot, emits once on the edge
-	//     (no hot waiter — a done pane stays done until the human acts);
-	//   - for any other pane, arms a low-latency `wait agent-status done`
-	//     goroutine to catch the working→done transition promptly.
-	// Vanished panes drop out of lastStatus so a recreated pane re-edges.
-	reconcile := func() error {
-		agents, err := w.lister(ctx)
-		if err != nil {
-			return err
-		}
-		seen := map[string]herdrAgent{}
-		for _, a := range agents {
-			if a.PaneID == "" {
-				continue
-			}
-			seen[a.PaneID] = a
-		}
-		w.lastSnapshot.Store(snapshotPtr(seen))
-
-		// Prune lastStatus for panes that disappeared.
-		mu.Lock()
-		for pane := range lastStatus {
-			if _, ok := seen[pane]; !ok {
-				delete(lastStatus, pane)
-			}
-		}
-		mu.Unlock()
-
-		for _, a := range agents {
-			if a.PaneID == "" {
-				continue
-			}
-			if a.AgentStatus == finishStatus {
-				// Edge-emit for already-done panes; no waiter.
-				emitFinish(frameFromAgent(a))
-				continue
-			}
-			// Not done now — record status and arm a waiter to catch the
-			// next done transition with low latency.
-			mu.Lock()
-			lastStatus[a.PaneID] = a.AgentStatus
-			mu.Unlock()
-			spawnWaiter(a.PaneID)
-		}
-		return nil
-	}
-
 	// Prime the snapshot store so label lookups work before first reconcile.
 	w.lastSnapshot.Store(snapshotPtr(map[string]herdrAgent{}))
 
-	if err := reconcile(); err != nil {
+	// prime (not reconcile) on the first snapshot: panes already resting in a
+	// finished status at startup must NOT re-alert (now that idle counts as a
+	// finish, every already-seen pane is "idle"). prime seeds lastStatus
+	// without emitting.
+	if err := st.prime(ctx, spawnWaiter); err != nil {
 		fmt.Fprintf(w.stderr, "watch-herdr: herdr not ready (%v); will retry\n", err)
 	} else {
 		backoff = herdrBackoffMin
@@ -299,27 +405,28 @@ func (w *herdrWatcher) run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			mu.Lock()
-			for _, cancel := range active {
+			st.mu.Lock()
+			for _, cancel := range st.active {
 				cancel()
 			}
-			mu.Unlock()
+			st.mu.Unlock()
 			fmt.Fprintln(w.stderr, "watch-herdr: shutting down")
 			return nil
 
 		case d := <-doneCh:
-			mu.Lock()
-			delete(active, d.paneID)
-			mu.Unlock()
+			st.mu.Lock()
+			delete(st.active, d.paneID)
+			st.mu.Unlock()
 			if d.match && d.frame.Event == "pane.agent_status_changed" &&
-				d.frame.Data.AgentStatus == finishStatus {
-				// Edge-gated: emits only if this pane wasn't already done.
-				emitFinish(d.frame)
+				isFinishedStatus(d.frame.Data.AgentStatus) {
+				// Edge-gated: emits only if this pane wasn't already finished.
+				st.emitFinish(d.frame)
 			}
 			// Re-snapshot and reconcile. reconcile() decides whether to
-			// re-arm a waiter: a still-done pane gets no waiter (it's already
-			// counted), so we never hot-loop; a pane that left done re-arms.
-			if err := reconcile(); err != nil {
+			// re-arm a waiter: a still-finished pane gets no waiter (it's
+			// already counted), so we never hot-loop; a pane that resumed work
+			// re-arms.
+			if err := st.reconcile(ctx, spawnWaiter); err != nil {
 				// herdr likely went away; back off before the ticker retries.
 				time.Sleep(jitterBackoff(&backoff))
 			} else {
@@ -327,7 +434,7 @@ func (w *herdrWatcher) run(ctx context.Context) error {
 			}
 
 		case <-ticker.C:
-			if err := reconcile(); err != nil {
+			if err := st.reconcile(ctx, spawnWaiter); err != nil {
 				fmt.Fprintf(w.stderr, "watch-herdr: re-list failed (%v); backing off\n", err)
 				time.Sleep(jitterBackoff(&backoff))
 			} else {
@@ -354,7 +461,7 @@ func (w *herdrWatcher) onFinish(f herdrStatusFrame) {
 
 	// Tier 1: append the event. Field names agent/workspace/source MUST match
 	// the Kotlin TermxEvent.AgentFinished(source, agent, workspace) contract.
-	_ = internal.RotateIfNeeded(internal.DefaultRotateBytes)
+	// Rotation is folded into AppendEvent (rename-rotation from the fd size).
 	if err := internal.AppendEvent("agent_finished", session, map[string]any{
 		"agent":     agent,
 		"workspace": workspace,
@@ -539,10 +646,13 @@ func parseAgentList(out []byte) ([]herdrAgent, error) {
 	return env.Result.Agents, nil
 }
 
-// cliAgentWaiter runs `herdr wait agent-status <pane> --status done` and reads
-// the first matching frame from stdout. Returns ok=true only on a real
-// pane.agent_status_changed match; timeout / pane-gone / parse failure all
-// return ok=false so the supervisor just re-lists.
+// cliAgentWaiter runs `herdr wait agent-status <pane> --status idle` and reads
+// the first finish frame from stdout. We pass status (waitStatus="idle") to
+// herdr but accept ANY finished status (idle OR done) from the stream via
+// isFinishedStatus — so a done frame is honored too, even though herdr's
+// single-status subscription normally only delivers idle frames here. Returns
+// ok=true only on a real finished pane.agent_status_changed match; timeout /
+// pane-gone / parse failure all return ok=false so the supervisor just re-lists.
 func cliAgentWaiter(ctx context.Context, paneID, status string) (herdrStatusFrame, bool) {
 	cmd := exec.CommandContext(ctx, herdrBin(), "wait", "agent-status", paneID,
 		"--status", status, "--timeout", fmt.Sprintf("%d", waitTimeoutMs))
@@ -555,7 +665,7 @@ func cliAgentWaiter(ctx context.Context, paneID, status string) (herdrStatusFram
 		return herdrStatusFrame{}, false
 	}
 
-	frame, ok := scanFirstStatusFrame(stdout, status)
+	frame, ok := scanFirstStatusFrame(stdout, isFinishedStatus)
 	// Drain & reap regardless so we don't leak the child or a zombie.
 	_, _ = io.Copy(io.Discard, stdout)
 	_ = cmd.Wait()
@@ -563,10 +673,14 @@ func cliAgentWaiter(ctx context.Context, paneID, status string) (herdrStatusFram
 }
 
 // scanFirstStatusFrame reads NDJSON lines and returns the first
-// pane.agent_status_changed frame whose agent_status == want. Lines that
-// aren't that frame (acks, the "timed out" human string, error envelopes) are
-// skipped, returning ok=false at EOF.
-func scanFirstStatusFrame(r io.Reader, want string) (herdrStatusFrame, bool) {
+// pane.agent_status_changed frame whose agent_status satisfies match. Lines
+// that aren't an accepted frame (acks, the "timed out" human string, error
+// envelopes, a non-matching status) are skipped, returning ok=false at EOF.
+//
+// match is a predicate (not a single literal) so a finish that arrives as a
+// "done" frame is accepted while waiting on idle — otherwise a working->done
+// transition delivered on this pipe would be filtered out.
+func scanFirstStatusFrame(r io.Reader, match func(status string) bool) (herdrStatusFrame, bool) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
 	for sc.Scan() {
@@ -578,7 +692,7 @@ func scanFirstStatusFrame(r io.Reader, want string) (herdrStatusFrame, bool) {
 		if err := json.Unmarshal([]byte(line), &f); err != nil {
 			continue
 		}
-		if f.Event == "pane.agent_status_changed" && f.Data.AgentStatus == want {
+		if f.Event == "pane.agent_status_changed" && match(f.Data.AgentStatus) {
 			return f, true
 		}
 	}
