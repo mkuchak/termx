@@ -3,23 +3,31 @@
 [![android-release](https://github.com/mkuchak/termx/actions/workflows/android-release.yml/badge.svg)](https://github.com/mkuchak/termx/actions/workflows/android-release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> Your VPS in your pocket. A FOSS Android SSH / mosh / tmux client designed
-> as a mobile control surface for Claude Code.
+> Your VPS in your pocket. A FOSS Android SSH / mosh terminal designed as a
+> mobile control surface for Claude Code.
 
 ## Why termx
 
 Claude Code is powerful but it lives on a VPS, which means the interesting
 moments — a permission prompt, a file edit to review, a long build finally
 finishing — all happen while you are somewhere else. termx connects your
-phone to that VPS over SSH, mirrors your tmux sessions 1:1, and adds the
-Claude-Code-specific magic around it: a permission broker, a native diff
-viewer, event-driven notifications, and push-to-talk. Plain shell use works
-fine too; the Claude hooks just stay dormant.
+phone to that VPS over SSH and gives you a clean plain-shell terminal, then
+adds the Claude-Code-specific magic around it: a permission broker, a native
+diff viewer, event-driven notifications, and push-to-talk. Plain shell use
+works fine too; the Claude hooks just stay dormant.
+
+termx is a plain-shell terminal — bring your own multiplexer. Session
+persistence and multi-window layouts are your multiplexer's job: run tmux,
+screen, Zellij, or nothing at all on the VPS and termx talks to whatever
+shell you land in. The Claude control surface below works the same
+regardless of which multiplexer (if any) you run.
 
 ## Features
 
-- **SSH + mosh + tmux** — tabs map 1:1 to tmux sessions (including ones you
-  started from a laptop), and mosh keeps them alive across network flaps.
+- **SSH + mosh** — a plain interactive shell over SSH, with optional mosh so
+  the connection roams across network flaps and IP changes. Persistence and
+  multi-window are your own multiplexer's job (tmux, screen, Zellij, …) — the
+  rest of termx works the same whichever you pick.
 - **Permission broker** — Claude Code's `PreToolUse` hook pipes approvals
   to the phone; approve, deny, or approve-with-pattern from the lock
   screen. No parallel whitelist to maintain — decisions round-trip into
@@ -37,13 +45,19 @@ fine too; the Claude hooks just stay dormant.
   transcription is injected directly into the active PTY — no clipboard
   dance.
 - **Key vault** — SSH private keys and the Gemini API key live in a single
-  blob encrypted with an Android Keystore AES-256-GCM key that requires
-  biometric / device-credential authentication per operation.
-- **Terminal polish** — six built-in themes (Dracula, Nord, Gruvbox,
-  Tokyo Night, Catppuccin, Solarized) plus a full 16-color + fg/bg/cursor
-  custom theme editor, pinch-to-zoom font sizing, URL double-tap,
-  tmux-aware scrollback, drag-to-reorder server list, two user-editable
-  extra-keys rows with sticky modifiers.
+  JSON blob in the app's private storage, protected by Android's per-app
+  sandbox (only this app's UID can read it). Biometric / device-credential
+  unlock gates access to the vault UI on launch and after an idle timeout.
+  Earlier versions wrapped the blob in an Android Keystore AES-256-GCM key,
+  but OEM Keymint/Keystore2 bugs threw an NPE on `Cipher.doFinal` on some
+  devices, breaking the vault outright; for a single-user FOSS SSH client the
+  sandbox boundary is the right trade. See `FileSystemSecretVault`'s KDoc for
+  the full rationale.
+- **Terminal polish** — ships the **Sorcerer** theme, a limited-palette dark
+  scheme that drives the 16 ANSI colors plus fg/bg/cursor and the whole app
+  UI from one source of truth (no theme picker or custom editor). Plus
+  pinch-to-zoom font sizing, URL double-tap, scrollback, drag-to-reorder
+  server list, and two user-editable extra-keys rows with sticky modifiers.
 - **No SaaS** — zero telemetry, zero analytics, zero maintainer backend.
   Everything runs on your VPS via SSH. FCM is **not** used; termx relies on
   an Android foreground service tailing `~/.termx/events.ndjson` over the
@@ -92,9 +106,9 @@ chmod +x /tmp/termx
 ```
 
 `termx install` is idempotent — it detects your distro, installs `mosh`
-and `tmux` if missing, creates `~/.termx/{sessions,approvals,diffs,commands}`,
-and appends marked blocks (delimited by `# --- termx begin ---` /
-`--- termx end ---`) to `~/.bashrc`, `~/.zshrc`, `~/.tmux.conf`, and
+if missing, creates `~/.termx/{sessions,approvals,diffs,commands}`, and
+appends marked blocks (delimited by `# --- termx begin ---` /
+`--- termx end ---`) to `~/.bashrc`, `~/.zshrc`, and
 `~/.claude/settings.json`. `termx uninstall` reverses every change
 cleanly; pass `--keep-data` to preserve `~/.termx/` contents.
 
@@ -105,18 +119,17 @@ cleanly; pass `--keep-data` to preserve `~/.termx/` contents.
 |                |  <------------------------>  |                  |
 |  termx (APK)   |    tail -F events.ndjson     |   your VPS       |
 |  Kotlin +      |    read sessions/*.json      |                  |
-|  Compose +     |    write commands/*.json     |   tmux -----+    |
-|  sshj +        |                              |             |    |
-|  mosh (NDK)    |                              |   claude ---+    |
-|                |                              |                  |
-+----------------+                              |   termx (Go)     |
-                                                |   ~/.termx/      |
+|  Compose +     |    write commands/*.json     |   your shell     |
+|  sshj +        |                              |   + claude       |
+|  mosh (NDK)    |                              |                  |
+|                |                              |   termx (Go)     |
++----------------+                              |   ~/.termx/      |
                                                 +------------------+
 ```
 
-No daemon, no extra ports. termxd is a short-lived CLI invoked by tmux
-hooks, shell `preexec`/`precmd`, and Claude Code's `PreToolUse` /
-`PostToolUse` hooks. Everything flows through the existing SSH channel.
+No daemon, no extra ports. termxd is a short-lived CLI invoked by shell
+`preexec`/`precmd` and Claude Code's `PreToolUse` / `PostToolUse` hooks.
+Everything flows through the existing SSH channel.
 
 See `docs/ROADMAP.md` for the full 8-phase plan and `docs/FDROID.md` for
 reproducible-build notes.

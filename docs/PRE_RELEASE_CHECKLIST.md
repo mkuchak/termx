@@ -31,17 +31,17 @@ gh run download <id> --name termx-debug-<sha> --dir /tmp && adb install /tmp/app
 - Click-path: Server list, tap a saved key-auth server.
 - Expected: bash prompt within 3 s. `ls` returns a directory listing.
 
-## 6. tmux auto-attach reuses the same session
-- Click-path: Connect to a server with `autoAttachTmux=true`. Run `echo phone-a >> /tmp/marker`. Go back. Connect again.
-- Expected: the new terminal is attached to the same tmux session (see `/tmp/marker` persisted; `tmux ls` shows one session, not two).
+## 6. Plain-shell connect / disconnect / reconnect
+- Click-path: Connect to a saved server. Run `echo phone-a >> /tmp/marker`. Go back (close the tab). Connect again.
+- Expected: a fresh plain login shell each time — the prompt appears, `cat /tmp/marker` still shows the line you wrote (the file persists on the VPS), and there are no orphaned termx-spawned multiplexer sessions. termx attaches you to whatever your login shell starts; it does not auto-launch tmux.
 
 ## 7. Font pinch-zoom persists across restart
 - Click-path: Inside terminal, pinch-zoom to a noticeably different size. Force-stop the app. Reopen and reconnect.
 - Expected: terminal font size matches the post-pinch size, not the 14 sp default.
 
-## 8. Theme switch applies live + persists
-- Click-path: Settings to Theme, change Dracula to Nord. Return to terminal.
-- Expected: colors repaint immediately. Kill and reopen app — Nord still active.
+## 8. Sorcerer theme renders across terminal + UI
+- Click-path: Open the terminal, then visit Settings and a Card-heavy screen (e.g. the diff viewer or a transcribing card).
+- Expected: the Sorcerer palette is applied everywhere — near-black canvas, pink accent, cyan/lime highlights; no stock Material gray cards. There is no theme picker (termx ships only Sorcerer).
 
 ## 9. Release APK installs + launches cleanly
 - Click-path: download the `android-release.yml` signed APK, `adb install -r app-release.apk`, open once.

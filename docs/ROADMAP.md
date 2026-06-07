@@ -30,7 +30,7 @@ Task ID ranges by phase:
 |---|---|---|
 | 1 — Terminal foundations         | 12–18 | 7 |
 | 2 — Server manager + keys        | 19–24 | 6 |
-| 3 — tmux + multi-tab + mosh      | 25–28 | 4 |
+| 3 — multi-session + mosh         | 25–28 | 4 |
 | 4 — termxd + event stream        | 29–34 | 6 |
 | 5 — Permission broker + diff     | 35–38 | 4 |
 | 6 — Push-to-talk                 | 39–42 | 4 |
@@ -58,21 +58,25 @@ All 15 decisions from the April 2026 grilling are recorded at:
 One-line summaries (for skimming):
 
 - **Product identity**: Claude-Code-first with graceful plain-terminal fallback
-- **Tab model**: one tab = one tmux session (1:1), Claude auto-detected
+- **Tab model**: ~~one tab = one tmux session (1:1)~~ — *tmux removed; termx
+  is now a plain-shell terminal, bring-your-own-multiplexer*. Claude auto-detected
 - **Transport**: file-based over SSH — phone tails `~/.termx/events.ndjson`
 - **Android stack**: Kotlin + sshj + one NDK binary (`mosh-client` in jniLibs)
 - **VPS stack**: single Go static binary (`termxd`) via GitHub releases
 - **Permissions**: mirror Claude's own `.claude/settings.json` via a blocking
   `PreToolUse` hook — no parallel whitelist system
 - **PTT**: Gemini (`gemini-2.5-flash-lite`), FAB trigger, inject into PTY stream
-- **Auth**: Keystore-encrypted blob, biometric on launch, session cache
+- **Auth**: ~~Keystore-encrypted blob~~ — *Keystore removed (OEM Keymint
+  bugs); now a sandbox-protected plaintext JSON blob*. Biometric on launch
+  gates the vault UI, session cache
 - **Notifications**: foreground-service SSH tail for MVP (self-hosted FCM relay
   later, never run by us as SaaS)
 - **Install UX**: auto during Setup Wizard, skippable, shows dotfile diff,
   reversible via `termx uninstall`
 - **Extra keys**: two swipeable user-editable rows, sticky modifiers, presets
-- **Plain-shell tracking**: tmux hooks + shell preexec with smart filtering
-  (events only for commands >10s or errors >2s)
+- **Plain-shell tracking**: shell preexec/precmd hooks with smart filtering
+  (events only for commands >10s or errors >2s) — *tmux hooks dropped with
+  the tmux removal*
 - **Diff review**: native diff viewer fed by PostToolUse hook (flagship feature)
 - **License**: MIT, donations only, no paid tier, no SaaS infra
 
@@ -84,7 +88,7 @@ One-line summaries (for skimming):
 |---|----------------------------------|----------------------------------------------------------------|------|
 | 1 | Terminal foundations             | SSH into a real VPS, type commands, see output                 | L    |
 | 2 | Server manager + keys            | Add/edit VPSes, biometric-locked key vault, Ed25519 gen+import | M    |
-| 3 | tmux + multi-tab + mosh          | Tabs mirror tmux `ls`, mosh survives network flaps             | M    |
+| 3 | multi-session + mosh             | Connect to the user's own multiplexer, mosh survives flaps     | M    |
 | 4 | termxd + event stream            | Auto-install companion, phone renders live events              | L    |
 | 5 | Permission broker + diff review  | Phone approves Claude tool calls; diffs render native          | M    |
 | 6 | Push-to-talk                     | Hold FAB, speak, text injected into active tab's PTY           | S    |
@@ -186,13 +190,23 @@ Haptic on every tap.
 ### 1.6 Gestures
 
 - **Pinch-to-zoom** font size (8sp–32sp, persisted via DataStore)
-- **Two-finger vertical scroll** → scrollback (falls through to the
-  terminal's own ring buffer in Phase 1; tmux scrollback is Phase 3)
+- **Two-finger vertical scroll** → scrollback (the terminal's own ring
+  buffer; with tmux removed, multiplexer-side copy-mode is the user's own
+  multiplexer's concern)
 - **Long-press** → text selection handles appear, long-press again on
   selection copies
 - **Double-tap on URL** → browser open confirmation dialog
 
 ### 1.7 Theme pack
+
+> **Historical / superseded (v1.3.0).** This phase originally shipped six
+> built-in themes (Dracula, Nord, Gruvbox Dark, Tokyo Night, Catppuccin
+> Mocha, Solarized Dark) with a DataStore-backed picker. v1.3.0 collapsed
+> all of that to a **single shipped theme, Sorcerer**, which is now the one
+> source of truth for the 16 ANSI colors + fg/bg/cursor *and* the whole
+> Material 3 app palette (see `core/domain/.../theme/Sorcerer.kt`). There is
+> no theme picker and no custom editor today. The original plan is kept
+> below for context.
 
 Six built-in themes, no custom editor yet:
 
@@ -253,23 +267,32 @@ test server.
 
 ---
 
-## Phase 3 — tmux + multi-tab + mosh
+## Phase 3 — multi-session + mosh
 
-**Goal.** Tabs represent tmux sessions; mosh handles network hiccups.
+**Goal.** Each tab is a plain interactive shell; mosh handles network
+hiccups. Persistence and multi-window layouts are the user's own
+multiplexer's job.
 
-- **tmux auto-attach on connect**
-  - Connection flow: sshj open shell → immediately `tmux new-session -A
-    -s <label>` (from Server row's `tmuxSessionName`, default `main`)
-- **Session registry for tabs** (pre-termxd — uses plain tmux)
-  - Run `tmux ls -F '#{session_name}|#{session_activity}|#{session_attached}'`
-    on demand (tab bar refresh + periodic poll every 30 s)
-  - Parse into `List<TmuxSession>` rendered as bottom tab bar
-  - "+" button = new named session via `tmux new-session -s`
-  - Close tab = detach only (session survives server-side)
+> **Historical note (tmux removed).** This phase originally auto-attached
+> every connection to a tmux session and mirrored `tmux ls` into the tab
+> bar 1:1 (the strikethrough items below). That coupling was removed:
+> termx is now a bring-your-own-multiplexer plain-shell terminal. If you
+> run tmux/screen/Zellij on the VPS, termx lands you in whatever shell your
+> login starts; persistence and copy-mode are entirely your multiplexer's
+> concern. mosh stays exactly as planned — it's the connection-roaming
+> transport, independent of any multiplexer.
+
+- ~~**tmux auto-attach on connect** — sshj open shell → immediately
+  `tmux new-session -A -s <label>` from the Server row's `tmuxSessionName`~~
+  *(removed)* — open a plain login shell instead.
+- ~~**Session registry for tabs** via `tmux ls` parsing, "+" = `tmux
+  new-session`, close tab = detach~~ *(removed)* — tabs are independent
+  SSH/mosh shells; closing a tab closes that connection. Any server-side
+  session persistence is the user's multiplexer's job.
 - **Multi-session tab UI**
   - Horizontal scroll at >3 tabs
   - Activity dot when output arrives in a background tab
-  - Long-press → rename (sends `tmux rename-session`)
+  - Long-press → rename the tab (local label only)
   - Tab badge shows transport: `[mosh]` or `[ssh]`
 - **Mosh integration**
   - `MoshConnection` in `:libs:ssh-native` wraps `ProcessBuilder(File(ctx
@@ -280,12 +303,14 @@ test server.
   - 8-second timeout → fall back to sshj → update `Server.useMosh = false`
     (optional: retry mosh on next connect per grilled preference)
   - UDP port discovery, key exchange per mosh protocol
-- **Scrollback** → two-finger scroll now triggers `tmux copy-mode` when
-  in a tmux session (vs local terminal ring buffer in plain SSH)
+- **Scrollback** → two-finger scroll uses the terminal's own ring buffer.
+  Multiplexer copy-mode (if the user runs one) is reached the normal way,
+  through their multiplexer's own keybindings.
 
-**Exit**: tab bar shows every tmux session on the VPS (including sessions
-you started from a laptop), tapping a tab attaches, closing a tab detaches
-the mosh connection without killing the tmux session.
+**Exit**: open multiple independent shell tabs on a VPS, mosh keeps an
+active tab alive across a network flap, and a long-lived server-side
+session created under the user's own multiplexer is reachable by attaching
+to it from the shell.
 
 ---
 
@@ -306,18 +331,19 @@ event reader, testable without a device.
 - **CLI surface**
   - `termx install` — idempotent bootstrap:
     - Detects OS (`ubuntu`, `debian`, `alpine`, `arch`, `fedora`)
-    - Installs `mosh` and `tmux` via the right package manager
+    - Installs `mosh` via the right package manager
     - Installs Claude Code if not present (`npm i -g @anthropic-ai/claude-code`)
     - Creates `~/.termx/{sessions,approvals,diffs,commands}` directories
-    - Appends marked blocks to `~/.bashrc`, `~/.zshrc`, `~/.tmux.conf`,
+    - Appends marked blocks to `~/.bashrc`, `~/.zshrc`, and
       `~/.claude/settings.json` (each block delimited by
       `# --- termx begin ---` ... `# --- termx end ---`)
     - Writes `~/.local/bin/termx` (self-copy)
   - `termx uninstall` — removes every marked block, deletes `~/.termx/`,
     deletes `~/.local/bin/termx` (self-delete last)
-  - `termx _on-session-created <name>` — tmux hook, writes
-    `~/.termx/sessions/<name>.json` and appends `session_created` event
-  - `termx _on-session-closed <name>` — counterpart
+  - `termx _on-session-created <name>` — shell-session hook (login-shell
+    start), writes `~/.termx/sessions/<name>.json` and appends
+    `session_created` event *(was a tmux hook before the tmux removal)*
+  - `termx _on-session-closed <name>` — counterpart (shell exit)
   - `termx _preexec <cmd>` — shell hook, records command+start-timestamp
     to an in-memory/tmp state file
   - `termx _precmd <exit-code>` — shell hook, computes duration+exit,
@@ -346,8 +372,8 @@ event reader, testable without a device.
   - Parse NDJSON → `Flow<TermxEvent>`
   - Bridge into Phase 3's tab status (session_created triggers a tab refresh)
 - **Tab rendering upgrade**
-  - Now reads from `~/.termx/sessions/*.json` instead of `tmux ls` parsing
-    (richer state: `status: idle|working|awaiting_permission`)
+  - Tabs read richer state from `~/.termx/sessions/*.json` written by the
+    shell-session hooks (`status: idle|working|awaiting_permission`)
 
 **Exit**: add a new VPS, wizard offers termxd install, accept it, wizard
 runs `termx install` via SSH, post-install a long `sleep 30` in any tab
@@ -504,7 +530,9 @@ exact tab with the completed output ready to read.
   - Excludes private keys unless the user opts into a second passphrase
     (protects against accidental leak)
   - Import via file picker or QR (for short configs, not key-including)
-- **Theme editor**
+- **Theme editor** *(not shipped — superseded by the v1.3.0 single-theme
+  decision; see Phase 1.7's historical note. termx ships only Sorcerer, with
+  no picker or editor. Kept here as the original plan.)*
   - Color picker for each of 16 ANSI colors + fg/bg/cursor
   - Preview pane with real ANSI escape sequences
   - Export/import as JSON
