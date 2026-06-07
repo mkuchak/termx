@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.4](https://github.com/mkuchak/termx/compare/termxd-v0.1.3...termxd-v0.1.4) (2026-06-07)
+
+### Bug Fixes
+
+* **termxd:** make watch-herdr locate herdr under systemd PATH ([a08323d](https://github.com/mkuchak/termx/commit/a08323dab6c62dea3c532314c1d5bfb587d94b9d))
+
 ## [0.1.3](https://github.com/mkuchak/termx/compare/termxd-v0.1.2...termxd-v0.1.3) (2026-06-07)
 
 ### Features
