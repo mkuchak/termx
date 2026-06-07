@@ -106,20 +106,22 @@ type dryRunReport struct {
 func newInstallCmd() *cobra.Command {
 	var dryRun bool
 	var installDeps bool
+	var withNtfy bool
 
 	c := &cobra.Command{
 		Use:   "install",
 		Short: "Provision ~/.termx/, self-install to ~/.local/bin/termx, inject marked rc blocks",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runInstall(cmd.OutOrStdout(), cmd.ErrOrStderr(), dryRun, installDeps)
+			return runInstall(cmd.OutOrStdout(), cmd.ErrOrStderr(), dryRun, installDeps, withNtfy)
 		},
 	}
 	c.Flags().BoolVar(&dryRun, "dry-run", false, "print JSON diff of proposed changes; no disk mutation")
 	c.Flags().BoolVar(&installDeps, "install-deps", false, "attempt sudo install of missing system packages (mosh)")
+	c.Flags().BoolVar(&withNtfy, "with-ntfy", false, "also install a self-hosted ntfy server for Tier-2 pushes (optional; needs root + manual TLS)")
 	return c
 }
 
-func runInstall(stdout, stderr io.Writer, dryRun, installDeps bool) error {
+func runInstall(stdout, stderr io.Writer, dryRun, installDeps, withNtfy bool) error {
 	paths, err := internal.ResolvePaths()
 	if err != nil {
 		return err
@@ -161,6 +163,10 @@ func runInstall(stdout, stderr io.Writer, dryRun, installDeps bool) error {
 		return err
 	}
 
+	// Phase C2: herdr-watcher systemd user service. Best-effort throughout —
+	// a host without systemd --user must still get a working core install.
+	ensureHerdrWatchService(paths, stdout, stderr)
+
 	// Phase D: rc-file injection.
 	for _, p := range rcShellFiles(paths) {
 		changed, err := internal.UpsertMarkedBlock(p, bashrcBlockBody, 0o644)
@@ -182,6 +188,13 @@ func runInstall(stdout, stderr io.Writer, dryRun, installDeps bool) error {
 		return fmt.Errorf("update %s: %w", paths.ClaudeSettings, err)
 	} else {
 		reportFileOp(stdout, "update_json", paths.ClaudeSettings, changed)
+	}
+
+	// Phase E: OPTIONAL self-hosted ntfy server (only when --with-ntfy). Kept
+	// fully separate from the core install — it is an advanced, root-requiring
+	// step and must never affect the success of everything above.
+	if withNtfy {
+		ensureNtfyServer(paths, stdout, stderr)
 	}
 
 	fmt.Fprintln(stdout, "termx install complete.")
@@ -439,6 +452,178 @@ func filesEqual(a, b string) (bool, error) {
 	}
 }
 
+// ---- herdr-watcher systemd user service ----
+
+// herdrWatchUnitName is the systemd user unit filename for the watcher.
+const herdrWatchUnitName = "termx-herdr-watch.service"
+
+// herdrWatchUnit is the systemd USER unit that keeps `termx watch-herdr`
+// running 24/7 (survives logout/reboot, restarts on crash) so Tier-2 agent
+// completions are caught even with no active login. `%h` is systemd's
+// home-dir specifier, so no path interpolation is needed here.
+const herdrWatchUnit = `[Unit]
+Description=termx herdr watcher
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/termx watch-herdr
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+`
+
+// ensureHerdrWatchService writes the systemd user unit and best-effort
+// enables it. Every external step is guarded: a host without systemd --user
+// (containers, minimal VPSes) prints a manual-start note and the core install
+// still succeeds. Never returns an error — failures degrade to warnings.
+func ensureHerdrWatchService(p *internal.Paths, stdout, stderr io.Writer) {
+	unitDir := filepath.Join(p.Home, ".config", "systemd", "user")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		fmt.Fprintf(stderr, "warning: could not create %s: %v\n", unitDir, err)
+		fmt.Fprintln(stderr, "  start the watcher manually with: termx watch-herdr")
+		return
+	}
+	unitPath := filepath.Join(unitDir, herdrWatchUnitName)
+	if err := os.WriteFile(unitPath, []byte(herdrWatchUnit), 0o644); err != nil {
+		fmt.Fprintf(stderr, "warning: could not write %s: %v\n", unitPath, err)
+		fmt.Fprintln(stderr, "  start the watcher manually with: termx watch-herdr")
+		return
+	}
+	reportFileOp(stdout, "write_unit", unitPath, true)
+
+	// If systemd --user isn't reachable (no user bus / not PID 1 systemd),
+	// don't attempt enable; just tell the user how to run it.
+	if !systemdUserAvailable() {
+		fmt.Fprintln(stderr, "note: systemd --user not available; the herdr watcher unit was written but not started.")
+		fmt.Fprintln(stderr, "  start it manually (e.g. via nohup/tmux) with: termx watch-herdr")
+		return
+	}
+
+	// linger lets the user service run without an active login. Needs
+	// privilege, so a failure is expected on locked-down hosts — guide the
+	// user rather than abort.
+	if err := runShell("loginctl enable-linger $USER", stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: could not enable linger: %v\n", err)
+		fmt.Fprintln(stderr, "  run `sudo loginctl enable-linger $USER` so the watcher runs without an active login")
+	}
+	if err := runShell("systemctl --user daemon-reload", stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: systemctl --user daemon-reload failed: %v\n", err)
+	}
+	if err := runShell("systemctl --user enable --now "+herdrWatchUnitName, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: could not enable/start %s: %v\n", herdrWatchUnitName, err)
+		fmt.Fprintf(stderr, "  enable it manually with: systemctl --user enable --now %s\n", herdrWatchUnitName)
+		return
+	}
+	fmt.Fprintf(stdout, "enabled service: %s\n", herdrWatchUnitName)
+}
+
+// systemdUserAvailable reports whether a usable systemd --user instance is
+// reachable, so we only attempt enable when it can actually succeed.
+func systemdUserAvailable() bool {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	// `systemctl --user is-system-running` exits non-zero with no user bus;
+	// it succeeds (or returns a known degraded/starting state) when present.
+	// Any clean exit means the user manager answered.
+	return exec.Command("systemctl", "--user", "is-system-running").Run() == nil
+}
+
+// ---- optional self-hosted ntfy server (--with-ntfy) ----
+
+// ntfyServerYML is a minimal starter config. base-url is a CHANGE-ME stub the
+// user edits to their real TLS subdomain; listen-http stays loopback-only so
+// the reverse proxy terminates TLS.
+const ntfyServerYML = `base-url: https://ntfy.CHANGE-ME
+listen-http: "127.0.0.1:2586"
+`
+
+// ensureNtfyServer is the OPTIONAL assisted install of a self-hosted ntfy
+// server. Clearly separate from the core install and best-effort: every step
+// is guarded and degrades to printing the manual recipe. Android push requires
+// a valid (non-self-signed) TLS cert, which only the user can provision, so
+// TLS is always a printed manual step.
+func ensureNtfyServer(p *internal.Paths, stdout, stderr io.Writer) {
+	fmt.Fprintln(stdout, "--- optional: self-hosted ntfy server ---")
+
+	// 1. Install the ntfy binary if it isn't already present. Mirror the
+	//    install pattern used elsewhere (a shell command via runShell). The
+	//    upstream one-liner installs the apt repo + package; fall back to the
+	//    manual recipe on any failure.
+	if _, err := exec.LookPath("ntfy"); err != nil {
+		fmt.Fprintln(stdout, "installing ntfy server...")
+		install := "curl -sSL https://get.ntfy.sh | sudo sh"
+		if err := runShell(install, stdout, stderr); err != nil {
+			fmt.Fprintf(stderr, "warning: ntfy install failed: %v\n", err)
+			printNtfyManualRecipe(p, stderr)
+			return
+		}
+	} else {
+		fmt.Fprintln(stdout, "ntfy already installed.")
+	}
+
+	// Verify the binary actually runs before configuring it.
+	if err := runShell("ntfy --version", stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: `ntfy --version` did not run: %v\n", err)
+		printNtfyManualRecipe(p, stderr)
+		return
+	}
+
+	// 2. Write a starter server.yml. /etc needs root, so write via sudo tee
+	//    and fall back to the manual recipe (incl. the config body) on
+	//    failure.
+	const serverYMLPath = "/etc/ntfy/server.yml"
+	writeCfg := fmt.Sprintf("sudo mkdir -p /etc/ntfy && printf '%%s' %s | sudo tee %s >/dev/null",
+		shellQuote(ntfyServerYML), serverYMLPath)
+	if err := runShell(writeCfg, stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: could not write %s: %v\n", serverYMLPath, err)
+		printNtfyManualRecipe(p, stderr)
+		return
+	}
+	fmt.Fprintf(stdout, "wrote %s (edit base-url to your real TLS subdomain)\n", serverYMLPath)
+
+	// 3. Grant anonymous write-only access to up* topics (the phone-contract
+	//    anonymous-write convention). Best-effort.
+	if err := runShell("sudo ntfy access '*' 'up*' write-only", stdout, stderr); err != nil {
+		fmt.Fprintf(stderr, "warning: could not set ntfy access: %v\n", err)
+		fmt.Fprintln(stderr, "  set it manually with: sudo ntfy access '*' 'up*' write-only")
+	}
+
+	// 4. TLS is always manual — print the recipe.
+	printNtfyTLSRecipe(stdout)
+}
+
+// printNtfyTLSRecipe prints the manual TLS / reverse-proxy recipe. Android
+// rejects self-signed certs, so the user must point a real DNS subdomain at a
+// proxy that terminates valid TLS in front of ntfy's loopback listener.
+func printNtfyTLSRecipe(w io.Writer) {
+	fmt.Fprintln(w, "ntfy TLS (manual): put a reverse proxy with a valid cert in front of 127.0.0.1:2586.")
+	fmt.Fprintln(w, "  Caddyfile:")
+	fmt.Fprintln(w, "    ntfy.you.com { reverse_proxy 127.0.0.1:2586 }")
+	fmt.Fprintln(w, "  Point a DNS subdomain here; Android requires a valid, non-self-signed cert.")
+}
+
+// printNtfyManualRecipe prints the full manual fallback when an assisted step
+// fails, including the binary install, the server.yml body, and TLS.
+func printNtfyManualRecipe(p *internal.Paths, w io.Writer) {
+	fmt.Fprintln(w, "ntfy manual install:")
+	fmt.Fprintln(w, "  1. install:  curl -sSL https://get.ntfy.sh | sudo sh")
+	fmt.Fprintln(w, "  2. write /etc/ntfy/server.yml:")
+	for _, line := range strings.Split(strings.TrimRight(ntfyServerYML, "\n"), "\n") {
+		fmt.Fprintf(w, "       %s\n", line)
+	}
+	fmt.Fprintln(w, "  3. access:   sudo ntfy access '*' 'up*' write-only")
+	printNtfyTLSRecipe(w)
+}
+
+// shellQuote single-quotes s for safe interpolation into an `sh -c` string,
+// escaping embedded single quotes the POSIX way ('\'').
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // ---- dry-run ----
 
 func buildDryRun(p *internal.Paths) (dryRunReport, error) {
@@ -470,6 +655,19 @@ func buildDryRun(p *internal.Paths) (dryRunReport, error) {
 		c.Note = "already exists"
 	}
 	changes = append(changes, c)
+
+	// herdr-watcher systemd user unit.
+	unitPath := filepath.Join(p.Home, ".config", "systemd", "user", herdrWatchUnitName)
+	uc := Change{
+		Type: "write_unit",
+		Path: short(unitPath),
+		Mode: "0644",
+		Note: "best-effort `systemctl --user enable --now` follows (skipped if systemd --user is unavailable)",
+	}
+	if internal.Exists(unitPath) {
+		uc.Note = "unit already present (will be overwritten); " + uc.Note
+	}
+	changes = append(changes, uc)
 
 	// rc blocks.
 	rcs := []string{p.Bashrc}

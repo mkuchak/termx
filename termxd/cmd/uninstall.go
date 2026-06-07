@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/mkuchak/termx/termxd/cmd/internal"
@@ -50,9 +51,10 @@ func runUninstall(stdin io.Reader, stdout, stderr io.Writer, yes, keepData bool)
 	}
 
 	summary := struct {
-		BlocksRemoved int
-		HooksStripped bool
-		DataRemoved   bool
+		BlocksRemoved  int
+		HooksStripped  bool
+		ServiceRemoved bool
+		DataRemoved    bool
 	}{}
 
 	// Strip marked blocks from all rc files.
@@ -68,6 +70,11 @@ func runUninstall(stdin io.Reader, stdout, stderr io.Writer, yes, keepData bool)
 			fmt.Fprintf(stdout, "removed block: %s\n", f)
 		}
 	}
+
+	// Remove the herdr-watcher systemd user service. Best-effort: stop +
+	// disable (ignore failures — the unit may never have been enabled, or
+	// systemd --user may be absent) then delete the unit file.
+	summary.ServiceRemoved = removeHerdrWatchService(paths, stdout, stderr)
 
 	// Strip termx-managed hooks from Claude settings.
 	changed, err := internal.StripManagedFromClaudeSettings(paths.ClaudeSettings)
@@ -96,7 +103,34 @@ func runUninstall(stdin io.Reader, stdout, stderr io.Writer, yes, keepData bool)
 		fmt.Fprintf(stdout, "Run `rm %s` manually to remove the binary.\n", paths.LocalBinTermx)
 	}
 
-	fmt.Fprintf(stdout, "Summary: blocks_removed=%d hooks_stripped=%t data_removed=%t\n",
-		summary.BlocksRemoved, summary.HooksStripped, summary.DataRemoved)
+	// A self-hosted ntfy server (if installed via `termx install --with-ntfy`)
+	// is intentionally left in place — it is a standalone, root-owned service
+	// the user may rely on for other apps.
+	fmt.Fprintln(stdout, "Note: a self-hosted ntfy server (if any) was left in place; remove it manually if no longer needed.")
+
+	fmt.Fprintf(stdout, "Summary: blocks_removed=%d hooks_stripped=%t service_removed=%t data_removed=%t\n",
+		summary.BlocksRemoved, summary.HooksStripped, summary.ServiceRemoved, summary.DataRemoved)
 	return nil
+}
+
+// removeHerdrWatchService best-effort stops + disables the watcher user unit
+// and deletes its file. Returns true if the unit file was actually removed.
+// Never fails the uninstall — systemctl errors (no systemd --user, never
+// enabled) are ignored; only a real file-removal error is surfaced as a
+// warning.
+func removeHerdrWatchService(p *internal.Paths, stdout, stderr io.Writer) bool {
+	// Stop/disable are advisory — discard their output and ignore errors.
+	_ = runShell("systemctl --user stop "+herdrWatchUnitName, io.Discard, io.Discard)
+	_ = runShell("systemctl --user disable "+herdrWatchUnitName, io.Discard, io.Discard)
+
+	unitPath := filepath.Join(p.Home, ".config", "systemd", "user", herdrWatchUnitName)
+	if err := os.Remove(unitPath); err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+		fmt.Fprintf(stderr, "warning: could not remove %s: %v\n", unitPath, err)
+		return false
+	}
+	fmt.Fprintf(stdout, "removed service unit: %s\n", unitPath)
+	return true
 }
