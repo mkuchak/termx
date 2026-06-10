@@ -153,6 +153,14 @@ func runInstall(stdout, stderr io.Writer, dryRun, installDeps, withNtfy bool) er
 		return err
 	}
 
+	// Phase A2: mosh preflight — UTF-8 locale + UDP firewall guidance. The
+	// two most common mosh failures are server-side and invisible from the
+	// phone (mosh-server refuses non-UTF-8 locales; blocked UDP just hangs).
+	// Print-only by design — never runs privileged commands — and absent
+	// from --dry-run (which returned above) so the JSON wire contract with
+	// the Android wizard is untouched.
+	moshPreflight(stdout, stderr, distro)
+
 	// Phase B: filesystem tree.
 	if err := ensureTermxTree(paths, stdout); err != nil {
 		return err
@@ -302,6 +310,95 @@ func dedup(in []string) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// ---- mosh preflight (locale + firewall) ----
+//
+// mosh-server hard-refuses to start without a UTF-8 native locale, and a
+// firewall dropping its UDP range (60000:60010 — the range the Android app
+// requests on the mosh-server exec) makes connections hang with no error.
+// Both checks below are PRINT-ONLY guidance, consistent with the installer's
+// philosophy of never running privileged commands automatically (the
+// --with-ntfy TLS recipe is print-only for the same reason).
+
+// moshUDPRange is the inbound UDP port range mosh-server is launched with
+// (must match the Android side's MoshClient portRange).
+const moshUDPRange = "60000:60010"
+
+// charmapRunner returns the trimmed output of `locale charmap` (e.g. "UTF-8",
+// "ANSI_X3.4-1968"). Injectable so tests can fake the host locale.
+type charmapRunner func() (string, error)
+
+// ufwStatusRunner returns the combined output of `ufw status`. Injectable so
+// tests can fake active/inactive states and rule listings.
+type ufwStatusRunner func() (string, error)
+
+// lookPathFunc mirrors exec.LookPath for test injection.
+type lookPathFunc func(string) (string, error)
+
+func runLocaleCharmap() (string, error) {
+	out, err := exec.Command("locale", "charmap").Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+func runUfwStatus() (string, error) {
+	// CombinedOutput: ufw prints its root-required error to stderr; either
+	// way a failure routes to the generic provider-firewall note.
+	out, err := exec.Command("ufw", "status").CombinedOutput()
+	return string(out), err
+}
+
+// moshPreflight wires the real exec-backed runners into the two checks.
+func moshPreflight(stdout, stderr io.Writer, distro internal.Distro) {
+	preflightLocale(stderr, distro, runLocaleCharmap)
+	preflightFirewall(stdout, stderr, exec.LookPath, runUfwStatus)
+}
+
+// preflightLocale warns (non-fatally) when the active charmap is not UTF-8.
+// Note for context: C.UTF-8 exists on virtually every modern distro and the
+// Android app forces LANG=C.UTF-8 on the mosh-server exec, so termx itself
+// usually survives a non-UTF-8 default — but plain `mosh user@host` from
+// other clients still fails, hence the guidance.
+func preflightLocale(stderr io.Writer, distro internal.Distro, charmap charmapRunner) {
+	cm, err := charmap()
+	if err == nil && strings.EqualFold(cm, "UTF-8") {
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "warning: could not determine locale charmap (%v) — mosh-server needs a UTF-8 locale to run.\n", err)
+	} else {
+		fmt.Fprintf(stderr, "warning: locale charmap is %q, not UTF-8 — mosh-server will refuse to start under this locale.\n", cm)
+	}
+	switch distro {
+	case internal.DistroUbuntu, internal.DistroDebian:
+		fmt.Fprintln(stderr, "  fix: sudo locale-gen en_US.UTF-8")
+	default:
+		fmt.Fprintln(stderr, "  fix: enable a UTF-8 locale (debian/ubuntu: sudo locale-gen en_US.UTF-8)")
+	}
+	fmt.Fprintln(stderr, "  note: C.UTF-8 usually exists already, and the termx app forces LANG=C.UTF-8 when starting mosh-server — this mainly affects plain mosh/ssh use.")
+}
+
+// preflightFirewall checks whether mosh's UDP range can get through. Hosts
+// with an active ufw get an exact remedy when the rule is missing; everything
+// else (no ufw, ufw inactive, or `ufw status` unreadable without root) gets a
+// one-line reminder that provider firewalls (security groups etc.) also
+// filter inbound UDP.
+func preflightFirewall(stdout, stderr io.Writer, lookPath lookPathFunc, ufwStatus ufwStatusRunner) {
+	const genericNote = "note: mosh needs inbound UDP 60000-60010 — check your provider firewall."
+	if _, err := lookPath("ufw"); err != nil {
+		fmt.Fprintln(stdout, genericNote)
+		return
+	}
+	out, err := ufwStatus()
+	if err != nil || !strings.Contains(out, "Status: active") {
+		fmt.Fprintln(stdout, genericNote)
+		return
+	}
+	if strings.Contains(out, moshUDPRange+"/udp") {
+		return
+	}
+	fmt.Fprintln(stderr, "warning: ufw is active but mosh's UDP range is not allowed — mosh connections will hang.")
+	fmt.Fprintln(stderr, "  fix: sudo ufw allow 60000:60010/udp")
 }
 
 // ---- filesystem tree ----
