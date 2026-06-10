@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.7.0](https://github.com/mkuchak/termx/compare/v1.6.0...v1.7.0) (2026-06-10)
+
+### Features
+
+* **mosh:** harden the handshake — UTF-8 locale, stderr capture, classified failures ([8cfb7de](https://github.com/mkuchak/termx/commit/8cfb7de2ed46e1559996f1ea448ec7bfc0b58019))
+* session-centric redesign — persistent connections, sheet terminal, live home ([436541a](https://github.com/mkuchak/termx/commit/436541a957e4491405d4876cd05a595f56611854))
+* **termxd:** preflight mosh prerequisites on install (UTF-8 locale, UDP firewall) ([c78a4e3](https://github.com/mkuchak/termx/commit/c78a4e39020de28d41597512bdcf516f7752e65b))
+
+### Bug Fixes
+
+* **broker:** deliver phone approvals to the PreToolUse hook via approvals/<id>.res.json ([d05eb87](https://github.com/mkuchak/termx/commit/d05eb87ecbd08c2c76a7205c730dddb6d36ca895))
+
 ## [1.6.0](https://github.com/mkuchak/termx/compare/v1.5.0...v1.6.0) (2026-06-07)
 
 ### Features
