@@ -5,8 +5,11 @@ import java.util.UUID
 
 /**
  * Write [bytes] to [path] on the remote in a way that readers on the VPS
- * (typically termxd, polling the commands directory) can never observe a
- * partially-written file.
+ * can never observe a partially-written file. The load-bearing consumer is
+ * `termx _hook-pretooluse` (termxd/cmd/hook_pretooluse.go), which polls
+ * `~/.termx/approvals/<id>.res.json` on a 100 ms timer while blocking
+ * Claude — this rename protocol is the only reason that poll loop can
+ * never read a torn, half-written decision.
  *
  * The protocol is the classic temp-file-plus-rename dance:
  *  1. Write the full payload to a unique sibling path
@@ -18,9 +21,9 @@ import java.util.UUID
  *     never a torn in-progress write.
  *
  * Failure mode: if the write lands but the rename fails, the temp file is
- * left on disk. It's harmless — termxd only looks at files matching the
- * `<uuid>.json` pattern in the commands dir, and a stale `.tmp.<uuid>`
- * entry never matches. We intentionally do NOT try to clean it up from
+ * left on disk. It's harmless — termxd only stat+reads exact canonical
+ * paths (`<id>.res.json`), and a stale `<name>.tmp.<uuid>` sibling is
+ * never one of them. We intentionally do NOT try to clean it up from
  * here: the next successful write cycle proves the SFTP channel is
  * healthy, and a cron-style cleanup belongs in termxd itself.
  */

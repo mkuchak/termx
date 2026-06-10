@@ -8,7 +8,7 @@ import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.AndroidEntryPoint
 import dev.kuch.termx.core.data.session.EventStreamHub
-import dev.kuch.termx.libs.companion.events.CompanionCommand
+import dev.kuch.termx.libs.companion.events.ApprovalResponse
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CoroutineScope
@@ -24,15 +24,20 @@ import kotlinx.coroutines.launch
  *  - Action: [ACTION_APPROVE] or [ACTION_DENY]
  *  - Extra [EXTRA_REQUEST_ID]: the `request_id` from the permission event
  *  - Extra [EXTRA_SERVER_ID]: stringified UUID of the server whose
- *    `EventStreamClient` should carry the resolution command
+ *    `EventStreamClient` should carry the decision
  *  - Extra [EXTRA_NOTIFICATION_ID]: system id to cancel after posting,
- *    so a second tap on a duplicate notification doesn't fire the command
+ *    so a second tap on a duplicate notification doesn't fire the decision
+ *
+ * The decision lands as `~/.termx/approvals/<request_id>.res.json` via
+ * `EventStreamClient.respondToApproval` — the file termxd's PreToolUse
+ * hook polls while it blocks Claude.
  *
  * We do the SFTP write off the main thread via a small supervising
  * scope. BroadcastReceivers have ~10 s before the system ANRs them; an
- * SFTP rename is well under that on any healthy network, but pending
- * command delivery isn't time-critical enough to warrant blocking the
- * receiver — firing the scope and returning is fine.
+ * SFTP rename is well under that on any healthy network, but decision
+ * delivery isn't time-critical enough to warrant blocking the receiver
+ * (worst case the hook default-denies at 30 s) — firing the scope and
+ * returning is fine.
  */
 @AndroidEntryPoint
 class ApprovalActionReceiver : BroadcastReceiver() {
@@ -52,28 +57,32 @@ class ApprovalActionReceiver : BroadcastReceiver() {
         if (client == null) {
             Log.w(TAG, "No live EventStreamClient for $serverId; dropping $action")
         } else {
-            val command = when (action) {
-                ACTION_APPROVE -> CompanionCommand.ApprovePermission(
-                    id = UUID.randomUUID().toString(),
-                    requestId = requestId,
-                    remember = false,
-                )
-                ACTION_DENY -> CompanionCommand.DenyPermission(
-                    id = UUID.randomUUID().toString(),
-                    requestId = requestId,
-                    reason = "Denied from notification",
-                )
+            // Wire values per termxd/cmd/hook_pretooluse.go: only
+            // "allow"/"approve" unblock the tool; the deny reason is
+            // echoed to Claude's stderr by the hook.
+            val decision = when (action) {
+                ACTION_APPROVE -> ApprovalResponse.Decision.ALLOW
+                ACTION_DENY -> ApprovalResponse.Decision.DENY
                 else -> null
             }
-            if (command != null) {
-                // Firing without goAsync is deliberate: command delivery
+            if (decision != null) {
+                // Firing without goAsync is deliberate: decision delivery
                 // is best-effort from a notification action, the router
                 // will re-fire a toast via its `errors` flow if the SFTP
                 // hop fails, and we don't want to hold the BroadcastReceiver
                 // lifetime open against network jitter.
                 scope.launch {
-                    runCatching { client.sendCommand(command) }
-                        .onFailure { Log.w(TAG, "sendCommand failed", it) }
+                    runCatching {
+                        client.respondToApproval(
+                            requestId = requestId,
+                            decision = decision,
+                            reason = if (decision == ApprovalResponse.Decision.DENY) {
+                                "Denied from notification"
+                            } else {
+                                null
+                            },
+                        )
+                    }.onFailure { Log.w(TAG, "respondToApproval failed", it) }
                 }
             }
         }

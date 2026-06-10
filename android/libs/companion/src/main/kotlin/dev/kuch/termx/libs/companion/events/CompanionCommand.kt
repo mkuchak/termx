@@ -4,11 +4,19 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * Commands the phone writes back to the VPS as JSON files in
- * `~/.termx/commands/<id>.json`. `termxd` polls that directory, processes
- * each file, then deletes it; the resulting state change (a permission
- * resolution) surfaces back to the phone via the
- * [TermxEvent] stream so every channel flows through the same tail.
+ * Commands the phone can write to the VPS as JSON files in
+ * `~/.termx/commands/<id>.json`.
+ *
+ * ⚠ STATUS: nothing on the VPS consumes this directory. termxd never grew
+ * a commands poller (`CommandsDir` in termxd is only ever mkdir'd by
+ * `install`), so dropping one of these files has no effect today. The live
+ * permission round-trip is `EventStreamClient.respondToApproval`, which
+ * writes `~/.termx/approvals/<id>.res.json` — the file the PreToolUse hook
+ * actually polls — and "Always approve" persistence is
+ * `EventStreamClient.appendAllowlistRule`. This schema and
+ * `EventStreamClient.sendCommand` are retained for forward-compat with a
+ * future server-side consumer (repo convention: decisions are superseded,
+ * not erased).
  *
  * Wire format: JSON with a top-level `type` discriminator matching the
  * [SerialName] of the subclass. Every command carries an [id] (typically a
@@ -16,8 +24,9 @@ import kotlinx.serialization.Serializable
  * correlation key in downstream events.
  *
  * Subclasses:
- *  - [ApprovePermission]: resolves a pending PreToolUse request (Phase 5).
+ *  - [ApprovePermission]: would resolve a pending PreToolUse request.
  *  - [DenyPermission]: counterpart for a rejection.
+ *  - [UpdateAllowlist]: would append a broker-bypass rule.
  */
 @Serializable
 sealed class CompanionCommand {
@@ -26,11 +35,11 @@ sealed class CompanionCommand {
     /**
      * Approve a blocked [PermissionRequested][TermxEvent.PermissionRequested].
      *
-     * @param remember if true, termxd also appends a rule to the VPS's
-     *   `~/.claude/settings.json` so subsequent invocations with the same
-     *   tool+args pattern auto-approve — this mirrors Claude's own
-     *   `permissions.allow` and is the pathway the pattern-whitelist UI
-     *   (Phase 5) uses.
+     * @param remember intended: a future termxd consumer would also
+     *   persist an auto-approve rule (mirroring Claude's own
+     *   `permissions.allow`). Unconsumed today — the shipping equivalent
+     *   is `EventStreamClient.respondToApproval(ALLOW)` plus
+     *   `appendAllowlistRule`.
      */
     @Serializable
     @SerialName("approve_permission")
@@ -53,10 +62,11 @@ sealed class CompanionCommand {
     ) : CompanionCommand()
 
     /**
-     * Append [pattern] to the VPS's `~/.termx/allowlist.txt` so subsequent
-     * tool calls matching the pattern auto-approve without roundtripping
-     * to the phone. Consumed by the Phase 5 "Always approve" button on
-     * the permission dialog.
+     * Intended: append [pattern] to the VPS's `~/.termx/allowlist.txt` so
+     * subsequent tool calls matching the pattern auto-approve without
+     * roundtripping to the phone. Unconsumed today — the "Always approve"
+     * button now performs the append itself over SFTP via
+     * `EventStreamClient.appendAllowlistRule`.
      *
      * [pattern] is a Go-compatible regex matched against
      * `<tool_name>|<command-or-path>` by `termx _hook-pretooluse`. The

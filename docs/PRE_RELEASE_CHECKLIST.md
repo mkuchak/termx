@@ -48,7 +48,12 @@ gh run download <id> --name termx-debug-<sha> --dir /tmp && adb install /tmp/app
 - Expected: first Compose frame renders without `Missing class`, `ClassNotFoundException`, or R8-related crashes in `adb logcat`.
 - Would have caught: v0.3.0 R8 shrink regressions.
 
-## 10. Biometric vault re-lock (quarterly spot-check)
+## 10. Permission broker round-trip (phone → VPS)
+- Click-path: with the companion installed, run a gated tool (e.g. `Bash`) in Claude Code on the VPS → approve from the phone notification → the tool executes. Repeat approving from the in-app dialog. Repeat with Deny → Claude shows the denial reason. Then "Always approve" → the rule lands in `~/.termx/allowlist.txt` and the next identical call auto-approves silently (no notification).
+- Expected: every decision resolves well within the hook's 30 s window; no default-deny while you are actively responding.
+- Would have caught: the broker gap where the phone wrote decisions to a path nothing read, so every gated tool call default-denied after 30 s.
+
+## 11. Biometric vault re-lock (quarterly spot-check)
 - Click-path: Unlock via biometric. Background the app for 6 min. Foreground.
 - Expected: biometric prompt reappears before the server list is accessible.
 - Cadence: quarterly — skip on every release; otherwise this doc bloats.

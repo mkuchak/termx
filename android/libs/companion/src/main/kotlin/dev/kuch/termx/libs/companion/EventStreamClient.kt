@@ -1,5 +1,6 @@
 package dev.kuch.termx.libs.companion
 
+import dev.kuch.termx.libs.companion.events.ApprovalResponse
 import dev.kuch.termx.libs.companion.events.CompanionCommand
 import dev.kuch.termx.libs.companion.events.EventParser
 import dev.kuch.termx.libs.companion.events.NdjsonBuffer
@@ -47,12 +48,17 @@ import kotlinx.serialization.json.Json
  *
  * Path handling:
  *  - `tail` runs under a remote shell so `~` is expanded server-side for
- *    free. For [loadSessionRegistry] and [sendCommand] we need absolute
- *    paths (sshj's SFTP client doesn't expand `~`), so the client caches
- *    the resolved `$HOME` the first time one of those calls runs. See
- *    [resolveHomeDir].
+ *    free. For the SFTP-based calls ([loadSessionRegistry],
+ *    [respondToApproval], [appendAllowlistRule], [sendCommand]) we need
+ *    absolute paths (sshj's SFTP client doesn't expand `~`), so the client
+ *    caches the resolved `$HOME` the first time one of those calls runs.
+ *    See [resolveHomeDir].
+ *
+ * Open for tests only: feature modules fake this client with hand-rolled
+ * subclasses (the repo convention — no mock library), so the class and the
+ * members those fakes override are `open`.
  */
-class EventStreamClient(
+open class EventStreamClient(
     private val session: SshSession,
     private val parser: EventParser = EventParser(),
 ) : AutoCloseable {
@@ -99,7 +105,7 @@ class EventStreamClient(
      *    on a mobile notification path. See [STREAM_BUFFER_SLOTS] for the
      *    cap derivation.
      */
-    fun stream(): Flow<TermxEvent> = flow {
+    open fun stream(): Flow<TermxEvent> = flow {
         val exec = session.openExec(TAIL_COMMAND)
         try {
             val buffer = NdjsonBuffer()
@@ -174,14 +180,102 @@ class EventStreamClient(
     }
 
     /**
+     * Resolve a pending PreToolUse permission request by writing
+     * `~/.termx/approvals/<requestId>.res.json` — the exact file
+     * `termx _hook-pretooluse` (termxd/cmd/hook_pretooluse.go) polls
+     * every 100 ms while it blocks Claude, default-denying after 30 s.
+     *
+     * Wire schema: [ApprovalResponse] — field names locked to the Go
+     * `approvalResponse` struct; see that class's KDoc for the contract
+     * and `src/test/resources/approvals-golden/` for the byte-exact
+     * fixtures.
+     *
+     * The write goes through [writeAtomic] (unique temp sibling + SFTP
+     * rename). That atomicity is load-bearing: the hook's poll loop
+     * stat+reads the canonical path on a timer, and rename-in-place is
+     * the only reason it can never observe a torn, half-written JSON —
+     * it either sees nothing or the complete payload.
+     *
+     * "Always approve" callers pass [ApprovalResponse.Decision.ALLOW]
+     * here (the hook treats anything other than approve/allow as deny
+     * and persists nothing) and separately call [appendAllowlistRule]
+     * to make the approval stick for future invocations.
+     */
+    open suspend fun respondToApproval(
+        requestId: String,
+        decision: ApprovalResponse.Decision,
+        reason: String? = null,
+    ): Unit = withContext(Dispatchers.IO) {
+        val home = resolveHomeDir()
+        val path = "$home/.termx/approvals/$requestId.res.json"
+        val payload = RESPONSE_JSON.encodeToString(
+            ApprovalResponse.serializer(),
+            ApprovalResponse(decision = decision, reason = reason),
+        )
+        // Trailing newline matches termxd's own writeJSONAtomic convention
+        // (and keeps `cat` output tidy when debugging on the VPS).
+        val bytes = (payload + "\n").toByteArray(Charsets.UTF_8)
+        val sftp = session.openSftp()
+        try {
+            sftp.writeAtomic(path, bytes)
+        } finally {
+            runCatching { sftp.close() }
+        }
+    }
+
+    /**
+     * Append a regex rule to `~/.termx/allowlist.txt` so future tool
+     * calls matching `<tool_name>|<cmd-or-path>` bypass the broker (the
+     * matcher is `allowlistMatches` in termxd/cmd/hook_pretooluse.go;
+     * one regex per line, `#` comments and blank lines ignored).
+     *
+     * Read-modify-write: fetch the current file (missing file == empty),
+     * no-op if [pattern] is already present (idempotent — a double-tap on
+     * "Always approve" must not duplicate rules), otherwise re-publish the
+     * whole file via [writeAtomic] so the hook never reads a torn file.
+     *
+     * The Go side persists nothing on approval, so this phone-side append
+     * is the ONLY persistence behind "Always approve". Callers treat it
+     * as best-effort: the decision write ([respondToApproval]) is the
+     * critical half and must not be gated on this one succeeding.
+     */
+    open suspend fun appendAllowlistRule(pattern: String): Unit = withContext(Dispatchers.IO) {
+        val home = resolveHomeDir()
+        val path = "$home/.termx/allowlist.txt"
+        val sftp = session.openSftp()
+        try {
+            val current = runCatching { sftp.read(path).toString(Charsets.UTF_8) }
+                .getOrDefault("") // missing file → start fresh
+            val alreadyPresent = current.lineSequence().any { it.trim() == pattern }
+            if (alreadyPresent) return@withContext
+            val updated = buildString {
+                append(current)
+                if (current.isNotEmpty() && !current.endsWith("\n")) append('\n')
+                append(pattern)
+                append('\n')
+            }
+            sftp.writeAtomic(path, updated.toByteArray(Charsets.UTF_8))
+        } finally {
+            runCatching { sftp.close() }
+        }
+    }
+
+    /**
      * Drop a [CompanionCommand] into `~/.termx/commands/<id>.json`.
+     *
+     * ⚠ Nothing on the VPS consumes this directory today — termxd never
+     * grew a commands poller (`CommandsDir` is only ever mkdir'd). The
+     * live permission path is [respondToApproval], which writes the
+     * `.res.json` the PreToolUse hook actually polls. This method and the
+     * [CompanionCommand] schema are retained for forward-compat with a
+     * future server-side consumer (repo convention: decisions are
+     * superseded, not erased).
      *
      * Writes are atomic from the reader's point of view: the payload
      * lands in a uniquely-named temp sibling first, then SFTP rename
-     * publishes it under the canonical filename. termxd polls the
-     * commands dir for `<id>.json` files, so it can only ever observe
-     * a fully-written payload — never a torn mid-write read. See
-     * [writeAtomic] for the full protocol.
+     * publishes it under the canonical filename, so any future consumer
+     * can only ever observe a fully-written payload — never a torn
+     * mid-write read. See [writeAtomic] for the full protocol.
      */
     suspend fun sendCommand(cmd: CompanionCommand) = withContext(Dispatchers.IO) {
         val home = resolveHomeDir()
@@ -262,5 +356,11 @@ class EventStreamClient(
             classDiscriminator = "type"
             encodeDefaults = true
         }
+
+        // Encoder for approval responses. Deliberately the default Json:
+        // `encodeDefaults = false` drops a null `reason`, matching the Go
+        // struct's `json:"reason,omitempty"` (hook_pretooluse.go) so both
+        // sides agree byte-for-byte on the no-reason payload.
+        val RESPONSE_JSON: Json = Json
     }
 }

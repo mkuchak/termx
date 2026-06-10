@@ -4,7 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dev.kuch.termx.core.data.session.EventStreamHub
-import dev.kuch.termx.libs.companion.events.CompanionCommand
+import dev.kuch.termx.libs.companion.events.ApprovalResponse
 import dev.kuch.termx.libs.companion.events.TermxEvent
 import java.util.UUID
 import javax.inject.Inject
@@ -33,14 +33,20 @@ import kotlinx.coroutines.launch
  *    lands (e.g., notification-driven reconnection), the existing entry
  *    is preserved.
  *  - On [TermxEvent.PermissionResolved]: remove the entry.
- *  - On [approve] / [deny]: send a [CompanionCommand] via the server's
- *    [dev.kuch.termx.libs.companion.EventStreamClient] and optimistically
- *    remove the pending entry; if the send fails, the `PermissionResolved`
- *    event that eventually lands from termxd will just no-op.
- *  - On [alwaysApprove]: additionally emits a [CompanionCommand.UpdateAllowlist]
- *    so the server-side allowlist picks up the pattern for subsequent
- *    invocations. MVP pattern = exact tool name; power users can hand-edit
- *    `~/.termx/allowlist.txt` for richer rules.
+ *  - On [approve] / [deny]: write the decision straight to
+ *    `~/.termx/approvals/<id>.res.json` via
+ *    [dev.kuch.termx.libs.companion.EventStreamClient.respondToApproval] —
+ *    the file `termx _hook-pretooluse` polls — and optimistically remove
+ *    the pending entry; if the write fails, the hook default-denies after
+ *    its 30 s timeout and the resulting `PermissionResolved` event just
+ *    no-ops here.
+ *  - On [alwaysApprove]: write the same `allow` decision (the Go hook only
+ *    understands allow/deny and persists nothing itself), then best-effort
+ *    append a rule to `~/.termx/allowlist.txt` via
+ *    [dev.kuch.termx.libs.companion.EventStreamClient.appendAllowlistRule]
+ *    so subsequent invocations bypass the broker. MVP pattern = exact tool
+ *    name; power users can hand-edit `~/.termx/allowlist.txt` for richer
+ *    rules.
  */
 @HiltViewModel
 class PermissionBrokerViewModel @Inject constructor(
@@ -81,18 +87,14 @@ class PermissionBrokerViewModel @Inject constructor(
 
     /**
      * User tapped Approve. Optimistically remove the entry so the dialog
-     * dismisses even before the command lands — the server-side
-     * `permission_resolved` event will confirm it.
+     * dismisses even before the response file lands — the server-side
+     * `permission_resolved` event will confirm it (or, if the SFTP write
+     * fails, the hook's 30 s timeout deny resolves it the hard way).
      */
     fun approve(approvalId: String) {
         val entry = _pendingRequests.value.firstOrNull { it.approvalId == approvalId } ?: return
         removeLocally(approvalId)
-        val cmd = CompanionCommand.ApprovePermission(
-            id = UUID.randomUUID().toString(),
-            requestId = approvalId,
-            remember = false,
-        )
-        sendTo(entry.serverId, cmd)
+        respondTo(entry.serverId, approvalId, ApprovalResponse.Decision.ALLOW)
     }
 
     /**
@@ -102,36 +104,39 @@ class PermissionBrokerViewModel @Inject constructor(
     fun deny(approvalId: String, reason: String? = null) {
         val entry = _pendingRequests.value.firstOrNull { it.approvalId == approvalId } ?: return
         removeLocally(approvalId)
-        val cmd = CompanionCommand.DenyPermission(
-            id = UUID.randomUUID().toString(),
-            requestId = approvalId,
-            reason = reason,
-        )
-        sendTo(entry.serverId, cmd)
+        respondTo(entry.serverId, approvalId, ApprovalResponse.Decision.DENY, reason)
     }
 
     /**
      * Approve this request AND add a rule to the server's allowlist so
-     * subsequent invocations of [toolName] bypass the broker entirely.
+     * subsequent invocations of the tool bypass the broker entirely.
      *
-     * Pattern shape: `^<toolName>\|.*$` — matches the `<tool_name>|<cmd>`
-     * candidate termxd builds inside its allowlist matcher. Power users
-     * can refine by hand-editing `~/.termx/allowlist.txt`.
+     * Two writes, deliberately ordered and independently fallible:
+     *  1. The decision (`allow` — the Go hook accepts only approve/allow
+     *     and treats anything else, including "always", as deny) — this is
+     *     the critical half that unblocks Claude right now.
+     *  2. Best-effort allowlist persistence. termxd persists nothing when
+     *     it reads a response, so the phone-side append IS the "always"
+     *     semantics; if it fails the user just gets asked again next time.
+     *
+     * Pattern shape: `^<toolName>\|.*$` (toolName regex-escaped) — matches
+     * the `<tool_name>|<cmd>` candidate termxd builds inside its allowlist
+     * matcher. Power users can refine by hand-editing
+     * `~/.termx/allowlist.txt`.
      */
     fun alwaysApprove(approvalId: String) {
         val entry = _pendingRequests.value.firstOrNull { it.approvalId == approvalId } ?: return
         removeLocally(approvalId)
-        val approve = CompanionCommand.ApprovePermission(
-            id = UUID.randomUUID().toString(),
-            requestId = approvalId,
-            remember = true,
-        )
-        sendTo(entry.serverId, approve)
-        val update = CompanionCommand.UpdateAllowlist(
-            id = UUID.randomUUID().toString(),
-            pattern = allowlistPatternFor(entry.toolName),
-        )
-        sendTo(entry.serverId, update)
+        val client = hub.clients.value[entry.serverId]?.client ?: return
+        viewModelScope.launch {
+            runCatching {
+                client.respondToApproval(approvalId, ApprovalResponse.Decision.ALLOW)
+            }
+            // Swallowed on failure by design — see KDoc above.
+            runCatching {
+                client.appendAllowlistRule(allowlistPatternFor(entry.toolName))
+            }
+        }
     }
 
     private fun removeLocally(approvalId: String) {
@@ -140,10 +145,15 @@ class PermissionBrokerViewModel @Inject constructor(
         }
     }
 
-    private fun sendTo(serverId: UUID, cmd: CompanionCommand) {
+    private fun respondTo(
+        serverId: UUID,
+        requestId: String,
+        decision: ApprovalResponse.Decision,
+        reason: String? = null,
+    ) {
         val client = hub.clients.value[serverId]?.client ?: return
         viewModelScope.launch {
-            runCatching { client.sendCommand(cmd) }
+            runCatching { client.respondToApproval(requestId, decision, reason) }
         }
     }
 
