@@ -78,10 +78,24 @@ class EventNotificationRouter @Inject constructor(
      * PendingIntents and silently swap their extras. We hash
      * `serverId + approvalId` to keep the permission deep link
      * addressable.
+     *
+     * Every open-app intent carries [EXTRA_SERVER_ID] (Task #47):
+     * MainActivity reads it and connect-then-maximizes that session's
+     * terminal sheet, so tapping any per-server notification lands the
+     * user IN the session it talks about. SINGLE_TOP (new) +
+     * CLEAR_TOP delivers a warm tap to the existing Activity's
+     * `onNewIntent` instead of tearing it down and recreating it.
      */
-    private fun openAppIntent(requestCode: Int, approvalId: String? = null): PendingIntent {
+    private fun openAppIntent(
+        requestCode: Int,
+        serverId: UUID,
+        approvalId: String? = null,
+    ): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra(EXTRA_SERVER_ID, serverId.toString())
             if (approvalId != null) putExtra(EXTRA_APPROVAL_ID, approvalId)
         }
         return PendingIntent.getActivity(
@@ -187,6 +201,7 @@ class EventNotificationRouter @Inject constructor(
         )
         val openIntent = openAppIntent(
             requestCode = ("open:${event.requestId}").hashCode(),
+            serverId = serverId,
             approvalId = event.requestId,
         )
 
@@ -211,7 +226,7 @@ class EventNotificationRouter @Inject constructor(
         event: TermxEvent.ShellCommandLong,
     ) {
         val notificationId = stackingId(serverId, "task_long")
-        val openIntent = openAppIntent(notificationId)
+        val openIntent = openAppIntent(notificationId, serverId)
         val seconds = (event.durationMs / 1000).coerceAtLeast(1)
         val notification = NotificationCompat.Builder(context, NotificationChannels.TASK)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -231,7 +246,7 @@ class EventNotificationRouter @Inject constructor(
         event: TermxEvent.ShellCommandError,
     ) {
         val notificationId = stackingId(serverId, "error")
-        val openIntent = openAppIntent(notificationId)
+        val openIntent = openAppIntent(notificationId, serverId)
         val notification = NotificationCompat.Builder(context, NotificationChannels.ERROR)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Command failed on $serverLabel")
@@ -252,6 +267,7 @@ class EventNotificationRouter @Inject constructor(
         val notificationId = event.diffId.hashCode()
         val reviewIntent = openAppIntent(
             requestCode = ("diff:${event.diffId}").hashCode(),
+            serverId = serverId,
             approvalId = event.diffId,
         )
         val notification = NotificationCompat.Builder(context, NotificationChannels.TASK)
@@ -283,7 +299,7 @@ class EventNotificationRouter @Inject constructor(
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val openIntent = openAppIntent(notificationId)
+        val openIntent = openAppIntent(notificationId, serverId)
         val notification = NotificationCompat.Builder(context, NotificationChannels.DISCONNECT)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Session dropped — $serverLabel")
@@ -303,7 +319,7 @@ class EventNotificationRouter @Inject constructor(
         event: TermxEvent.ClaudeIdle,
     ) {
         val notificationId = stackingId(serverId, "claude_idle")
-        val openIntent = openAppIntent(notificationId)
+        val openIntent = openAppIntent(notificationId, serverId)
         val notification = NotificationCompat.Builder(context, NotificationChannels.TASK)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle("Claude finished")
@@ -375,7 +391,18 @@ class EventNotificationRouter @Inject constructor(
         ContextCompat.getSystemService(context, NotificationManager::class.java)
 
     companion object {
-        /** Extra surfaced on deep-link intents so MainActivity can route. */
+        /**
+         * Extra surfaced on deep-link intents for an eventual diff-viewer
+         * route; still unread by MainActivity (PROJECT_KNOWLEDGE §14.4 —
+         * the diff half stays open).
+         */
         const val EXTRA_APPROVAL_ID = "TERMX_APPROVAL_ID"
+
+        /**
+         * Stringified REGISTRY server id on every open-app intent.
+         * MainActivity reads this (Task #47) and connect-then-maximizes
+         * the matching terminal sheet.
+         */
+        const val EXTRA_SERVER_ID = "TERMX_SERVER_ID"
     }
 }

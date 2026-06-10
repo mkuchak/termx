@@ -62,6 +62,8 @@ dependencies {
     implementation(project(":libs:companion"))
 
     implementation(libs.androidx.core.ktx)
+    // BackHandler for the terminal sheet overlay (back = minimize).
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)

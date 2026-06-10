@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * Task #40 — MediaRecorder wrapper for the PTT FAB.
+ * Task #40 — MediaRecorder wrapper for the PTT hold-to-record mic.
  *
  * Records MP4/AAC (the widest Gemini multimodal compat: it accepts
  * `audio/mp4` plus other codecs, but AAC-in-MP4 is the Android default
@@ -50,7 +50,7 @@ class AudioRecorder @Inject constructor(
     /**
      * Start recording into [outputPath]. The file is overwritten if it
      * exists. Called from the main thread by the PTT composable when the
-     * user presses the FAB.
+     * user presses the mic.
      *
      * @throws IllegalStateException when a recording is already in flight.
      */

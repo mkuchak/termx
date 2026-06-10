@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.AlertDialog
@@ -58,6 +59,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.GestureDetectorCompat
@@ -76,7 +78,9 @@ import dev.kuch.termx.feature.terminal.gestures.UrlTapConfirmDialog
 import dev.kuch.termx.feature.terminal.keys.ExtraKey
 import dev.kuch.termx.feature.terminal.keys.ExtraKeyBytes
 import dev.kuch.termx.feature.terminal.keys.ExtraKeysBar
+import dev.kuch.termx.feature.ptt.PttState
 import dev.kuch.termx.feature.ptt.PttSurface
+import dev.kuch.termx.feature.ptt.rememberPttStartAction
 import java.util.UUID
 
 /**
@@ -88,10 +92,22 @@ import java.util.UUID
  *     fills the available space.
  *  2. [ExtraKeysBar] docked above the soft keyboard.
  *
- * [TerminalViewModel] owns the shared sshj
- * [dev.kuch.termx.libs.sshnative.SshSession] plus the single open
- * [dev.kuch.termx.libs.sshnative.PtyChannel], and exposes the
- * currently-bound emulator as [TerminalUiState.activeSession].
+ * The transport (sshj [dev.kuch.termx.libs.sshnative.SshSession] /
+ * mosh session plus the single open
+ * [dev.kuch.termx.libs.sshnative.PtyChannel]) is owned by the
+ * process-wide [dev.kuch.termx.feature.terminal.connection.ConnectionManager];
+ * [TerminalViewModel] is a binder that exposes the currently-bound
+ * emulator as [TerminalUiState.activeSession]. Sessions OUTLIVE this
+ * screen: back/leaving just unbinds the view, and the only in-screen
+ * way to end a session is the explicit Disconnect overlay action.
+ *
+ * HOSTING (Task #47): this screen is no longer a nav destination. It is
+ * composed inside [TerminalSheetHost]'s draggable overlay, which passes
+ * the maximized server id (from `TerminalSheetState`) and a per-server
+ * keyed [TerminalViewModel]. Back/minimize hides the sheet; the
+ * `statusBarsPadding` calls below resolve to zero inside the sheet (the
+ * host consumes the status-bar inset after sizing its drag handle) but
+ * are kept so the screen stays correct if ever hosted full-window again.
  */
 @Composable
 fun TerminalScreen(
@@ -100,18 +116,27 @@ fun TerminalScreen(
 ) {
     // Share the PTT view-model instance with PttSurface (which grabs
     // its own via hiltViewModel() too — same NavBackStackEntry → same
-    // VM). We need a handle here so the keyboard chip's long-press
-    // gesture (Issue 1, v1.1.13) can hop into the compose-text card
-    // without coupling ExtraKeysBar to :feature:ptt.
+    // VM). We need a handle here because ExtraKeysBar must stay
+    // decoupled from :feature:ptt (module cycle), so this screen wires
+    // plain lambdas into the bar for both the keyboard chip's
+    // long-press compose-text hop (Issue 1, v1.1.13) and the
+    // hold-to-record mic that replaced the floating FAB.
     val pttViewModel: dev.kuch.termx.feature.ptt.PttViewModel = hiltViewModel()
+    val pttState by pttViewModel.state.collectAsStateWithLifecycle()
+    // Press-start half of the mic gesture: Idle gating + RECORD_AUDIO
+    // permission flow live inside :feature:ptt (see the helper's KDoc).
+    val startPttRecording = rememberPttStartAction(pttViewModel)
     val uiState by viewModel.state.collectAsStateWithLifecycle()
 
+    // Bind-if-alive (Task #43): the manager returns a live slot
+    // untouched, so re-entering this screen for a connected server
+    // rebinds the view to the existing emulator (scrollback intact)
+    // instead of redialing. There is deliberately NO dispose-side
+    // disconnect — leaving the screen keeps the session running
+    // (minimize semantics); ending it is the explicit Disconnect
+    // action in the corner overlay below.
     LaunchedEffect(serverId) {
         viewModel.connect(serverId)
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { viewModel.disconnect() }
     }
 
     // Hoisted reference to the currently-mounted [TerminalView] so the
@@ -177,12 +202,36 @@ fun TerminalScreen(
         }
     }
 
+    // One-shot transport notices ("Connected via SSH — mosh unavailable:
+    // <reason>"). Informational only — the connection IS up, just over
+    // SSH instead of the requested mosh — so no action button; the
+    // persistent subtitle above the terminal carries the detail.
+    LaunchedEffect(snackbarHostState) {
+        viewModel.transportNotices.collect { msg ->
+            snackbarHostState.showSnackbar(
+                message = msg,
+                duration = SnackbarDuration.Short,
+            )
+        }
+    }
+
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
+            // Truthful-transport subtitle: rendered where the "via mosh"
+            // badge would sit, only when a mosh-requested connection
+            // actually came up over SSH. Persistent (unlike the one-shot
+            // snackbar) so the user can still see WHY after the snackbar
+            // is gone.
+            val fallbackReason = uiState.transportFallbackReason
+            if (uiState.status == TerminalUiState.Status.Connected &&
+                !uiState.moshBacked && fallbackReason != null
+            ) {
+                TransportFallbackSubtitle(reason = fallbackReason)
+            }
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -205,11 +254,29 @@ fun TerminalScreen(
                                 onTerminalTapShowKeyboard = showKeyboardOnTerminalTap,
                                 onToggleKeyboard = onToggleKeyboard,
                                 onComposeText = pttViewModel::composeText,
+                                onPttPressStart = startPttRecording,
+                                onPttRelease = pttViewModel::stopRecordingAndTranscribe,
+                                onPttCancel = {
+                                    // cancelRecording resets to Idle from ANY
+                                    // state (test-pinned semantics), which
+                                    // would clobber a Ready transcript if the
+                                    // user merely brushed the always-composed
+                                    // mic. Gate it the same way the status
+                                    // card's Cancel button does, reading the
+                                    // VM's StateFlow directly so a press-
+                                    // start→cancel race inside one frame
+                                    // can't slip past a stale snapshot.
+                                    if (pttViewModel.state.value is PttState.Recording) {
+                                        pttViewModel.cancelRecording()
+                                    }
+                                },
+                                pttRecording = pttState is PttState.Recording,
                             )
-                            // Task #39/#42 — push-to-talk surface sits on
-                            // top of the terminal area. The FAB floats
-                            // bottom-right; transcript card expands full
-                            // width at the bottom while recording.
+                            // Push-to-talk status overlay (Recording /
+                            // Transcribing / Ready pill) expands full width
+                            // at the bottom of the terminal area. The mic
+                            // itself lives in ExtraKeysBar's pinned trailing
+                            // area — the floating FAB is gone (task #39).
                             PttSurface(
                                 onSend = { text, appendNewline ->
                                     viewModel.writeToPty(
@@ -244,6 +311,29 @@ fun TerminalScreen(
                         WindowInsets.ime.union(WindowInsets.navigationBars),
                     ),
             )
+            // Explicit disconnect affordance (Task #43). With the
+            // lifecycle flip, back/leaving keeps the session running —
+            // ending it is a deliberate act, so a dedicated action must
+            // exist on the screen. The terminal is intentionally
+            // chrome-less (no top bar), so this rides as a small
+            // overlay in the status-bar corner; only shown while
+            // Connected (Error/Disconnected panes have their own
+            // actions, and there is nothing to end mid-Connecting that
+            // back-out doesn't already leave harmless).
+            if (uiState.status == TerminalUiState.Status.Connected) {
+                IconButton(
+                    onClick = { viewModel.disconnect() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .statusBarsPadding(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.PowerSettingsNew,
+                        contentDescription = "Disconnect",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
     }
 
@@ -262,6 +352,30 @@ fun TerminalScreen(
             onDismiss = { viewModel.cancelPasswordPrompt() },
         )
     }
+}
+
+/**
+ * One-line "via SSH" subtitle shown above the terminal when the server
+ * requested mosh but the connection fell back to plain SSH
+ * ([TerminalUiState.transportFallbackReason] non-null). The reason
+ * strings are the short, user-actionable ones minted in
+ * [TerminalViewModel] ("no UDP response — check firewall: …",
+ * "mosh-server not installed", …). M3 tokens only — the muted
+ * onSurfaceVariant keeps it legible without competing with terminal
+ * content.
+ */
+@Composable
+private fun TransportFallbackSubtitle(reason: String) {
+    Text(
+        text = "via SSH — mosh unavailable: $reason",
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 2.dp),
+    )
 }
 
 @Composable
@@ -327,6 +441,10 @@ private fun ConnectedPane(
     onTerminalTapShowKeyboard: () -> Unit,
     onToggleKeyboard: () -> Unit,
     onComposeText: () -> Unit,
+    onPttPressStart: () -> Unit,
+    onPttRelease: () -> Unit,
+    onPttCancel: () -> Unit,
+    pttRecording: Boolean,
 ) {
     val volState = remember { VolDownState() }
     val focusRequester = remember { FocusRequester() }
@@ -373,10 +491,17 @@ private fun ConnectedPane(
                 .fillMaxWidth()
                 .weight(1f),
         )
+        // Rendered unconditionally while connected — the bar (and its
+        // mic) must remain composed through PttState.Recording; see the
+        // INVARIANT on MicKey in ExtraKeysBar.
         ExtraKeysBar(
             onKey = onWriteToPty,
             onToggleKeyboard = onToggleKeyboard,
             onComposeText = onComposeText,
+            onPttPressStart = onPttPressStart,
+            onPttRelease = onPttRelease,
+            onPttCancel = onPttCancel,
+            pttRecording = pttRecording,
             state = extraKeysState,
             modifier = Modifier.fillMaxWidth(),
         )

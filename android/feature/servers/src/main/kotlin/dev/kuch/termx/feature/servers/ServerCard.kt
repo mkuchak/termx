@@ -13,8 +13,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -44,33 +42,28 @@ import java.time.Instant
 import java.util.UUID
 
 /**
- * One row in the server list.
+ * One row in the saved-connections list.
  *
  * Visual order left → right:
  *  - Ping dot (if [Server.pingMs] is set). Green <50ms, yellow <200ms, red ≥200.
  *  - Label (big) + host:port (small) stacked vertically.
- *  - Transport badge ("ssh" / "mosh").
+ *  - Transport badge ("ssh" / "mosh") — the [Server.useMosh] PREFERENCE.
+ *    The live transport for an active session is shown on the
+ *    ACTIVE SESSIONS card instead (`:feature:terminal`'s rail).
  *  - Last-connected relative time.
- *  - Either the reorder arrows (in reorder mode) OR the overflow dots.
+ *  - Overflow dots: Edit · Duplicate · Delete (reorder + move-to-group
+ *    dropped in the Task #46 Moshi-style pivot).
  *
  * Tapping the card invokes [onTap]; the caller navigates to the terminal.
- * The overflow icon opens a context menu; reorder arrows replace the
- * overflow icon while reorder mode is active.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ServerCard(
     server: Server,
-    reorderMode: Boolean,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
     onTap: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
-    onMoveToGroup: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
     modifier: Modifier = Modifier,
     now: Instant = Instant.now(),
 ) {
@@ -121,69 +114,43 @@ fun ServerCard(
                 }
             }
 
-            if (reorderMode) {
-                Column {
-                    IconButton(
-                        onClick = onMoveUp,
-                        enabled = canMoveUp,
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Move up")
-                    }
-                    IconButton(
-                        onClick = onMoveDown,
-                        enabled = canMoveDown,
-                        modifier = Modifier.size(32.dp),
-                    ) {
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Move down")
-                    }
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "More",
+                    )
                 }
-            } else {
-                Box {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(
-                            imageVector = Icons.Filled.MoreVert,
-                            contentDescription = "More",
-                        )
-                    }
-                    DropdownMenu(
-                        expanded = menuOpen,
-                        onDismissRequest = { menuOpen = false },
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Edit") },
-                            onClick = {
-                                menuOpen = false
-                                onEdit()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Duplicate") },
-                            onClick = {
-                                menuOpen = false
-                                onDuplicate()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Move to group…") },
-                            onClick = {
-                                menuOpen = false
-                                onMoveToGroup()
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    "Delete",
-                                    color = MaterialTheme.colorScheme.error,
-                                )
-                            },
-                            onClick = {
-                                menuOpen = false
-                                onDelete()
-                            },
-                        )
-                    }
+                DropdownMenu(
+                    expanded = menuOpen,
+                    onDismissRequest = { menuOpen = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Edit") },
+                        onClick = {
+                            menuOpen = false
+                            onEdit()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Duplicate") },
+                        onClick = {
+                            menuOpen = false
+                            onDuplicate()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = {
+                            Text(
+                                "Delete",
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
+                        },
+                    )
                 }
             }
         }
@@ -260,15 +227,9 @@ private fun ServerCardPreview() {
             pingMs = 42,
             sortOrder = 0,
         ),
-        reorderMode = false,
-        canMoveUp = true,
-        canMoveDown = true,
         onTap = {},
         onEdit = {},
         onDuplicate = {},
         onDelete = {},
-        onMoveToGroup = {},
-        onMoveUp = {},
-        onMoveDown = {},
     )
 }

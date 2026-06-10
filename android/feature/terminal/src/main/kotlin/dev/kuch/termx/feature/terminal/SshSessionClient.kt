@@ -40,7 +40,7 @@ import com.termux.view.TerminalView
  */
 class SshSessionClient(
     private val context: Context,
-    private val onSessionFinished: () -> Unit,
+    private val onSessionFinished: (TerminalSession) -> Unit,
 ) : TerminalSessionClient {
 
     /**
@@ -80,7 +80,13 @@ class SshSessionClient(
     }
 
     override fun onSessionFinished(finishedSession: TerminalSession) {
-        onSessionFinished.invoke()
+        // Pass the finished session through: the manager guards teardown
+        // by IDENTITY against the connection's current shell, because
+        // this callback is a main-looper post and can land after the
+        // shell it belongs to has already been replaced (mosh→ssh
+        // liveness fallback, disconnect→reconnect). See
+        // ConnectionManager.onShellFinished.
+        onSessionFinished.invoke(finishedSession)
     }
 
     override fun onCopyTextToClipboard(session: TerminalSession, text: String?) {

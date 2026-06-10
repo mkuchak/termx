@@ -26,13 +26,20 @@ import kotlinx.coroutines.flow.update
  * is already buffer-backed and DROP_OLDEST, so multiple collectors cost
  * multiple `tail` processes but zero correctness risk.
  *
- * Ownership: the [SshSession] still belongs to `TerminalViewModel`; when
- * the VM calls [unpublish] the hub drops its client reference without
+ * Ownership: the [SshSession] still belongs to the terminal feature's
+ * `ConnectionManager` (pre-Task-#42: `TerminalViewModel`); when the
+ * owner calls [unpublish] the hub drops its client reference without
  * closing the session. Resurrecting the client on reconnect is cheap
  * (no state besides a lazy `$HOME` cache).
+ *
+ * `open` (class + [publish]/[unpublish]) so downstream-module unit tests
+ * can subclass a recording fake — the same seam convention as
+ * `SshClient`/`MoshClient`. The cleanup-ordering contract ("unpublish
+ * BEFORE session.close", §17 item 15) is only assertable with a hub that
+ * records call order against the session fake.
  */
 @Singleton
-class EventStreamHub @Inject constructor() {
+open class EventStreamHub @Inject constructor() {
 
     /**
      * Snapshot of one published session. `serverLabel` lets the router
@@ -53,12 +60,12 @@ class EventStreamHub @Inject constructor() {
      * [unpublish] via `cleanupQuietly()` first, so the caller pattern
      * keeps this idempotent.
      */
-    fun publish(serverId: UUID, serverLabel: String, client: EventStreamClient) {
+    open fun publish(serverId: UUID, serverLabel: String, client: EventStreamClient) {
         _clients.update { it + (serverId to Entry(serverId, serverLabel, client)) }
     }
 
     /** Drop the client entry for [serverId]. No-op if nothing was published. */
-    fun unpublish(serverId: UUID) {
+    open fun unpublish(serverId: UUID) {
         _clients.update { it - serverId }
     }
 }

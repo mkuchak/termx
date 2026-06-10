@@ -24,21 +24,26 @@ import kotlinx.coroutines.launch
  * Foreground service holding termx in memory while at least one SSH tab
  * is active.
  *
- * MVP lifecycle (Task #43):
- *  - Started by [TerminalViewModel] on first successful connect via
- *    [start] — idempotent, so repeat calls on subsequent tabs are fine.
+ * Lifecycle:
+ *  - Started by [SessionServiceLauncher] when [SessionRegistry] flips
+ *    0 → ≥1 entries; [start] is idempotent.
  *  - Observes [SessionRegistry.entries]; whenever the map changes it
  *    either rebuilds the notification or, if the map went empty,
- *    self-terminates with [stopSelf].
+ *    self-terminates with [stopSelf]. Registry entries persist with the
+ *    manager-owned connection (Task #43 lifecycle flip), so this
+ *    service — and the Tier-1 event router it hosts — stays up while
+ *    the user is on the home screen with live sessions and no terminal
+ *    UI at all.
  *  - Responds to the "Disconnect all" notification action by forwarding
- *    a request into [SessionRegistry.requestDisconnectAll]; each
- *    ViewModel collects that signal and tears down its own session.
+ *    a request into [SessionRegistry.requestDisconnectAll]; the
+ *    process-wide `ConnectionManager` collects that signal and tears
+ *    down every connection (emptying the registry, which stops us).
  *
- * What this service deliberately does NOT do yet:
- *  - Own the SSH transport (stays on the ViewModel for now).
- *  - Survive process death / resurrect sessions (Server-ownership
- *    refactor slated for a later task).
- *  - Tail `events.ndjson` or fire event-driven notifications (Task #44).
+ * What this service deliberately does NOT do:
+ *  - Own the SSH transport (that's `ConnectionManager` in
+ *    `:feature:terminal`).
+ *  - Survive process death / resurrect sessions (documented boundary on
+ *    `ConnectionManager`).
  */
 @AndroidEntryPoint
 class TermxForegroundService : Service() {
@@ -105,9 +110,10 @@ class TermxForegroundService : Service() {
         const val ACTION_DISCONNECT_ALL = "dev.kuch.termx.action.DISCONNECT_ALL"
 
         /**
-         * Idempotent entry point used by the ViewModel on first connect.
-         * Safe to call repeatedly — Android coalesces duplicate
-         * startForegroundService calls to the same component.
+         * Idempotent entry point used by [SessionServiceLauncher] when
+         * the registry gains its first entry. Safe to call repeatedly —
+         * Android coalesces duplicate startForegroundService calls to
+         * the same component.
          */
         fun start(context: Context) {
             val intent = Intent(context, TermxForegroundService::class.java)

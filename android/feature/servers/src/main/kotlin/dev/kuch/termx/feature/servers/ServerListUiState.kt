@@ -22,13 +22,13 @@ sealed interface ServerListUiState {
 }
 
 /**
- * One rendered section of the list: a header ([group] `null` = "Ungrouped")
- * followed by its [servers] in `sortOrder`. [isCollapsed] mirrors
- * [ServerGroup.isCollapsed] so the UI can collapse the server rows without
- * dropping the header row itself.
+ * One rendered section of the list: an uppercase section label ([group]
+ * `null` = "Ungrouped", rendered last) followed by its [servers] in
+ * `sortOrder`. Sections are flat and always expanded since the Task #46
+ * Moshi-style pivot — [ServerGroup.isCollapsed] persists in Room but no
+ * longer drives this screen.
  */
 data class GroupedServers(
     val group: ServerGroup?,
     val servers: List<Server>,
-    val isCollapsed: Boolean = false,
 )

@@ -47,9 +47,13 @@ class FakeExecChannel(
  * assert what the mosh side channel did (mkdir + atomic endpoint write).
  *
  * `printf %s "$HOME"` resolves to `/home/test` so the endpoint path the
- * VM builds is the deterministic `/home/test/.termx/ntfy-endpoint`.
+ * connection code builds is the deterministic
+ * `/home/test/.termx/ntfy-endpoint`.
+ *
+ * `open` so ConnectionManager's cleanup-ordering test can interleave a
+ * recording `close()` with a recording hub fake.
  */
-class FakeSshSession : SshSession {
+open class FakeSshSession : SshSession {
     val execHistory = CopyOnWriteArrayList<String>()
     val sftpWrites = CopyOnWriteArrayList<Pair<String, ByteArray>>()
     val sftpRenames = CopyOnWriteArrayList<Pair<String, String>>()
@@ -120,13 +124,20 @@ class FakeSftpClient(private val session: FakeSshSession) : SftpClient {
  * completes the deferred — used to interpose a `disconnect()` between the
  * side-channel launch and its session landing (the torn-down-while-
  * connecting case).
+ *
+ * `open` + the [newSession] seam so tests can mint recording session
+ * subclasses (e.g. the hub-unpublish-before-close ordering assertion)
+ * without re-implementing the connect bookkeeping.
  */
-class FakeSshClient(
+open class FakeSshClient(
     var failConnect: Boolean = false,
     private val gate: Deferred<Unit>? = null,
 ) : SshClient() {
     val sessions = CopyOnWriteArrayList<FakeSshSession>()
     val connectCount = AtomicInteger(0)
+
+    /** Override to substitute a recording/custom session per connect. */
+    protected open fun newSession(): FakeSshSession = FakeSshSession()
 
     override suspend fun connect(
         target: SshTarget,
@@ -136,7 +147,7 @@ class FakeSshClient(
         connectCount.incrementAndGet()
         gate?.await()
         if (failConnect) throw RuntimeException("simulated side-channel connect failure")
-        val session = FakeSshSession()
+        val session = newSession()
         sessions += session
         return session
     }

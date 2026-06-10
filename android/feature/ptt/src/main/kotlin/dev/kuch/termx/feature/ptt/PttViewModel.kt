@@ -24,18 +24,19 @@ import kotlinx.coroutines.withContext
 /**
  * Orchestrates the Push-to-talk lifecycle:
  *
- *  1. User presses and holds FAB   → [startRecording].
+ *  1. User presses and holds the extra-keys bar mic → [startRecording].
  *  2. User releases                 → [stopRecordingAndTranscribe] fires
  *     the Gemini call. On success we land in [PttState.Ready], showing
  *     a preview card with the editable transcript.
- *  3. User taps "Send" or "Insert" → the composable writes the
- *     (possibly edited) transcript to the PTY, with or without a
- *     trailing newline, and calls [consumeSend] to drop back to Idle.
+ *  3. User taps Send → the composable writes the (possibly edited)
+ *     transcript to the PTY with a trailing newline and calls
+ *     [consumeSend] to drop back to Idle.
  *
- * The "Command vs Text" persisted mode was removed in v1.1.11: the
- * choice is now made per-utterance via the two buttons on the Ready
- * card, and the transcript itself is editable inside the card so the
- * user can fix Gemini mistranscriptions without retyping in the shell.
+ * The "Command vs Text" persisted mode was removed in v1.1.11, and the
+ * separate "Insert without newline" button went with the pill-card
+ * restyle (Task #38) — the Ready card only ever sends-with-newline now.
+ * The transcript itself stays editable inside the card so the user can
+ * fix Gemini mistranscriptions without retyping in the shell.
  *
  * The send path here does not itself touch the PTY — the PTT module
  * has no dependency on `:feature:terminal` to avoid a cycle; the
@@ -229,7 +230,8 @@ class PttViewModel @Inject constructor(
          * API call on it. Set to 1.5 s because:
          *  - Genuine speech recordings are typically multi-second.
          *  - Anything sub-second is almost always either an accidental
-         *    tap or a gesture-cancel race (see PttFab.awaitEachGesture).
+         *    tap or a gesture-cancel race (see the mic button's
+         *    awaitEachGesture in ExtraKeysBar, :feature:terminal).
          *  - Below this floor, MediaRecorder produces buffered
          *    room-tone with no actual speech, and Gemini cheerfully
          *    fabricates plausible-sounding transcripts when handed
@@ -251,11 +253,11 @@ class PttViewModel @Inject constructor(
 }
 
 /**
- * Observable PTT state. The composable binds one branch at a time:
- *  - [Idle]: FAB only.
- *  - [Recording]: FAB in "recording" visuals + waveform card.
+ * Observable PTT state. The composables bind one branch at a time:
+ *  - [Idle]: no card; the bar mic sits untinted.
+ *  - [Recording]: bar mic tinted primary + waveform card.
  *  - [Transcribing]: spinner card with retry counter.
- *  - [Ready]: editable transcript preview with Cancel / Insert / Send.
+ *  - [Ready]: editable transcript preview with Cancel / Send.
  *  - [Error]: error banner, dismissible.
  */
 sealed interface PttState {
@@ -265,14 +267,14 @@ sealed interface PttState {
     /**
      * Awaiting Gemini's response. [attempt] is 1-based and increments
      * when the retry loop in [GeminiClient.transcribe] reissues the
-     * call after a transient failure; the FAB caption uses it to
+     * call after a transient failure; the status card uses it to
      * render "Transcribing…" on attempt 1 and "Retrying… (N/M)" on
      * attempts ≥2.
      */
     data class Transcribing(val attempt: Int, val maxAttempts: Int) : PttState
 
     /**
-     * Editable transcript waiting for Insert / Send / Cancel.
+     * Editable transcript waiting for Send / Cancel.
      *
      * @param requestFocus `true` when the field should auto-focus on
      *   appearance (compose-text long-press path); `false` for the

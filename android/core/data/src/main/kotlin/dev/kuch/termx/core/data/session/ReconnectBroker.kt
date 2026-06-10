@@ -14,12 +14,13 @@ import kotlinx.coroutines.flow.asSharedFlow
  * Why a dedicated broker rather than reusing [SessionRegistry]: the
  * registry tracks live tabs (post-connect state); a reconnect request
  * can fire when no tab is live (the `disconnect` notification fired
- * *because* the session dropped). Keeping the channel separate lets the
- * [dev.kuch.termx.feature.terminal.TerminalViewModel] listen without
+ * *because* the session dropped). Keeping the channel separate avoids
  * coupling the "is alive" map to "should we try to open".
  *
- * Consumers: the terminal VM collects [requests] in `init` and decides
- * whether the incoming id matches its own server. Fire-and-forget —
+ * Consumer: the process-wide `ConnectionManager` collects [requests] in
+ * its `init` and redials the matching server — deliberately NOT a
+ * ViewModel collector, because the reconnect action must work with no
+ * terminal screen alive at all. Fire-and-forget —
  * `extraBufferCapacity = 1` + `tryEmit` so the receiver's
  * BroadcastReceiver callback doesn't have to suspend.
  */

@@ -23,6 +23,8 @@ import java.util.UUID
  *  - [moshBacked] is `true` when the active connection is a
  *    mosh-client child process (Phase 3 Task #27). Drives the small
  *    "via mosh" badge / subtitle in the terminal header.
+ *  - [transportFallbackReason] explains a mosh→SSH fallback when the
+ *    server requested mosh but the connection came up over plain SSH.
  *  - [error] is the connection-level failure message; reset on the
  *    next `connect()` attempt.
  */
@@ -30,6 +32,19 @@ data class TerminalUiState(
     val status: Status = Status.Idle,
     val activeSession: TerminalSession? = null,
     val moshBacked: Boolean = false,
+    /**
+     * Human-readable reason the connection fell back from mosh to plain
+     * SSH (the server opted into mosh via `Server.useMosh` but the mosh
+     * transport was unusable). One of the classified handshake failures
+     * ("VPS missing UTF-8 locale", "mosh-server not installed",
+     * "handshake timeout", a stderr-derived detail) or the first-output
+     * liveness failure ("no UDP response — check firewall: allow
+     * 60000-60010/udp"). Drives the small "via SSH" subtitle near the
+     * mosh badge spot plus the one-shot fallback snackbar. Null when the
+     * terminal is mosh-backed, mosh wasn't requested, or no connection
+     * is up; reset on every `connect()` attempt.
+     */
+    val transportFallbackReason: String? = null,
     val error: String? = null,
     /**
      * When non-null, the UI should render a password prompt dialog. Set

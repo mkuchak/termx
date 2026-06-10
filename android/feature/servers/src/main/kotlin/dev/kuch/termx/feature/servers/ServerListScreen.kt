@@ -1,6 +1,5 @@
 package dev.kuch.termx.feature.servers
 
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,21 +15,14 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
-import sh.calvin.reorderable.ReorderableItem
-import sh.calvin.reorderable.rememberReorderableLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VpnKey
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,7 +40,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -64,32 +55,35 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.kuch.termx.core.domain.model.Server
-import dev.kuch.termx.core.domain.model.ServerGroup
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * The app's home screen: every persisted server in one place.
+ * The app's home screen, Moshi-style (Task #46): live "ACTIVE SESSIONS"
+ * cards on top, a flat "SAVED CONNECTIONS" list below.
  *
- * - Sticky group headers with expand/collapse.
- * - Swipe-left on any row to delete with a 5 s Undo snackbar.
- * - Overflow menu per row: Edit · Duplicate · Move to group · Delete.
- * - "Reorder" top-bar toggle that swaps the overflow icon for up/down
- *   arrows. Real drag-to-reorder is deferred to a follow-up task —
- *   shipping arrow buttons avoids the extra library dependency and
- *   gets a functioning reorder UX in today's build.
- * - FAB opens [AddEditServerSheet] in add mode. Tapping a card navigates
- *   to the terminal for that server via [onServerTap]. The top bar's
- *   key-icon routes to [onManageKeys] (Task #23's screen).
+ * - [activeSessions] slot renders the live-session rail. It is composed
+ *   by the `:app` NavHost with `:feature:terminal`'s `ActiveSessionsRail`
+ *   (this module must not depend on `:feature:terminal` — same
+ *   slot-injection seam as [updateBanner]). The rail self-hides when no
+ *   session is live.
+ * - Swipe-left on any row deletes with a 5 s Undo snackbar (delete
+ *   commits immediately; undo re-inserts).
+ * - Overflow menu per row: Edit · Duplicate · Delete.
+ * - Groups render as plain, NON-collapsible uppercase section headers
+ *   when they exist (ungrouped last); no sticky behavior, no reorder UI
+ *   — the group/reorder-heavy chrome was dropped in the Task #46 pivot
+ *   (the Room group model and the repository reorder API stay).
+ * - FAB (bottom-right) opens the add flow; the top bar keeps the
+ *   key-vault shortcut and the Settings gear.
  * - Empty state shows a big `Icons.Default.Dns` glyph, a friendly note,
  *   and a primary "Add server" button.
  */
@@ -115,6 +109,18 @@ fun ServerListScreen(
      * of the banner. Self-hides unless a connect surfaced an offer.
      */
     companionUpdateBanner: @Composable () -> Unit = {},
+    /**
+     * Slot for the "ACTIVE SESSIONS" rail (Task #46). The :app NavHost
+     * composes this with `dev.kuch.termx.feature.terminal.connection.
+     * ActiveSessionsRail`, passing an open-the-terminal-sheet lambda
+     * (Task #47: connect-then-maximize, no nav route) —
+     * :feature:servers must not depend on :feature:terminal (where
+     * ConnectionManager + the thumbnail renderer live). The rail renders
+     * nothing when no session is live, so it is composed unconditionally
+     * here, above the saved list in every UI state (a live test-server
+     * session can exist even with zero saved rows).
+     */
+    activeSessions: @Composable () -> Unit = {},
     viewModel: ServerListViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.state.collectAsStateWithLifecycle()
@@ -126,8 +132,6 @@ fun ServerListScreen(
     var showAddSheet by rememberSaveable { mutableStateOf(false) }
     var showAddPicker by rememberSaveable { mutableStateOf(false) }
     var editingServerId by rememberSaveable { mutableStateOf<String?>(null) }
-    var reorderMode by rememberSaveable { mutableStateOf(false) }
-    var moveToGroupForServerId by rememberSaveable { mutableStateOf<String?>(null) }
     var isRefreshing by remember { mutableStateOf(false) }
 
     // Surface the undo snackbar whenever the ViewModel stashes a deleted row.
@@ -150,21 +154,6 @@ fun ServerListScreen(
             TopAppBar(
                 title = { Text("termx", fontWeight = FontWeight.SemiBold) },
                 actions = {
-                    if (uiState is ServerListUiState.Loaded) {
-                        IconButton(
-                            onClick = { reorderMode = !reorderMode },
-                        ) {
-                            Icon(
-                                imageVector = Icons.Filled.MoreVert,
-                                contentDescription = if (reorderMode) "Exit reorder" else "Reorder",
-                                tint = if (reorderMode) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                            )
-                        }
-                    }
                     IconButton(onClick = onManageKeys) {
                         Icon(Icons.Filled.VpnKey, contentDescription = "Manage keys")
                     }
@@ -221,24 +210,18 @@ fun ServerListScreen(
                 // on a fresh install and so it never fights the list for
                 // focus.
                 BatteryOptimizationPrompt()
+                // Task #46: live-session cards. Self-hides when empty.
+                activeSessions()
                 when (val s = uiState) {
                     ServerListUiState.Loading -> LoadingPane()
                     ServerListUiState.Empty -> EmptyPane(onAdd = { showAddPicker = true })
                     is ServerListUiState.Error -> ErrorPane(message = s.message)
                     is ServerListUiState.Loaded -> ServerListBody(
                         buckets = s.groupsWithServers,
-                        reorderMode = reorderMode,
                         onServerTap = onServerTap,
                         onEdit = { id -> editingServerId = id.toString() },
                         onDuplicate = viewModel::onDuplicate,
                         onDelete = viewModel::onDelete,
-                        onMoveToGroupRequest = { id ->
-                            moveToGroupForServerId = id.toString()
-                        },
-                        onToggleGroup = viewModel::onToggleGroupCollapse,
-                        onMoveUp = viewModel::onMoveUp,
-                        onMoveDown = viewModel::onMoveDown,
-                        onReorder = viewModel::onReorder,
                     )
                 }
             }
@@ -279,199 +262,92 @@ fun ServerListScreen(
             )
         }
     }
+}
 
-    moveToGroupForServerId?.let { idStr ->
-        val id = runCatching { UUID.fromString(idStr) }.getOrNull()
-        val loaded = uiState as? ServerListUiState.Loaded
-        if (id != null && loaded != null) {
-            MoveToGroupDialog(
-                groups = loaded.groupsWithServers.mapNotNull { it.group },
-                onDismiss = { moveToGroupForServerId = null },
-                onPick = { groupId ->
-                    viewModel.onMoveToGroup(id, groupId)
-                    moveToGroupForServerId = null
-                },
-            )
+/**
+ * The flat "SAVED CONNECTIONS" list. When the user has created groups
+ * they render as plain uppercase section labels (Moshi-style, in
+ * onSurfaceVariant) with the ungrouped bucket last — no expand/collapse,
+ * no sticky headers, no drag (all dropped in the Task #46 pivot).
+ */
+@Composable
+private fun ServerListBody(
+    buckets: List<GroupedServers>,
+    onServerTap: (UUID) -> Unit,
+    onEdit: (UUID) -> Unit,
+    onDuplicate: (UUID) -> Unit,
+    onDelete: (UUID) -> Unit,
+) {
+    val now = remember { Instant.now() }
+    // Per-group labels only earn their vertical space when at least one
+    // explicit group exists; a fully ungrouped install gets just the
+    // single section label.
+    val showGroupLabels = buckets.any { it.group != null }
+
+    LazyColumn(
+        contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        item(key = "__saved_connections__") {
+            SectionLabel("SAVED CONNECTIONS")
+        }
+        buckets.forEach { bucket ->
+            if (showGroupLabels) {
+                item(key = bucket.group?.id?.toString() ?: "__ungrouped__") {
+                    SectionLabel(
+                        label = (bucket.group?.name ?: "Ungrouped").uppercase(),
+                        secondary = true,
+                    )
+                }
+            }
+            items(
+                items = bucket.servers,
+                key = { it.id.toString() },
+            ) { server ->
+                SwipeableServerCard(
+                    server = server,
+                    now = now,
+                    onTap = { onServerTap(server.id) },
+                    onEdit = { onEdit(server.id) },
+                    onDuplicate = { onDuplicate(server.id) },
+                    onDelete = { onDelete(server.id) },
+                )
+            }
         }
     }
 }
 
 /**
- * Task #53 — real drag-to-reorder.
- *
- * We render the full (grouped) list into a single [LazyColumn] and
- * power the drag interactions with `sh.calvin.reorderable`. A local
- * [displayBuckets] copy of [buckets] tracks the in-flight order during
- * a drag: [rememberReorderableLazyListState]'s onMove callback swaps
- * two servers in place (within the same group only — cross-group drag
- * is a follow-up), and at drag-stop the final ordering is published
- * to the ViewModel via [onReorder].
- *
- * Dragging is long-press activated (via `longPressDraggableHandle`) so
- * the row's tap / swipe / overflow-button affordances all keep working.
- * Haptic feedback fires on drag-start and drag-stop; item translation +
- * a subtle shadow is handled by [ReorderableItem]'s default animation.
+ * Moshi-style uppercase section label in onSurfaceVariant. [secondary]
+ * labels (group names under "SAVED CONNECTIONS") indent the same but
+ * drop to labelSmall so the hierarchy reads at a glance.
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ServerListBody(
-    buckets: List<GroupedServers>,
-    reorderMode: Boolean,
-    onServerTap: (UUID) -> Unit,
-    onEdit: (UUID) -> Unit,
-    onDuplicate: (UUID) -> Unit,
-    onDelete: (UUID) -> Unit,
-    onMoveToGroupRequest: (UUID) -> Unit,
-    onToggleGroup: (UUID) -> Unit,
-    onMoveUp: (UUID) -> Unit,
-    onMoveDown: (UUID) -> Unit,
-    onReorder: (UUID?, List<UUID>) -> Unit,
-) {
-    val listState = rememberLazyListState()
-    val now = remember { Instant.now() }
-
-    // Local copy of the bucket list that the drag reorder mutates in
-    // place while a drag is in progress. The `remember(buckets)` key
-    // resets the local state whenever the upstream flow re-emits so
-    // edits / deletes / group changes still flow through.
-    var displayBuckets by remember(buckets) { mutableStateOf(buckets) }
-    // Track which bucket id the active drag belongs to, so we push
-    // the final order for that bucket (and only that one) to Room on
-    // drop. Null = no drag in progress.
-    var pendingReorderGroupId: UUID? by remember(buckets) { mutableStateOf(null) }
-
-    val reorderableState = rememberReorderableLazyListState(listState) { from, to ->
-        // Find the bucket whose server list contains the dragged key.
-        val fromKey = from.key as? String ?: return@rememberReorderableLazyListState
-        val toKey = to.key as? String ?: return@rememberReorderableLazyListState
-        val fromId = runCatching { UUID.fromString(fromKey) }.getOrNull()
-            ?: return@rememberReorderableLazyListState
-        val toId = runCatching { UUID.fromString(toKey) }.getOrNull()
-            ?: return@rememberReorderableLazyListState
-        val sourceBucketIndex = displayBuckets.indexOfFirst { b ->
-            b.servers.any { it.id == fromId }
-        }
-        if (sourceBucketIndex < 0) return@rememberReorderableLazyListState
-        val sourceBucket = displayBuckets[sourceBucketIndex]
-        // Scope within-group only; reject the move if the target key
-        // lives in a different bucket.
-        val targetInSameBucket = sourceBucket.servers.any { it.id == toId }
-        if (!targetInSameBucket) return@rememberReorderableLazyListState
-        val newServers = sourceBucket.servers.toMutableList()
-        val fromIdx = newServers.indexOfFirst { it.id == fromId }
-        val toIdx = newServers.indexOfFirst { it.id == toId }
-        if (fromIdx < 0 || toIdx < 0 || fromIdx == toIdx) return@rememberReorderableLazyListState
-        newServers.add(toIdx, newServers.removeAt(fromIdx))
-        displayBuckets = displayBuckets.toMutableList().also {
-            it[sourceBucketIndex] = sourceBucket.copy(servers = newServers)
-        }
-        pendingReorderGroupId = sourceBucket.group?.id
-    }
-    val haptic = LocalHapticFeedback.current
-
-    LazyColumn(
-        state = listState,
-        contentPadding = PaddingValues(top = 4.dp, bottom = 96.dp),
-        modifier = Modifier.fillMaxSize(),
-    ) {
-        displayBuckets.forEach { bucket ->
-            val headerName = bucket.group?.name ?: "Ungrouped"
-            val count = bucket.servers.size
-            stickyHeader(key = bucket.group?.id?.toString() ?: "__ungrouped__") {
-                ServerGroupHeader(
-                    name = headerName,
-                    count = count,
-                    isCollapsed = bucket.isCollapsed,
-                    onToggle = bucket.group?.let { g -> { onToggleGroup(g.id) } },
-                )
-            }
-            if (!bucket.isCollapsed) {
-                items(
-                    items = bucket.servers,
-                    key = { it.id.toString() },
-                ) { server ->
-                    val index = bucket.servers.indexOf(server)
-                    ReorderableItem(reorderableState, key = server.id.toString()) {
-                        val dragHandle = Modifier.longPressDraggableHandle(
-                            onDragStarted = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            },
-                            onDragStopped = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                val gid = pendingReorderGroupId
-                                pendingReorderGroupId = null
-                                // Compute the final ordered id list for
-                                // the bucket that was dragged — VM
-                                // persists `sortOrder = N` for position
-                                // N in a single Room transaction.
-                                val final = displayBuckets
-                                    .firstOrNull { b -> b.group?.id == gid }
-                                    ?.servers
-                                    ?.map { it.id }
-                                    .orEmpty()
-                                if (final.isNotEmpty()) onReorder(gid, final)
-                            },
-                        )
-                        SwipeableServerCard(
-                            server = server,
-                            reorderMode = reorderMode,
-                            canMoveUp = index > 0,
-                            canMoveDown = index < bucket.servers.lastIndex,
-                            now = now,
-                            onTap = { onServerTap(server.id) },
-                            onEdit = { onEdit(server.id) },
-                            onDuplicate = { onDuplicate(server.id) },
-                            onDelete = { onDelete(server.id) },
-                            onMoveToGroup = { onMoveToGroupRequest(server.id) },
-                            onMoveUp = { onMoveUp(server.id) },
-                            onMoveDown = { onMoveDown(server.id) },
-                            dragHandleModifier = dragHandle,
-                        )
-                    }
-                }
-            }
-        }
-    }
+private fun SectionLabel(label: String, secondary: Boolean = false) {
+    Text(
+        text = label,
+        style = if (secondary) {
+            MaterialTheme.typography.labelSmall
+        } else {
+            MaterialTheme.typography.labelMedium
+        },
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 6.dp),
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SwipeableServerCard(
     server: Server,
-    reorderMode: Boolean,
-    canMoveUp: Boolean,
-    canMoveDown: Boolean,
     now: Instant,
     onTap: () -> Unit,
     onEdit: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
-    onMoveToGroup: () -> Unit,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    dragHandleModifier: Modifier = Modifier,
 ) {
-    // In reorder mode the swipe would conflict with the up/down arrows, so
-    // we skip the dismiss wrapper entirely — the user opted into arrow
-    // controls, destructive swipes stay out of the way.
-    if (reorderMode) {
-        ServerCard(
-            server = server,
-            reorderMode = true,
-            canMoveUp = canMoveUp,
-            canMoveDown = canMoveDown,
-            onTap = onTap,
-            onEdit = onEdit,
-            onDuplicate = onDuplicate,
-            onDelete = onDelete,
-            onMoveToGroup = onMoveToGroup,
-            onMoveUp = onMoveUp,
-            onMoveDown = onMoveDown,
-            now = now,
-        )
-        return
-    }
-
     val dismissState = rememberSwipeToDismissBoxState(
         confirmValueChange = { target ->
             if (target == SwipeToDismissBoxValue.EndToStart) {
@@ -500,18 +376,11 @@ private fun SwipeableServerCard(
     ) {
         ServerCard(
             server = server,
-            reorderMode = false,
-            canMoveUp = canMoveUp,
-            canMoveDown = canMoveDown,
             onTap = onTap,
             onEdit = onEdit,
             onDuplicate = onDuplicate,
             onDelete = onDelete,
-            onMoveToGroup = onMoveToGroup,
-            onMoveUp = onMoveUp,
-            onMoveDown = onMoveDown,
             now = now,
-            modifier = dragHandleModifier,
         )
     }
 }
@@ -618,46 +487,6 @@ private fun ErrorPane(message: String) {
             textAlign = TextAlign.Center,
         )
     }
-}
-
-/**
- * Lightweight picker dialog for the "Move to group" overflow action.
- * Re-uses the list of groups the user has already created; no inline
- * "Create group" affordance here — keep that flow in the edit sheet.
- */
-@Composable
-private fun MoveToGroupDialog(
-    groups: List<ServerGroup>,
-    onDismiss: () -> Unit,
-    onPick: (UUID?) -> Unit,
-) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Move to group") },
-        text = {
-            Column {
-                GroupPickRow(label = "Ungrouped", onClick = { onPick(null) })
-                groups.forEach { g ->
-                    GroupPickRow(label = g.name, onClick = { onPick(g.id) })
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
-        },
-    )
-}
-
-@Composable
-private fun GroupPickRow(label: String, onClick: () -> Unit) {
-    Text(
-        text = label,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
-        style = MaterialTheme.typography.bodyLarge,
-    )
 }
 
 /**

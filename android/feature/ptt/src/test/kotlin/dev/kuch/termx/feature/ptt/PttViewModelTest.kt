@@ -128,7 +128,7 @@ class PttViewModelTest {
         assertTrue(vm.state.value is PttState.Ready)
     }
 
-    // ---- consumeSend (Insert / Send completion) -----------------------
+    // ---- consumeSend (Send completion) --------------------------------
 
     @Test fun `consumeSend goes to Idle from Ready`() = runTest {
         val vm = newViewModel()

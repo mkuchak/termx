@@ -14,8 +14,11 @@ import kotlinx.coroutines.flow.update
 /**
  * Process-wide registry of live terminal tabs.
  *
- * `TerminalViewModel` is the producer — on tab open it calls [register],
- * on detach/cleanup it calls [unregister]. The foreground service
+ * The `ConnectionManager` (`:feature:terminal`) is the producer — on
+ * shell open it calls [register], on teardown it calls [unregister].
+ * Entries persist with the manager-owned connection, NOT with any
+ * screen: leaving the terminal keeps the entry (and therefore the
+ * foreground service) alive. The foreground service
  * (`TermxForegroundService` in `:app`) is the consumer — it observes
  * [entries] to decide when to start, when to stop, and what to render in
  * its persistent notification.
@@ -24,10 +27,8 @@ import kotlinx.coroutines.flow.update
  * reachable from both `:app` and `:feature:terminal` without bouncing
  * through Hilt entry points.
  *
- * MVP scope (Task #43): register/unregister + broadcast a "disconnect
- * all" request triggered from the notification action. Process-death
- * resurrection is out of scope — that's a Server-ownership refactor
- * slated for a later task.
+ * Process-death resurrection is out of scope — connections die with the
+ * process (documented boundary on `ConnectionManager`).
  */
 @Singleton
 class SessionRegistry @Inject constructor() {
@@ -46,13 +47,15 @@ class SessionRegistry @Inject constructor() {
     val entries: StateFlow<Map<Pair<UUID, String>, Entry>> = _entries.asStateFlow()
 
     /**
-     * Broadcast signal consumed by every `TerminalViewModel`. The
-     * notification's "Disconnect all" action posts into this flow; each
-     * VM collects it in `init` and calls its own `disconnect()`.
+     * Broadcast signal consumed by the process-wide `ConnectionManager`
+     * (collected in its `init`, NOT in any ViewModel — it must work
+     * with zero terminal screens alive). The notification's
+     * "Disconnect all" action posts into this flow; the manager tears
+     * down every connection in response.
      *
      * `extraBufferCapacity = 1` with `tryEmit` makes the signal
      * fire-and-forget — we don't need to suspend the caller, and a
-     * dropped emit just means the VMs already saw a more recent one.
+     * dropped emit just means the manager already saw a more recent one.
      */
     private val _disconnectAllRequest = MutableSharedFlow<Unit>(
         replay = 0,

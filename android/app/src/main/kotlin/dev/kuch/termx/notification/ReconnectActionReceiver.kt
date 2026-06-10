@@ -13,10 +13,10 @@ import javax.inject.Inject
 /**
  * Reconnect action posted on `termx.disconnect` notifications.
  *
- * Posts the server id into [ReconnectBroker] so the matching
- * `TerminalViewModel` can react — decoupling the receiver from the
- * ViewModel side-steps the awkward "how do we call a ViewModel from a
- * BroadcastReceiver" question.
+ * Posts the server id into [ReconnectBroker]; the process-wide
+ * `ConnectionManager` collects it and redials that server. No terminal
+ * screen (or ViewModel) needs to be alive — the broker decouples this
+ * receiver from whoever owns the transport.
  *
  * Also cancels the source notification so the action chip doesn't stay
  * visible after the reconnect kicks off.

@@ -9,6 +9,7 @@ import dev.kuch.termx.core.domain.repository.ServerRepository
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,6 +26,14 @@ class FakeServerRepository : ServerRepository {
     private val flow = MutableStateFlow<List<Server>>(emptyList())
     val lastConnectedUpdates = mutableListOf<UUID>()
 
+    /**
+     * Every row that arrived via [upsert] (NOT test-seeded [put]s), in
+     * order. CopyOnWrite because `ConnectionManager.submitPassword`
+     * upserts from a Dispatchers.IO coroutine while the test thread
+     * polls — lets tests pin the passwordAlias self-heal write.
+     */
+    val upserts = CopyOnWriteArrayList<Server>()
+
     fun put(server: Server) {
         store[server.id] = server
         flow.value = store.values.sortedBy { it.sortOrder }
@@ -35,7 +44,10 @@ class FakeServerRepository : ServerRepository {
         flow.map { list -> list.filter { it.groupId == groupId } }
 
     override suspend fun getById(id: UUID): Server? = store[id]
-    override suspend fun upsert(server: Server) = put(server)
+    override suspend fun upsert(server: Server) {
+        upserts += server
+        put(server)
+    }
     override suspend fun delete(id: UUID) {
         store.remove(id)
         flow.value = store.values.sortedBy { it.sortOrder }

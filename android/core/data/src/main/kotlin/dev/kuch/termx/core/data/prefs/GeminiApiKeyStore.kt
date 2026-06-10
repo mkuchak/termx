@@ -12,7 +12,7 @@ import javax.inject.Singleton
  * We do not use DataStore for this — the key lives in the same
  * vault blob that holds SSH private keys and cached passwords, so
  * the biometric-lock gate applies uniformly. The Gemini-transcribe
- * path on the PTT FAB will fail with
+ * path behind the PTT mic will fail with
  * [dev.kuch.termx.core.data.vault.VaultLockedException] when the vault
  * is locked; the UI surface handles that by nudging the user to unlock.
  *

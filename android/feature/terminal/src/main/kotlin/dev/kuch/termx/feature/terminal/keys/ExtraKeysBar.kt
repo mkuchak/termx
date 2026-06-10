@@ -11,20 +11,20 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Keyboard
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -38,11 +38,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -52,10 +61,19 @@ private const val DOUBLE_TAP_WINDOW_MS = 300L
 private const val LONG_PRESS_REPEAT_MS = 60L
 private const val LONG_PRESS_INITIAL_DELAY_MS = 400L
 
+/** Fixed key dimensions — keys keep their size regardless of screen width. */
+private val KEY_WIDTH = 52.dp
+private val KEY_HEIGHT = 40.dp
+
+/** Width of the gradient fade hinting at off-screen keys. */
+private val EDGE_FADE_WIDTH = 24.dp
+
 /**
  * Extra-keys toolbar rendered above the soft keyboard.
  *
- * Two swipeable rows (via [HorizontalPager]) with indicator dots.
+ * One horizontally-scrollable row of fixed-width keys (Moshi-style) with
+ * a gradient fade at each edge hinting at more keys; the PTT mic and the
+ * keyboard chip are pinned outside the scrollable area on the right.
  * Sticky CTRL/ALT; volume-down-as-Ctrl is handled by [TerminalScreen]
  * upstream. Every tap fires a [HapticFeedbackConstants.KEYBOARD_TAP].
  *
@@ -66,6 +84,11 @@ private const val LONG_PRESS_INITIAL_DELAY_MS = 400L
  * Arrow keys support long-press repeat: after
  * [LONG_PRESS_INITIAL_DELAY_MS] the key re-fires every
  * [LONG_PRESS_REPEAT_MS] until the finger lifts.
+ *
+ * The mic is wired through plain lambdas ([onPttPressStart] /
+ * [onPttRelease] / [onPttCancel] + the [pttRecording] tint flag) so this
+ * module never depends on `:feature:ptt` — the host screen resolves the
+ * PTT view-model and hands the callbacks down, mirroring [onComposeText].
  */
 @Composable
 fun ExtraKeysBar(
@@ -73,11 +96,13 @@ fun ExtraKeysBar(
     modifier: Modifier = Modifier,
     onToggleKeyboard: () -> Unit = {},
     onComposeText: () -> Unit = {},
+    onPttPressStart: () -> Unit = {},
+    onPttRelease: () -> Unit = {},
+    onPttCancel: () -> Unit = {},
+    pttRecording: Boolean = false,
     state: ExtraKeysState = rememberExtraKeysState(),
-    layoutRow1: List<ExtraKey> = ExtraKeysLayout.ROW_1,
-    layoutRow2: List<ExtraKey> = ExtraKeysLayout.ROW_2,
+    layout: List<ExtraKey> = ExtraKeysLayout.KEYS,
 ) {
-    val pagerState = rememberPagerState(pageCount = { 2 })
     val view = LocalView.current
 
     // Per-modifier timestamps for the double-tap window.
@@ -123,28 +148,32 @@ fun ExtraKeysBar(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surfaceVariant,
     ) {
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.weight(1f),
-                ) { page ->
-                    val row = if (page == 0) layoutRow1 else layoutRow2
-                    KeyRow(
-                        keys = row,
-                        state = state,
-                        onTap = handleTap,
-                        onRepeatKey = { key ->
-                            // Used by arrow keys while held. Bypasses haptic per
-                            // repeat — only the initial press hapticks.
-                            val bytes = ExtraKeyBytes.encode(key, state.ctrlActive, state.altActive)
-                            if (bytes.isNotEmpty()) onKey(bytes)
-                        },
-                    )
-                }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            ScrollableKeyRow(
+                keys = layout,
+                state = state,
+                onTap = handleTap,
+                onRepeatKey = { key ->
+                    // Used by arrow keys while held. Bypasses haptic per
+                    // repeat — only the initial press hapticks.
+                    val bytes = ExtraKeyBytes.encode(key, state.ctrlActive, state.altActive)
+                    if (bytes.isNotEmpty()) onKey(bytes)
+                },
+                modifier = Modifier.weight(1f),
+            )
+            // Pinned (non-scrolling) action area on the right: the
+            // hold-to-record mic docked next to the keyboard chip,
+            // Moshi-style.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                MicKey(
+                    recording = pttRecording,
+                    onPressStart = onPttPressStart,
+                    onRelease = onPttRelease,
+                    onCancel = onPttCancel,
+                )
                 // Tap toggles the IME; long-press opens an empty PTT
                 // compose card so the user can type a command in a
                 // friendlier text field than the raw terminal. v1.1.13
@@ -180,28 +209,159 @@ fun ExtraKeysBar(
                     )
                 }
             }
-            PageIndicator(
-                pageCount = 2,
-                currentPage = pagerState.currentPage,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 4.dp),
-            )
         }
     }
 }
 
+/**
+ * Hold-to-record push-to-talk mic, pinned next to the keyboard chip.
+ * Press starts a recording (haptic on the down), release transcribes,
+ * a cancelled gesture aborts. A quick tap behaves exactly like the old
+ * FAB's quick tap: the recording starts and immediately stops, and
+ * PttViewModel's 1500 ms minimum-duration guard surfaces "Recording
+ * too short — hold longer to speak." instead of wasting a Gemini call.
+ *
+ * INVARIANT (carried over from the retired floating FAB): this button
+ * must stay composed for the entire hold. ConnectedPane (in
+ * TerminalScreen.kt) renders ExtraKeysBar unconditionally while the
+ * session is Connected, and nothing hides the bar while PTT is
+ * Recording — the recording status card merely overlays it. That
+ * always-composed property is what
+ * structurally eliminates the FAB's AnimatedVisibility-detach trap:
+ * an exit transition mid-hold used to detach the LayoutNode and kill
+ * the pointerInput coroutine at `waitForUpOrCancellation`, leaving a
+ * stuck-Recording state or a phantom "too short" error. If you ever
+ * wrap this bar (or this key) in conditional composition, re-read
+ * that history first.
+ *
+ * Unlike the arrow keys two siblings over, holding the mic must NOT
+ * auto-repeat anything — the hold itself is the gesture — hence the
+ * raw await loop below instead of [KeyButton]'s repeat machinery.
+ */
 @Composable
-private fun KeyRow(
+private fun MicKey(
+    recording: Boolean,
+    onPressStart: () -> Unit,
+    onRelease: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val view = LocalView.current
+    Box(
+        modifier = modifier
+            .width(KEY_WIDTH)
+            .height(KEY_HEIGHT)
+            .clip(RoundedCornerShape(6.dp))
+            .background(
+                if (recording) MaterialTheme.colorScheme.primary else Color.Transparent,
+            )
+            .pointerInput(Unit) {
+                // Two load-bearing details, ported from the old FAB:
+                //
+                // 1. We consume the first-down so the AndroidView
+                //    interop wrapper around Termux's TerminalView
+                //    dispatches ACTION_CANCEL to it instead of
+                //    forwarding the press; the underlying
+                //    GestureDetector then aborts and won't reclaim our
+                //    pointer mid-hold. (At the bar's position the
+                //    terminal view no longer sits underneath us, but
+                //    the recording status card does overlay this spot
+                //    mid-hold — keep the consume so nothing else can
+                //    ever claim the pointer while the user is holding.)
+                //
+                // 2. The catch wraps the whole release/cancel branch so
+                //    that if the pointerInput is ever detached
+                //    mid-gesture, we still call onCancel instead of
+                //    leaking the Recording state. The structural fix —
+                //    this key is always composed (see INVARIANT above)
+                //    — makes that impossible today, so the catch is
+                //    defence in depth, not the primary mechanism.
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    onPressStart()
+                    try {
+                        val up = waitForUpOrCancellation()
+                        if (up != null) {
+                            up.consume()
+                            view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            onRelease()
+                        } else {
+                            onCancel()
+                        }
+                    } catch (e: CancellationException) {
+                        onCancel()
+                        throw e
+                    }
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Default.Mic,
+            contentDescription = "push to talk",
+            tint = if (recording) {
+                MaterialTheme.colorScheme.onPrimary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+    }
+}
+
+/**
+ * The scrollable strip of keys. Fixed-width keys inside a plain
+ * [horizontalScroll] Row (16 keys — no need for laziness), with a
+ * [EDGE_FADE_WIDTH] gradient fade drawn over each edge that still has
+ * content beyond it. The fade is a DstIn punch-through: the row is
+ * composited offscreen and the gradient erases its alpha, letting the
+ * bar's surfaceVariant background show through.
+ */
+@Composable
+private fun ScrollableKeyRow(
     keys: List<ExtraKey>,
     state: ExtraKeysState,
     onTap: (ExtraKey) -> Unit,
     onRepeatKey: (ExtraKey) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    val scrollState = rememberScrollState()
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .height(48.dp)
+            // Offscreen compositing is required for BlendMode.DstIn to
+            // affect only this row's pixels (not whatever is behind it).
+            .graphicsLayer { compositingStrategy = CompositingStrategy.Offscreen }
+            .drawWithContent {
+                drawContent()
+                val fadePx = EDGE_FADE_WIDTH.toPx()
+                // Only fade an edge while there are keys hidden past it.
+                if (scrollState.value > 0) {
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(Color.Transparent, Color.Black),
+                            startX = 0f,
+                            endX = fadePx,
+                        ),
+                        size = Size(fadePx, size.height),
+                        blendMode = BlendMode.DstIn,
+                    )
+                }
+                if (scrollState.value < scrollState.maxValue) {
+                    drawRect(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(Color.Black, Color.Transparent),
+                            startX = size.width - fadePx,
+                            endX = size.width,
+                        ),
+                        topLeft = Offset(size.width - fadePx, 0f),
+                        size = Size(fadePx, size.height),
+                        blendMode = BlendMode.DstIn,
+                    )
+                }
+            }
+            .horizontalScroll(scrollState)
             .padding(horizontal = 4.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -212,9 +372,7 @@ private fun KeyRow(
                 state = state,
                 onTap = onTap,
                 onRepeatKey = onRepeatKey,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth(),
+                modifier = Modifier.width(KEY_WIDTH),
             )
         }
     }
@@ -267,7 +425,7 @@ private fun KeyButton(
                     }
                 }
                 // Wait until all pointers are up (or the gesture is
-                // cancelled by the pager pulling the pointer away).
+                // cancelled by the scroller pulling the pointer away).
                 while (true) {
                     val event = awaitPointerEvent()
                     if (event.changes.all { !it.pressed }) break
@@ -282,8 +440,7 @@ private fun KeyButton(
 
     Box(
         modifier = modifier
-            .fillMaxWidth()
-            .height(40.dp)
+            .height(KEY_HEIGHT)
             .clip(RoundedCornerShape(6.dp))
             .background(containerColor)
             .then(
@@ -304,32 +461,6 @@ private fun KeyButton(
             fontSize = 13.sp,
             fontWeight = if (modState == ModifierState.Locked) FontWeight.Bold else FontWeight.Medium,
         )
-    }
-}
-
-@Composable
-private fun PageIndicator(
-    pageCount: Int,
-    currentPage: Int,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.Center,
-    ) {
-        repeat(pageCount) { idx ->
-            val active = idx == currentPage
-            Box(
-                modifier = Modifier
-                    .padding(horizontal = 3.dp)
-                    .size(if (active) 6.dp else 5.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(
-                        if (active) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
-                    ),
-            )
-        }
     }
 }
 

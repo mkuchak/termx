@@ -53,6 +53,9 @@ class AgentAlertPoster @Inject constructor(
      * Server-keyed entry used by the Tier-1 router. The stacking id is
      * keyed on `serverId + "agent"` so repeated finishes from one server
      * coalesce into one updated notification instead of stacking.
+     * Carries the server id on the open-app intent (Task #47) so the
+     * tap lands the user in that session's maximized terminal sheet —
+     * the agent-finished alert is the flagship case for the deep link.
      */
     suspend fun post(serverId: UUID, serverLabel: String, agent: String, workspace: String?) {
         val notificationId = stackingId(serverId, "agent")
@@ -60,7 +63,7 @@ class AgentAlertPoster @Inject constructor(
             notificationId = notificationId,
             title = "herdr: $agent finished",
             body = workspace ?: serverLabel,
-            contentIntent = openAppIntent(notificationId),
+            contentIntent = openAppIntent(notificationId, serverId),
         )
         vibrateStrong()
     }
@@ -147,9 +150,22 @@ class AgentAlertPoster @Inject constructor(
             context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
         }
 
-    private fun openAppIntent(requestCode: Int): PendingIntent {
+    /**
+     * Same intent shape as `EventNotificationRouter.openAppIntent`:
+     * SINGLE_TOP so a warm tap reaches `MainActivity.onNewIntent`, and —
+     * when the caller has server context (Tier 1 [post]) — the
+     * [EventNotificationRouter.EXTRA_SERVER_ID] extra that maximizes the
+     * session's terminal sheet. Tier 2 ([postRaw]) has no server id and
+     * keeps the plain open-the-app behavior.
+     */
+    private fun openAppIntent(requestCode: Int, serverId: UUID? = null): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP
+            if (serverId != null) {
+                putExtra(EventNotificationRouter.EXTRA_SERVER_ID, serverId.toString())
+            }
         }
         return PendingIntent.getActivity(
             context,

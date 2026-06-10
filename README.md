@@ -30,8 +30,9 @@ regardless of which multiplexer (if any) you run.
   rest of termx works the same whichever you pick.
 - **Permission broker** — Claude Code's `PreToolUse` hook pipes approvals
   to the phone; approve, deny, or approve-with-pattern from the lock
-  screen. No parallel whitelist to maintain — decisions round-trip into
-  `~/.claude/settings.json`.
+  screen. The app writes each decision straight to `~/.termx/approvals/`
+  on the VPS for the hook to consume, and "Always approve" appends a rule
+  to `~/.termx/allowlist.txt` so identical calls auto-approve silently.
 - **Live diff viewer** — `PostToolUse` hooks capture `Write` / `Edit` /
   `NotebookEdit` output to `~/.termx/diffs/`; the phone renders them with
   +/- coloring, syntax highlighting, and a per-session "changed files"
@@ -40,7 +41,8 @@ regardless of which multiplexer (if any) you run.
   permission / task / error / disconnect. Long-running command done? Ping.
   Claude idle? Ping. Build failed? Ping. Each has its own priority and
   vibration pattern.
-- **Push-to-talk** — hold the FAB, speak, release. Your audio goes to
+- **Push-to-talk** — hold the mic key in the terminal's bottom bar, speak,
+  release. Your audio goes to
   Google Gemini (`gemini-3.1-flash-lite`) using your own API key; the
   transcription is injected directly into the active PTY — no clipboard
   dance.
@@ -56,8 +58,9 @@ regardless of which multiplexer (if any) you run.
 - **Terminal polish** — ships the **Sorcerer** theme, a limited-palette dark
   scheme that drives the 16 ANSI colors plus fg/bg/cursor and the whole app
   UI from one source of truth (no theme picker or custom editor). Plus
-  pinch-to-zoom font sizing, URL double-tap, scrollback, drag-to-reorder
-  server list, and two user-editable extra-keys rows with sticky modifiers.
+  pinch-to-zoom font sizing, URL double-tap, scrollback, live thumbnails of
+  active sessions on the home screen, and a scrollable extra-keys bar with
+  sticky modifiers.
 - **No SaaS** — zero telemetry, zero analytics, zero maintainer backend.
   Everything runs on your VPS via SSH. FCM is **not** used; termx relies on
   an Android foreground service tailing `~/.termx/events.ndjson` over the

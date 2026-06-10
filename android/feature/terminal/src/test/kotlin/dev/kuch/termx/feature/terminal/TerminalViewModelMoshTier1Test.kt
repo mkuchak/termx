@@ -1,7 +1,6 @@
 package dev.kuch.termx.feature.terminal
 
 import android.content.Context
-import androidx.lifecycle.SavedStateHandle
 import androidx.test.core.app.ApplicationProvider
 import dev.kuch.termx.core.data.prefs.AlertPreferences
 import dev.kuch.termx.core.data.prefs.AppPreferences
@@ -15,14 +14,15 @@ import dev.kuch.termx.core.domain.model.Server
 import dev.kuch.termx.feature.terminal.fakes.FakeKeyPairRepository
 import dev.kuch.termx.feature.terminal.fakes.FakeMoshClient
 import dev.kuch.termx.feature.terminal.fakes.FakeMoshSession
+import dev.kuch.termx.feature.terminal.connection.ConnectionManager
 import dev.kuch.termx.feature.terminal.fakes.FakeSecretVault
 import dev.kuch.termx.feature.terminal.fakes.FakeServerRepository
 import dev.kuch.termx.feature.terminal.fakes.FakeSshClient
+import dev.kuch.termx.feature.terminal.fakes.QuiescentMainDispatcherRule
 import dev.kuch.termx.libs.companion.EventStreamClientFactory
 import io.mockk.mockk
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -55,11 +55,13 @@ import org.robolectric.annotation.Config
 @Config(sdk = [30])
 class TerminalViewModelMoshTier1Test {
 
-    // Real Unconfined (not the test scheduler): the side-channel and the
-    // UnifiedPush sync hop onto Dispatchers.IO, which a virtual clock
-    // can't drive. Tests poll real state with waitUntil() instead.
+    // Shared looper-backed Main + manager-scope quiescence (the fix for
+    // the historical cross-class TestMainDispatcher race) — see
+    // [QuiescentMainDispatcherRule]'s KDoc. Tests poll real state with
+    // waitUntil() because the side-channel and the UnifiedPush sync hop
+    // onto Dispatchers.IO, which a virtual clock can't drive.
     @get:Rule
-    val mainRule = MainDispatcherRule(Dispatchers.Unconfined)
+    val mainRule = QuiescentMainDispatcherRule()
 
     private val appContext: Context get() = ApplicationProvider.getApplicationContext()
 
@@ -80,6 +82,12 @@ class TerminalViewModelMoshTier1Test {
         pingMs = null,
     )
 
+    /**
+     * Post-Task-#42 the transport lives in [ConnectionManager]; the VM
+     * is a binder. These tests keep driving everything THROUGH the VM —
+     * same entry points, same assertions — so they pin the end-to-end
+     * behavior across the split.
+     */
     private fun newVm(
         servers: FakeServerRepository,
         hub: EventStreamHub,
@@ -87,23 +95,28 @@ class TerminalViewModelMoshTier1Test {
         sshClient: FakeSshClient,
         passwordCache: PasswordCache = PasswordCache().apply { put(serverId, "pw") },
         alertPreferences: AlertPreferences = AlertPreferences(appContext),
-    ): TerminalViewModel = TerminalViewModel(
-        appContext = appContext,
-        savedStateHandle = SavedStateHandle(),
-        serverRepository = servers,
-        keyPairRepository = FakeKeyPairRepository(),
-        secretVault = FakeSecretVault(),
-        passwordCache = passwordCache,
-        appPreferences = AppPreferences(appContext),
-        alertPreferences = alertPreferences,
-        sessionRegistry = SessionRegistry(),
-        eventStreamHub = hub,
-        eventStreamRepository = EventStreamRepository(EventStreamClientFactory()),
-        reconnectBroker = ReconnectBroker(),
-        moshClient = FakeMoshClient(appContext, sshClient, moshSession),
-        sshClient = sshClient,
-        companionUpdateRepository = mockk(relaxed = true),
-    )
+    ): TerminalViewModel {
+        val registry = SessionRegistry()
+        val manager = ConnectionManager(
+            appContext = appContext,
+            serverRepository = servers,
+            keyPairRepository = FakeKeyPairRepository(),
+            secretVault = FakeSecretVault(),
+            passwordCache = passwordCache,
+            alertPreferences = alertPreferences,
+            sessionRegistry = registry,
+            reconnectBroker = ReconnectBroker(),
+            eventStreamHub = hub,
+            eventStreamRepository = EventStreamRepository(EventStreamClientFactory()),
+            companionUpdateRepository = mockk(relaxed = true),
+            moshClient = FakeMoshClient(appContext, sshClient, moshSession),
+            sshClient = sshClient,
+        ).also { mainRule.track(it) }
+        return TerminalViewModel(
+            appPreferences = AppPreferences(appContext),
+            connectionManager = manager,
+        )
+    }
 
     @Before
     fun resetPrefs() = runBlocking {
@@ -133,6 +146,10 @@ class TerminalViewModelMoshTier1Test {
 
         vm.connect(serverId)
         waitUntil { hub.clients.value.containsKey(serverId) }
+        // vm.state is a DERIVED mapping of the manager's slot state since
+        // Task #42; the slot flipped Connected before the hub publish but
+        // the mapped StateFlow propagates asynchronously — poll it too.
+        waitUntil { vm.state.value.status == TerminalUiState.Status.Connected }
 
         assertEquals(
             TerminalUiState.Status.Connected,
@@ -201,6 +218,8 @@ class TerminalViewModelMoshTier1Test {
         // Must not throw despite the side connect blowing up.
         vm.connect(serverId)
         waitUntil { sshClient.connectCount.get() >= 1 }
+        // Derived-state propagation (see (a)) — poll the mapped status.
+        waitUntil { vm.state.value.status == TerminalUiState.Status.Connected }
 
         assertEquals(
             "terminal stays up when the side channel fails",
@@ -229,6 +248,11 @@ class TerminalViewModelMoshTier1Test {
 
         vm.disconnect()
 
+        // The VM's uiState is now a DERIVED mapping of the manager's
+        // per-connection state flow, so give the propagation a beat
+        // (the manager-side teardown itself is synchronous — see the
+        // direct registry/hub asserts in ConnectionManagerTest).
+        waitUntil { vm.state.value.status == TerminalUiState.Status.Disconnected }
         assertEquals(
             TerminalUiState.Status.Disconnected,
             vm.state.value.status,
@@ -253,6 +277,8 @@ class TerminalViewModelMoshTier1Test {
 
         vm.connect(serverId)
         waitUntil { hub.clients.value.containsKey(serverId) }
+        // Derived-state propagation (see (a)) — poll the mapped status.
+        waitUntil { vm.state.value.status == TerminalUiState.Status.Connected }
 
         assertEquals(TerminalUiState.Status.Connected, vm.state.value.status)
         assertFalse("plain SSH must not be mosh-backed", vm.state.value.moshBacked)
