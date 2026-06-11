@@ -486,7 +486,10 @@ override `initializeEmulator` (no JNI subprocess, no threads), route emulator ou
 `write()` → `onInputBytes` callback, accept remote bytes via `feedRemoteBytes` (main-thread posted),
 and signal `onRemoteSessionClosed`. The fork also adds `readStickyCtrl/readStickyAlt/
 consumeStickyModifiers` to `TerminalViewClient` so the extra-keys bar's sticky modifiers apply to
-IME-committed text (v1.1.14 fix).
+IME-committed text (v1.1.14 fix), and `TerminalEmulator.isBracketedPasteMode()` (Task #53) — a
+read-only DECSET-2004 accessor so `ConnectionManager.submitLine` can replicate `paste()`'s gating
+while building its own atomic byte sequence (§5.11; KDoc on the accessor records why `paste()`'s
+three separate writes can't be used). Main-thread only, like all emulator state.
 
 Fonts: **JetBrains Mono NL** (no-ligatures) bundled — NL specifically so no layer can ever
 substitute a multi-cell ligature glyph (`NOTICE` explains; `liga 0` font features alone are not
@@ -494,7 +497,7 @@ guaranteed).
 
 ### 5.8 `:feature:terminal` — the heart
 
-**`connection/ConnectionManager.kt` (~1270 lines, `@Singleton`, 13 ctor deps)** owns every
+**`connection/ConnectionManager.kt` (~1620 lines, `@Singleton`, 13 ctor deps)** owns every
 transport — the long-promised "Server-ownership refactor" shipped here, moving everything
 lifecycle-shaped out of `TerminalViewModel` (which dropped from ~970 lines to a ~260-line binder).
 One connection = one `SshSession` (or one `MoshSession`) = one shell = one `SessionPty` holder
@@ -507,9 +510,9 @@ One connection = one `SshSession` (or one `MoshSession`) = one shell = one `Sess
 - **API**: `connections: StateFlow<Map<UUID, TermxConnection>>`; `connect(serverId)` (null =
   test-server path) is **BIND-IF-ALIVE** — Connecting/AwaitingPassword/Connected slots are
   returned untouched (same emulator, scrollback intact); only Disconnected/Error dials fresh.
-  Plus `submitPassword`, `cancelPasswordPrompt`, `clearError`, `writeToPty`, `disconnect`
-  (synchronous, idempotent; preserves an Error/AwaitingPassword state across the teardown),
-  `disconnectAll`.
+  Plus `submitPassword`, `cancelPasswordPrompt`, `clearError`, `writeToPty`, `submitLine`
+  (two-phase PTT line submit — §5.11), `disconnect` (synchronous, idempotent; preserves an
+  Error/AwaitingPassword state across the teardown), `disconnectAll`.
 - **`TermxConnection`** is a LONG-LIVED per-server slot: `state:
   StateFlow<TransportState>` (Connecting / AwaitingPassword / Connected(session, moshBacked,
   transportFallbackReason) / Error / Disconnected) plus `writeErrors` and `transportNotices`
@@ -551,8 +554,17 @@ One connection = one `SshSession` (or one `MoshSession`) = one shell = one `Sess
   `passwordAlias` was nuked by an old save bug (mints `password-$serverId`, upserts the row);
   drops AwaitingPassword → Disconnected before redialing (bind-if-alive would otherwise return
   the prompt slot untouched).
-- `writeToPty` failures emit the slot's one-slot DROP_OLDEST `writeErrors` flow → snackbar with
-  Reconnect (v1.1.13: silent keystroke loss fix).
+- **Per-shell FIFO write path** (`ShellWriteQueue` + `PtyWriteStep(bytes, delayBeforeMs)`, Task
+  #52): ALL input — `writeToPty` (extra-keys/Vol-Down/PTT) AND the emulator's `onInputBytes`
+  (IME/hardware keys) — enqueues on ONE unbounded channel drained by a single `Dispatchers.IO`
+  coroutine, so each shell has exactly one total write order BY CONSTRUCTION (previously one
+  detached `launch` per write — no ordering guarantee). A multi-step sequence travels as ONE
+  channel element, atomic against every other enqueue (the seam `submitLine` builds on). Scoped
+  per SHELL, not per connection slot — a queue parked on the long-lived `TermxConnection` would
+  land stale queued input on the NEXT shell after a reconnect; per-shell, writes aimed at a dead
+  shell drop. Failures emit the slot's one-slot DROP_OLDEST `writeErrors` flow → snackbar with
+  Reconnect (v1.1.13: silent keystroke loss fix; emulator-originated bytes now get the same
+  surfacing instead of the old log-and-drop). Output byte pumps are untouched (§17 item 3).
 - `cleanupQuietly` ordering matters: unpublish hub entry **before** closing the session so router
   collectors cancel first; covers the mosh side channel via the same registry key. **Shell EOF
   now runs the FULL teardown**: `onShellFinished` delegates to `cleanupQuietly` — the pre-refactor
@@ -566,7 +578,7 @@ One connection = one `SshSession` (or one `MoshSession`) = one shell = one `Sess
 "terminal-$serverId")` per server, no `SavedStateHandle` (the terminal is not a nav destination
 anymore), no lifecycle jobs, empty-ish `onCleared` — it maps `TermxConnection.state` into
 `TerminalUiState` (which gained `transportFallbackReason`) and forwards
-connect/submitPassword/writeToPty/disconnect to the manager.
+connect/submitPassword/writeToPty/submitLine/disconnect to the manager.
 
 **`TerminalSheetHost` + `connection/TerminalSheetState`** — the terminal is NOT a route (Task
 #47; `terminal/{serverId}` is deleted). `TerminalSheetState` (`@Singleton`,
@@ -580,7 +592,7 @@ release settles Hidden = minimize; `BackHandler` = animate down + minimize. Moun
 Locked (lock also clears `maximizedServerId` — minimize, never disconnect), auto-minimized on
 navigation to any route except `servers` (`shouldAutoMinimizeSheet`, unit-tested).
 
-**`TerminalScreen` (~980 lines)** — single AndroidView-hosted `TerminalView` + `ExtraKeysBar` +
+**`TerminalScreen` (~1065 lines)** — single AndroidView-hosted `TerminalView` + `ExtraKeysBar` +
 `PttSurface`, rendered inside the sheet. The old `DisposableEffect` disconnect-on-dispose is GONE
 (minimize semantics); the only in-UI way to end a session is the explicit Disconnect
 `IconButton` (`Icons.Filled.PowerSettingsNew`, top-end, shown while Connected). Reconnect lives
@@ -596,15 +608,23 @@ on the Error/Disconnected panes. Load-bearing mechanics:
   touch listener feeds scale + double-tap detectors then ALWAYS falls through to Termux's
   `onTouchEvent` (consuming would starve selection/scrollback).
 - **Volume-Down-as-Ctrl** (`handleVolDownAwareKey`): hold Vol-Down + key = Ctrl+key; a >500 ms
-  lone hold passes through to the OS volume. Attached BOTH as Compose `onKeyEvent` and a native
-  `setOnKeyListener` (focus can be on either layer).
+  lone hold passes through to the OS volume. Attached ONLY as the TerminalView's native
+  `setOnKeyListener` (Tasks #49–51 — the old parallel Compose `onKeyEvent` path is GONE): its
+  focusable Column was a focus thief that reclaimed view-focus from the TerminalView after every
+  sheet open and card/dialog dismissal — keyboard visible, typing dead until a repair tap (the
+  2026-06-11 tap-before-type bug). ONE focus source of truth: the view. WHY inline at
+  `ConnectedPane`'s Column; regression-guarded by checklist item 11 (Vol-Down+C doubles as the
+  focus canary, since the listener only fires while the view holds focus).
 - **Sticky CTRL/ALT** (`ExtraKeysState`, tri-state Off/OneShot/Locked; double-tap inside 300 ms →
   Locked): state is hoisted to `ConnectedPane` and threaded into (a) the bar, (b) the
   Vol-Down/hardware-key path, (c) `MinimalTerminalViewClient.readStickyCtrl/Alt` for
   IME-committed letters. All three were separate v1.1.13/14 bugs.
 - **`encodePttPayload`** + `ANY_LINE_BREAK` regex: collapses `\r \n NEL VT FF LSEP PSEP` runs to a
   single `\r` (the only byte readline+mosh agree means accept-line). Empirically derived
-  (`PttPayloadProbeTest`); v1.3.3.
+  (`PttPayloadProbeTest`); v1.3.3. **NO LONGER the live Send path** (Task #53): PTT Send goes
+  through `ConnectionManager.submitLine` (§5.11) because appending the CR to the SAME buffer is
+  exactly what broke Claude Code submits. Superseded-not-erased: the function and its tests stay
+  as the pinned reference for the collapse `sanitizePtySubmitText` shares.
 - `ExtraKeyBytes`: Ctrl+letter → 0x01..0x1A, Ctrl+specials per POSIX, Alt → ESC prefix; arrows/
   F-keys/Home/End/PgUp/PgDn delegate to Termux's `KeyHandler.getCode` (cursor-app mode passed as
   false — toolbar has no emulator state; documented acceptable).
@@ -716,15 +736,19 @@ before removing). Private bytes are `fill(0)`-wiped immediately after the vault 
   consumeSend. **1500 ms minimum duration** before spending an API call (was 250 ms; sub-second
   recordings are gesture races or accidental taps and produce hallucination-bait room tone).
   `composeText()` reuses the Ready card as an empty type-a-command field (requestFocus=true pops
-  the IME — the post-Gemini path deliberately doesn't).
+  the IME — the post-Gemini path deliberately doesn't). Gemini transcripts are `trim()`ed before
+  Ready (Task #53) so the card shows exactly what Send will submit;
+  `ConnectionManager.sanitizePtySubmitText` re-trims edited drafts as the defensive half.
 - **`PttSurface.kt`** (renamed from `PttFab.kt`; Tasks #38/#39) — the floating FAB is deleted;
   the hold-to-record trigger is now `MicKey` inside the extra-keys bar's pinned trailing Row
   (§5.8), driven through `rememberPttStartAction` (the explicit `PttState.Idle` gate that
   replaced structural FAB gating). `PttSurface` keeps the status/Ready overlay cards. The Ready
   card is an outlined pill (28 dp radius, 2 dp primary border, `BasicTextField`, ✕ dismiss,
   48 dp circular primary send) — the separate "Insert without newline" button is REMOVED; the
-  card only ever sends-with-newline, though `onSend(text, appendNewline)` keeps its signature
-  for the writer seam. Two hard-won gesture rules carried over from the FAB era — read the
+  card only ever submits, and the `appendNewline` flag left `onSend(text)`'s signature with its
+  last `false` caller (Task #53 — the Enter now lives in the submit sequence, not the payload;
+  the seam feeds `TerminalViewModel.submitLine`). Two hard-won gesture rules carried over from
+  the FAB era — read the
   `MicKey` comments before touching them: (1) the key must stay COMPOSED through `Recording`
   (an AnimatedVisibility exit detaches the LayoutNode mid-hold, cancelling the `pointerInput`
   coroutine at `waitForUpOrCancellation` → stuck-Recording or phantom "too short" errors; the
@@ -733,6 +757,43 @@ before removing). Private bytes are `fill(0)`-wiped immediately after the vault 
   of letting the gesture be reclaimed mid-hold. The `CancellationException` catch →
   `cancelRecording` is defense-in-depth, not the mechanism. Unlike the arrow keys, the mic must
   NOT auto-repeat — it has a raw `awaitEachGesture` loop, not `KeyButton`'s repeat machinery.
+
+**Driving Claude Code's composer — the submit contract (Task #53).** PTT Send is a TWO-PHASE
+submit: `TerminalViewModel.submitLine` → `ConnectionManager.submitLine(serverId, text)`
+sanitizes the draft (`sanitizePtySubmitText`: trim → v1.3.3 `ANY_LINE_BREAK` collapse → ESC/C1
+strip — `paste()`-parity, collapse FIRST so NEL survives as `\r` instead of dying in the C1
+strip), wraps it in `ESC[200~`/`ESC[201~` ONLY when the emulator reports DECSET 2004 on, and
+enqueues ONE atomic `ShellWriteQueue` element (§5.8): [payload bytes] then [lone CR `0x0D` with
+`delayBeforeMs` = `SSH_SUBMIT_CR_DELAY_MS` 75 ms / `MOSH_SUBMIT_CR_DELAY_MS` 300 ms]. Blank
+draft → bare CR, no delay. Never `0x0A`. The paste bit comes from the **vendored accessor
+`TerminalEmulator.isBracketedPasteMode()`** (termx fork addition — `paste()` itself is unusable
+here: its up-to-3 separate `mSession.write()` calls can't be atomic with the CR on the queue),
+read inside a `Main.immediate` launch (emulator state is main-confined, §17 item 22); a null
+emulator (no attached view yet) conservatively reads as "no bracketed paste". The facts this
+encodes — verified 2026-06-11 by de-minifying the Claude Code v2.1.172 binary plus a
+community-tool survey; full WHY lives on `buildSubmitSequence`:
+
+- (a) Claude Code's stdin tokenizer classifies a control char as a `return` (submit) keypress
+  ONLY when the chunk arriving in one `read()` is <64 chars; a `\r` embedded in a ≥64-char chunk
+  is inserted as a literal composer newline — never submits. Version-dependent implementation
+  detail (v2.1.172); PTT transcripts are almost always ≥64 bytes, hence "fails most of the time
+  but short test phrases work".
+- (b) `\r` = submit; `\n` = Ctrl+J = insert-newline BY DESIGN — never submit with LF (also the
+  v1.1.12 raw-mode-over-mosh lesson).
+- (c) The stable contract is Anthropic's own injector recipe (their remote-session daemon):
+  bracketed-paste-wrapped text, then a LONE `\r` as a separate write after a delay — 10 ms on
+  their local pty; termx sizes it per transport: 75 ms ssh, 300 ms mosh, because mosh coalesces
+  input into state-sync frames (SEND_INTERVAL_MAX 250 ms + ~8 ms collection) and a faster CR
+  re-merges with the text into one server-side `read()`.
+- (d) Reference: anthropics/claude-code#15553; claude-squad, omnara and herdr all converge on
+  the same text-then-separate-delayed-CR shape.
+- (e) SECOND layer of one user symptom: v1.3.3 (`638104a`) fixed layer 1 (exotic Unicode line
+  breaks); this fixes layer 2 (the chunk-size heuristic). Superseded-not-erased:
+  `encodePttPayload` + its tests remain the pinned collapse reference (§5.8).
+
+No blind retry in v1 — it would double-submit the common case; the verify-and-retry / Escape+CR
+variant (autocomplete eating the CR) is documented in-code as a future option (§18). Do NOT
+collapse the two writes back into one — §17 item 27.
 
 ### 5.12 `:feature:settings`
 
@@ -1154,9 +1215,14 @@ declared but barely used):
 - **Convention deviation, recorded honestly:** `ActiveSessionsMappingTest` uses `mockk` for
   `TerminalSession` (the vendored class is concrete with looper-bound construction; a seam would
   mean forking it further). First real mockk usage in the repo — keep it contained.
+- New with the input wave (Tasks #49–53): `TerminalViewFocusContractTest` (the single-source
+  focus model), `ConnectionManagerWriteQueueTest` (FIFO ordering, submit atomicity against
+  concurrent bursts, measured transport CR delays, live DECSET-2004 detection on the real
+  emulator) and `SubmitLineSequenceTest` (pure `buildSubmitSequence`/`sanitizePtySubmitText`
+  table tests).
 - The former blind spot — no coverage of the broker phone→VPS round-trip — is closed: golden
   fixtures + Go contract tests above, plus `docs/PRE_RELEASE_CHECKLIST.md` item 10 (manual
-  round-trip; the biometric item moved to 11).
+  round-trip; keyboard focus is item 11, PTT submit item 12, the biometric item moved to 13).
 
 ---
 
@@ -1355,12 +1421,13 @@ UI row flips them yet (router honors them if ever set).
 | v1.1.21 / **v1.1.23** | Pure-Kotlin mosh SSP transport shipped (`feat!`)… **and reverted** to the native client | Don't re-attempt casually; commits `3a04233`/`9b00fcb` |
 | v1.2.0 | JetBrains Mono NL bundled | |
 | **v1.3.0–v1.3.2** | **Sorcerer becomes the only theme**; picker/editor deleted, `custom_themes` dropped (schema v4); two follow-up fixes ending at `installAsDefault` | The static-defaults install is the only correct theme path |
-| v1.3.3–v1.3.4 | PTT: line-break collapse to CR; Gemini model bump to GA `gemini-3.1-flash-lite` (preview retired upstream) | Model name will need future bumps; watch for 404s |
+| v1.3.3–v1.3.4 | PTT: line-break collapse to CR; Gemini model bump to GA `gemini-3.1-flash-lite` (preview retired upstream) | Model name will need future bumps; watch for 404s. The collapse (`638104a`) was only LAYER 1 of the "Send doesn't submit" symptom — layer 2 (Claude Code's <64-char chunk rule) was fixed post-v1.7.0 by the two-phase submit; §5.11 |
 | **v1.4.0** / termxd 0.1.2 | **tmux integration removed** end-to-end (schema v5, startup command replaces auto-attach, installer strips old tmux blocks) | "Plain shell, BYO multiplexer" identity finalized |
 | v1.5.0 / termxd 0.1.3 | `watch-herdr` daemon + `agent_finished` + UnifiedPush Tier 2 | The current daily-driver feature |
 | termxd 0.1.4 | systemd --user PATH fix for herdr resolution | The PATH gotcha; applies to any future daemon |
-| **v1.6.0** / termxd 0.1.5 (2026-06-07) | mosh side channel (alerts over mosh), companion on-connect update offers, supersede-only-when-deliverable, idle-finish catching, unified rotation | Current HEAD commit |
-| **post-v1.6.0 redesign wave** (2026-06-10, **UNCOMMITTED** at this snapshot) | 14 tasks: broker return path FIXED (phone writes `.res.json` + allowlist append; §14.1 resolved, golden fixtures + Go contract tests); mosh stderr classification + locale prefix + 3 s first-output liveness gate + truthful fallback surfacing + termxd install preflight; **`ConnectionManager` ownership refactor + lifecycle flip** (sessions survive navigation/backgrounding; explicit disconnect; EOF full-teardown leak fixed); terminal-as-sheet (`terminal/{serverId}` route deleted, notification connect-then-maximize); Moshi-style home with live-thumbnail session cards (reorder/move-to-group/collapse deleted); single-row extra-keys bar with in-bar PTT mic; pill Ready card (Insert button removed) | The state THIS document describes; sections untouched by the wave may carry pre-wave line numbers |
+| **v1.6.0** / termxd 0.1.5 (2026-06-07) | mosh side channel (alerts over mosh), companion on-connect update offers, supersede-only-when-deliverable, idle-finish catching, unified rotation | HEAD at the 2026-06-10 full audit |
+| **post-v1.6.0 redesign wave** (2026-06-10, shipped in **v1.7.0**) | 14 tasks: broker return path FIXED (phone writes `.res.json` + allowlist append; §14.1 resolved, golden fixtures + Go contract tests); mosh stderr classification + locale prefix + 3 s first-output liveness gate + truthful fallback surfacing + termxd install preflight; **`ConnectionManager` ownership refactor + lifecycle flip** (sessions survive navigation/backgrounding; explicit disconnect; EOF full-teardown leak fixed); terminal-as-sheet (`terminal/{serverId}` route deleted, notification connect-then-maximize); Moshi-style home with live-thumbnail session cards (reorder/move-to-group/collapse deleted); single-row extra-keys bar with in-bar PTT mic; pill Ready card (Insert button removed) | The state THIS document describes; sections untouched by the wave may carry pre-wave line numbers |
+| **post-v1.7.0 input wave** (2026-06-11, **UNCOMMITTED** at this update) | Tasks #49–53: tap-before-type focus fix (single-source focus — the TerminalView; Compose focus thief + parallel `onKeyEvent` path deleted); per-shell FIFO write queue (`ShellWriteQueue`); PTT two-phase submit (bracketed-paste wrap + delayed lone CR via `submitLine`) | The Claude Code composer contract — §5.11; gotcha #27; checklist items 11–12 |
 
 ---
 
@@ -1430,6 +1497,11 @@ The "if you change this without reading its comment, you will reintroduce a ship
 26. **Vault lock must MINIMIZE the sheet, never disconnect** — steady-state transport paths are
     vault-free by design; only fresh connects read the vault. Re-introducing a vault check on a
     live-session path breaks the lifecycle flip.
+27. **PTT submit is a TWO-write sequence by design** — bracketed-paste-wrapped text, then a lone
+    CR as a SEPARATE write after a transport-aware delay (75 ms ssh / 300 ms mosh). Collapsing
+    it back into one `text+"\r"` write resurrects the 64-byte paste bug: Claude Code's stdin
+    tokenizer only treats `\r` as the Enter key in chunks <64 chars. §5.11 /
+    `buildSubmitSequence`.
 
 ---
 
@@ -1451,6 +1523,11 @@ From `docs/ROADMAP.md` "explicitly deferred past v1.0" + observed TODOs, still o
   navigation, which the sheet bypasses). Perf nit; future fix is gating on
   `TerminalSheetState.maximizedServerId`.
 - NEW follow-up: the **diff-notification deep link** is still unwired (§14.4's remaining half).
+- NEW follow-up: **PTT submit verify-and-retry** — watch whether the Claude Code composer
+  actually cleared after the lone CR and, if not, send Escape + CR (covers autocomplete eating
+  the CR, e.g. a leading `/` opening the command popup; anthropics/claude-code#15553).
+  Documented in-code at `buildSubmitSequence` as the KNOWN FUTURE OPTION; a blind retry would
+  double-submit the common case, so v1 deliberately ships without it.
 - User-editable **extra-keys layouts/presets**; pull-to-refresh ping (`ServerListViewModel.onRefresh`
   is a no-op); mute-toggle Settings UI for task/error channels; paranoid-mode wiring.
 - Diff viewer syntax highlighting (tokenizer deferred); side-by-side mode.
@@ -1503,6 +1580,7 @@ ActiveSessionCardModel}.kt` · `feature/terminal/.../TerminalSheetHost.kt` ·
 | 24 h | updater + companion-update TTLs; vault auto-lock default | anti-nag windows |
 | 60 s | `AlertPreferences` default long-cmd notification threshold | |
 | 1500 ms | `PttViewModel.MIN_USEFUL_DURATION_MS` | min recording before Gemini call |
+| 75 ms / 300 ms | `SSH_SUBMIT_CR_DELAY_MS` / `MOSH_SUBMIT_CR_DELAY_MS` (`ConnectionManager.kt`) | PTT submit phase-2 lone-CR delay: ssh margin over packet coalescing vs. mosh's 250 ms input-frame ceiling (§5.11) |
 | 3 / 500 ms / 1200 ms ±20% | `GeminiClient` | retry budget |
 | 15 s / 120 s / 600 s | `InstallCompanionUseCaseImpl` | detect/preview/install SSH idle timeouts |
 | 8–32 sp (default 14) | font size clamp | |
@@ -1559,8 +1637,15 @@ What this document is based on (honesty section):
   sheet/home/bar/PTT composables, the new test suites, the golden fixtures). The wave's tests
   were green per-task; this doc pass re-ran only `:feature:ptt:compileDebugKotlin` (for its KDoc
   fix), not the full suites.
+- **Update pass (2026-06-11, input wave):** every claim added/changed for Tasks #49–53 (focus
+  single-sourcing, `ShellWriteQueue`, two-phase PTT submit, the vendored
+  `isBracketedPasteMode()` accessor, the 75/300 ms constants) was re-verified by reading/grepping
+  the named symbols in the uncommitted work tree; `:feature:terminal:testDebugUnitTest` re-run
+  green after this doc pass. The Claude Code findings (the <64-char chunk rule, the first-party
+  injector recipe) come from de-minifying the v2.1.172 binary — re-verify against the binary
+  before leaning on them for a NEW feature; the stable contract is (c) in §5.11, not (a).
 
-*Last full audit: 2026-06-10 @ `278230c`; last truth-pass update: 2026-06-10, covering the
-post-v1.6.0 redesign wave (uncommitted work tree — broker, mosh stack, connection ownership,
-sheet/home/bar UI). If you materially change the broker, vault, mosh stack, connection lifecycle,
+*Last full audit: 2026-06-10 @ `278230c`; last truth-pass update: 2026-06-11, covering the
+post-v1.7.0 input wave (uncommitted work tree — keyboard focus, write queue, PTT submit
+contract). If you materially change the broker, vault, mosh stack, connection lifecycle,
 release flow, or wire schema — update the relevant section AND the findings registry here.*

@@ -53,7 +53,17 @@ gh run download <id> --name termx-debug-<sha> --dir /tmp && adb install /tmp/app
 - Expected: every decision resolves well within the hook's 30 s window; no default-deny while you are actively responding.
 - Would have caught: the broker gap where the phone wrote decisions to a path nothing read, so every gated tool call default-denied after 30 s.
 
-## 11. Biometric vault re-lock (quarterly spot-check)
+## 11. Keyboard focus & input (type immediately, no repair tap)
+- Click-path: open a session with the soft keyboard already visible and type at once — characters must appear with no prior tap on the terminal. Then re-test typing immediately after each focus-stealing flow: minimize the sheet and re-maximize; long-press the keyboard chip → compose card → dismiss with ✕ (then once more, ending with Send); double-tap a URL in the scrollback → dismiss the open-link dialog. Finally run `sleep 100`, hold Volume-Down and press `c`.
+- Expected: every keystroke lands in the terminal instantly after every step — never a dead keyboard that needs a repair tap first — and Vol-Down+C delivers Ctrl+C (the `sleep` dies with `^C`).
+- Would have caught: the 2026-06-11 tap-before-type bug (a Compose focus thief grabbed focus from the TerminalView on session open and after every card/dialog dismissal). The Vol-Down step doubles as a regression guard for the fix itself: Vol-Down-as-Ctrl now routes solely through TerminalView's `setOnKeyListener`, so it silently breaks if the view ever stops holding focus.
+
+## 12. PTT Send drives Claude Code's composer (two-phase submit)
+- Click-path: connect to a server and start Claude Code in the shell. (a) PTT a short phrase (<10 words) → Send. (b) PTT a LONG transcription (2+ sentences, well over 64 characters) → Send. (c) PTT a multi-sentence ramble and let the Ready card show several lines → Send. (d) Repeat (b) on a mosh-backed session AND an ssh-backed one (the lone-CR delay differs: 300 ms vs 75 ms). (e) Exit Claude Code to the plain bash prompt, PTT `echo hello` → Send.
+- Expected: in (a)–(d) the text appears in Claude's composer AND submits on its own — no manual Enter, exactly one submission per Send, never a mid-text submit. In (e) the line executes normally with NO visible `ESC[200~`/`ESC[201~` marker garbage at the prompt (the bracketed-paste wrap must be gated on the remote app actually enabling DECSET 2004).
+- Would have caught: the 2026-06-11 "transcript pastes but never submits" bug — Claude Code's stdin tokenizer only treats `\r` as the Enter key in chunks <64 chars, so the old one-buffer `text+"\r"` send failed on every realistic transcript. v1.3.3 caught only the FIRST layer of this symptom (exotic Unicode line breaks); steps (b)–(d) exercise the second layer (`ConnectionManager.submitLine`'s two-phase bracketed-paste + delayed lone CR).
+
+## 13. Biometric vault re-lock (quarterly spot-check)
 - Click-path: Unlock via biometric. Background the app for 6 min. Foreground.
 - Expected: biometric prompt reappears before the server list is accessible.
 - Cadence: quarterly — skip on every release; otherwise this doc bloats.
