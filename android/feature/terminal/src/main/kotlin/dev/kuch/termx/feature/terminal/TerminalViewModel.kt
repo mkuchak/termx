@@ -196,6 +196,21 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
+     * Two-phase "type this line and press Enter" — the PTT Send path
+     * (Task #53). Thin delegate so the screen keeps talking only to
+     * this VM; the mechanics (bracketed-paste wrap, transport-sized
+     * delay before the lone CR, atomicity on the per-shell write
+     * queue) live in [ConnectionManager.submitLine] and its
+     * `buildSubmitSequence` KDoc. NOT a convenience alias for
+     * [writeToPty] with a trailing CR — that single-buffer shape is
+     * the Claude Code submit bug this path exists to fix.
+     */
+    fun submitLine(text: String) {
+        val conn = connection.value ?: return
+        connectionManager.submitLine(conn.serverId, text)
+    }
+
+    /**
      * EXPLICIT user-driven teardown — the screen's Disconnect action.
      * Idempotent; delegates to the manager. This is the ONLY way a VM
      * ends a session: `onCleared` deliberately does not disconnect

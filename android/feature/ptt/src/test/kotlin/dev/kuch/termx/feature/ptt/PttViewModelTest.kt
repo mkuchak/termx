@@ -159,6 +159,24 @@ class PttViewModelTest {
         assertEquals(PttState.Idle, vm.state.value)
     }
 
+    @Test fun `dismiss from Error goes to Idle`() = runTest {
+        // Pins the Error → Idle leg the host's focus-restore observer
+        // keys on (TerminalScreen, Task #50): the error card's Dismiss
+        // must land in Idle so the terminal gets view-focus back.
+        // Cheapest route into Error: a Recording whose stop() yields no
+        // usable capture surfaces the "too short" error synchronously.
+        val recorder: AudioRecorder = mockk(relaxed = true) {
+            every { amplitudes } returns MutableStateFlow(emptyList())
+            every { stop() } returns null
+        }
+        val vm = newViewModel(audioRecorder = recorder)
+        vm.startRecording()
+        vm.stopRecordingAndTranscribe()
+        assertTrue("expected Error, got ${vm.state.value}", vm.state.value is PttState.Error)
+        vm.dismiss()
+        assertEquals(PttState.Idle, vm.state.value)
+    }
+
     // ---- cancelRecording from non-Recording does NOT touch the recorder
 
     @Test fun `cancelRecording from Idle is a silent no-op`() = runTest {
@@ -325,5 +343,38 @@ class PttViewModelTest {
         vm.stopRecordingAndTranscribe()
         waitForState(vm) { it is PttState.Error }
         assertTrue(vm.state.value is PttState.Error)
+    }
+
+    @Test fun `transcript whitespace is trimmed before Ready - the card must show exactly what Send submits`() = runBlocking {
+        // Task #53: Gemini transcripts routinely arrive with a trailing
+        // newline (and sometimes padding spaces). Pre-trim they reached
+        // the Ready card verbatim — an invisible trailing line break the
+        // user could neither see nor explain at the prompt.
+        val recorder: AudioRecorder = mockk(relaxed = true)
+        val apiKeyStore: GeminiApiKeyStore = mockk(relaxed = true)
+        val gemini: GeminiClient = mockk(relaxed = true)
+        val audioFile = File.createTempFile("ptt-test", ".m4a").apply {
+            writeText("audio")
+            deleteOnExit()
+        }
+        every { recorder.amplitudes } returns MutableStateFlow(emptyList())
+        every { recorder.start(any()) } returns Unit
+        every { recorder.stop() } returns RecordedAudio(file = audioFile, durationMs = 5_000L, amplitudeSamples = emptyList())
+        coEvery { apiKeyStore.get() } returns "k"
+        coEvery {
+            gemini.transcribe(any(), any(), any(), any(), any(), any())
+        } returns "  list pods in default\n"
+
+        val vm = newViewModel(
+            audioRecorder = recorder,
+            apiKeyStore = apiKeyStore,
+            geminiClient = gemini,
+        )
+        vm.startRecording()
+        vm.stopRecordingAndTranscribe()
+        waitForState(vm) { it is PttState.Ready }
+        val state = vm.state.value
+        assertTrue("expected Ready, got $state", state is PttState.Ready)
+        assertEquals("list pods in default", (state as PttState.Ready).text)
     }
 }

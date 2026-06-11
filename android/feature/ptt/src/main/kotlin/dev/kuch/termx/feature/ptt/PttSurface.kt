@@ -82,12 +82,16 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * errors). The surviving gesture laws are documented on the mic button
  * in `ExtraKeysBar`.
  *
- * The caller supplies [onSend]: the host composable resolves the PTY
- * writer and hands it down, again to keep the module graph acyclic.
+ * The caller supplies [onSend]: the host composable resolves the
+ * line-submit writer and hands it down, again to keep the module
+ * graph acyclic. Sending always submits (Enter included) — the old
+ * `appendNewline` flag left the signature when its last `false`
+ * caller (the Insert button, removed in Task #38) was confirmed gone
+ * (Task #53); how Enter is delivered is entirely the host's business.
  */
 @Composable
 fun PttSurface(
-    onSend: (text: String, appendNewline: Boolean) -> Unit,
+    onSend: (text: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: PttViewModel = hiltViewModel(),
 ) {
@@ -112,8 +116,8 @@ fun PttSurface(
                         else -> viewModel.dismiss()
                     }
                 },
-                onSend = { text, appendNewline ->
-                    onSend(text, appendNewline)
+                onSend = { text ->
+                    onSend(text)
                     viewModel.consumeSend()
                 },
                 modifier = Modifier
@@ -191,7 +195,7 @@ fun rememberPttStartAction(
 private fun PttStatusCard(
     state: PttState,
     onCancel: () -> Unit,
-    onSend: (text: String, appendNewline: Boolean) -> Unit,
+    onSend: (text: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(
@@ -287,22 +291,18 @@ private fun TranscribingBody(attempt: Int, maxAttempts: Int) {
  * still working on the same one.
  *
  *  - **✕** (in-pill): drop the transcript, back to Idle.
- *  - **Send**: write [draft] followed by `\n`; the shell executes it
- *    immediately. Disabled on a blank draft so we don't waste a
- *    round-trip writing nothing.
- *
- * Note [onSend]'s `appendNewline` flag stays in the signature for the
- * host contract (`TerminalScreen` encodes it into the PTY payload),
- * but this card now only ever sends with `appendNewline = true` —
- * the old "Insert without newline" button was removed in the pill
- * redesign.
+ *  - **Send**: submit [draft] as one line — the host's writer owns
+ *    the Enter mechanics (termx routes it through the two-phase
+ *    bracketed-paste submit in `ConnectionManager.submitLine`).
+ *    Disabled on a blank draft so we don't waste a round-trip
+ *    writing nothing.
  */
 @Composable
 private fun ReadyBody(
     text: String,
     requestFocus: Boolean,
     onCancel: () -> Unit,
-    onSend: (text: String, appendNewline: Boolean) -> Unit,
+    onSend: (text: String) -> Unit,
 ) {
     var draft by remember(text) { mutableStateOf(text) }
     val canSend = draft.isNotBlank()
@@ -369,7 +369,7 @@ private fun ReadyBody(
         }
         Spacer(Modifier.width(10.dp))
         FilledIconButton(
-            onClick = { onSend(draft, true) },
+            onClick = { onSend(draft) },
             enabled = canSend,
             shape = CircleShape,
             modifier = Modifier.size(48.dp),

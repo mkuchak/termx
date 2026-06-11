@@ -28,9 +28,11 @@ import kotlinx.coroutines.withContext
  *  2. User releases                 → [stopRecordingAndTranscribe] fires
  *     the Gemini call. On success we land in [PttState.Ready], showing
  *     a preview card with the editable transcript.
- *  3. User taps Send → the composable writes the (possibly edited)
- *     transcript to the PTY with a trailing newline and calls
- *     [consumeSend] to drop back to Idle.
+ *  3. User taps Send → the composable hands the (possibly edited)
+ *     transcript to the host's line-submit writer (termx: the
+ *     two-phase bracketed-paste submit in
+ *     `ConnectionManager.submitLine`) and calls [consumeSend] to drop
+ *     back to Idle.
  *
  * The "Command vs Text" persisted mode was removed in v1.1.11, and the
  * separate "Insert without newline" button went with the pill-card
@@ -158,7 +160,15 @@ class PttViewModel @Inject constructor(
                 if (text.trim().equals(NO_SPEECH_SENTINEL, ignoreCase = true)) {
                     _state.value = PttState.Error("No speech detected — try again.")
                 } else {
-                    _state.value = PttState.Ready(text = text)
+                    // Trim before showing: Gemini transcripts routinely
+                    // arrive with a trailing newline (and occasionally
+                    // padding spaces), and the Ready card must show
+                    // EXACTLY what Send will submit — an invisible
+                    // trailing break would otherwise surprise as a
+                    // phantom extra line at the prompt. The submit seam
+                    // (ConnectionManager.sanitizePtySubmitText) trims
+                    // again defensively for edited drafts.
+                    _state.value = PttState.Ready(text = text.trim())
                 }
             }.onFailure { t ->
                 Log.w(LOG_TAG, "transcription failed", t)

@@ -18,6 +18,7 @@ import dev.kuch.termx.core.data.vault.VaultLockedException
 import dev.kuch.termx.core.domain.model.AuthType
 import dev.kuch.termx.core.domain.repository.KeyPairRepository
 import dev.kuch.termx.core.domain.repository.ServerRepository
+import dev.kuch.termx.feature.terminal.ANY_LINE_BREAK
 import dev.kuch.termx.feature.terminal.BuildConfig
 import dev.kuch.termx.feature.terminal.SshSessionClient
 import dev.kuch.termx.feature.terminal.buildStartupCommand
@@ -36,12 +37,16 @@ import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -118,6 +123,13 @@ sealed interface TransportState {
  * [serverIdForRegistry] + [serverLabel] mirror what we pushed into
  * [SessionRegistry] on open so the matching unregister call can be
  * made from `cleanupQuietly` without another repo hit.
+ *
+ * [writeQueue] is this shell's single ordered INPUT path — every byte
+ * headed for the transport (emulator/IME input and manager-level
+ * [ConnectionManager.writeToPty] alike) goes through it. Created with
+ * the shell, shut down with it (`cleanupQuietly` /
+ * `teardownMoshShellForFallback`). See [ShellWriteQueue] and
+ * [ConnectionManager.startShellWriteQueue] for the WHY.
  */
 internal data class SessionPty(
     val name: String,
@@ -125,6 +137,7 @@ internal data class SessionPty(
     val moshSession: MoshSession?,
     val emulator: TerminalSession,
     val outputJob: Job,
+    val writeQueue: ShellWriteQueue,
     val serverIdForRegistry: UUID,
     val serverLabel: String,
 ) {
@@ -134,6 +147,180 @@ internal data class SessionPty(
         }
     }
 }
+
+/**
+ * One step of a queued shell write: wait [delayBeforeMs] (0 = don't),
+ * then push [bytes] at the transport. [ConnectionManager.writeToPty]
+ * wraps every byte burst in a single-step sequence; the SEQUENCE form
+ * exists for the PTT two-phase submit (text → short delay → lone CR),
+ * which must travel as ONE channel element so no concurrently-enqueued
+ * keystroke can land between its steps. Plain class, not data —
+ * ByteArray equals/hashCode are identity-based and nothing compares
+ * steps.
+ */
+internal class PtyWriteStep(
+    val bytes: ByteArray,
+    val delayBeforeMs: Long = 0L,
+)
+
+/**
+ * The per-SHELL FIFO write path (Task #52): an unbounded [Channel]
+ * drained by ONE long-lived coroutine on `Dispatchers.IO` — see
+ * [ConnectionManager.startShellWriteQueue] for the drainer and the
+ * full WHY (ordering by construction; previously one detached launch
+ * per write with no ordering guarantee).
+ *
+ * [enqueue] is fire-and-forget and never suspends: `trySend` on an
+ * UNLIMITED channel only fails after [shutdown], in which case the
+ * write DROPS — exactly what a write aimed at a dead shell must do
+ * (the pre-queue code dropped via the null pty). Backpressure from a
+ * stalled transport accumulates here as buffered elements instead of
+ * as a pile of parked per-write launch coroutines — same memory shape
+ * as before, minus the per-write Job overhead.
+ *
+ * [shutdown] cancels the channel (discarding anything still queued —
+ * stale input must never outlive its shell) and the drainer (aborting
+ * a mid-flight delay/write). Idempotent; both calls are no-ops on an
+ * already-dead queue.
+ */
+internal class ShellWriteQueue(
+    private val channel: Channel<List<PtyWriteStep>>,
+    private val drainer: Job,
+) {
+    fun enqueue(steps: List<PtyWriteStep>) {
+        channel.trySend(steps)
+    }
+
+    fun shutdown() {
+        channel.cancel()
+        drainer.cancel()
+    }
+}
+
+/**
+ * PHASE 2 delay before the lone submit CR on an sshj-backed shell
+ * (see [buildSubmitSequence] for why the CR is a separate write at
+ * all). WHY 75ms: sshd writes each SSH channel packet to the pty as
+ * it is received, so a separate channel write usually surfaces as its
+ * own `read()` on the remote side — but the SSH client/TCP stack may
+ * still coalesce two back-to-back writes into one packet. Anthropic's
+ * own remote-session daemon uses 10ms on a LOCAL pty; 75ms keeps a
+ * comfortable margin for network-path coalescing while staying
+ * imperceptible next to the PTT round-trip.
+ */
+internal const val SSH_SUBMIT_CR_DELAY_MS = 75L
+
+/**
+ * PHASE 2 delay before the lone submit CR on a mosh-backed shell.
+ * WHY 300ms: mosh does not forward keystrokes as they happen — the
+ * client coalesces input into state-sync frames (SEND_INTERVAL_MAX =
+ * 250ms, plus ~8ms collection delay). A CR written less than one full
+ * send interval after the text can be folded into the SAME frame and
+ * re-merge with the text into a single server-side `read()` — exactly
+ * the >=64-byte chunk this two-phase submit exists to avoid. 300ms
+ * clears the 250ms ceiling with margin.
+ */
+internal const val MOSH_SUBMIT_CR_DELAY_MS = 300L
+
+/** DECSET 2004 open/close markers — see [TerminalEmulator.paste]. */
+private const val BRACKETED_PASTE_OPEN = "\u001B[200~"
+private const val BRACKETED_PASTE_CLOSE = "\u001B[201~"
+
+/**
+ * ESC (0x1B) + the C1 control range (0x80–0x9F) — the characters
+ * [com.termux.terminal.TerminalEmulator.paste] strips so pasted text
+ * cannot smuggle escape sequences (most importantly a fake ESC[201~
+ * close marker that would break out of the bracketed wrap).
+ */
+private val ESC_OR_C1 = Regex("[\\u001B\\u0080-\\u009F]")
+
+/**
+ * Replicate [com.termux.terminal.TerminalEmulator.paste]'s
+ * sanitization for the app-built submit sequence, with one deliberate
+ * divergence: line-break handling goes through the v1.3.3
+ * [ANY_LINE_BREAK] collapse (which also folds NEL/VT/FF/LSEP/PSEP
+ * into `\r` — see its KDoc) BEFORE the ESC/C1 strip, so NEL (U+0085,
+ * which is both a C1 char and a line break) becomes a `\r` instead of
+ * being silently deleted. paste() strips first and would lose it.
+ *
+ * The leading/trailing trim is the defensive half of the transcript
+ * trim: [dev.kuch.termx.feature.ptt.PttViewModel] trims what the user
+ * SEES in the Ready card; this trims whatever actually reaches the
+ * submit seam (edited drafts included).
+ */
+internal fun sanitizePtySubmitText(text: String): String =
+    ESC_OR_C1.replace(ANY_LINE_BREAK.replace(text.trim(), "\r"), "")
+
+/**
+ * Build the two-phase line-submit sequence — ONE atomic
+ * [ShellWriteQueue] element of [PtyWriteStep]s:
+ *
+ *   1. the sanitized text, wrapped in ESC[200~ / ESC[201~ when (and
+ *      only when) [bracketedPaste] reports the remote app enabled
+ *      DECSET 2004;
+ *   2. after a transport-sized delay, the LONE submit CR (0x0D).
+ *
+ * WHY two phases (do NOT "simplify" this back into one
+ * `text + "\r"` write — that IS the bug this replaces): Claude Code's
+ * stdin tokenizer only classifies a control character as a `return`
+ * KEYPRESS (submit) when the chunk that arrived in one `read()` is
+ * shorter than 64 chars. In a >=64-char chunk the trailing `\r` stays
+ * embedded in the text run and is inserted into the composer as a
+ * literal newline — no submit. PTT transcripts are almost always
+ * >=64 bytes, which is why the one-buffer send failed "most of the
+ * time" yet short test phrases worked. Verified 2026-06-11 by
+ * de-minifying the Claude Code v2.1.172 binary; the recipe below
+ * mirrors Claude Code's OWN first-party injector (its remote-session
+ * daemon does `pty.write("\x1b[200~"+text+"\x1b[201~")` then
+ * `setTimeout(() => pty.write("\r"), 10)`), and claude-squad / omnara
+ * / herdr all converge on text-then-separate-delayed-CR.
+ *
+ * WHY the bracketed-paste gating is REQUIRED in both directions:
+ * Claude Code always enables DECSET 2004, and the markers make the
+ * insert atomic — inside ESC[200~…ESC[201~ the chunk size ambiguity
+ * disappears entirely. A plain shell that did NOT enable it must get
+ * clean unwrapped text, or the markers land as garbage at the prompt.
+ *
+ * WHY CR and never LF: in Claude Code `\n` is Ctrl+J =
+ * insert-newline BY DESIGN (and raw-mode shells over mosh render LF
+ * without submitting — the v1.1.12 lesson).
+ *
+ * Atomicity: the returned list travels as one channel element, so the
+ * single drainer delivers text → delay → CR with nothing interleaved;
+ * concurrently-enqueued input lands entirely before or after.
+ *
+ * KNOWN FUTURE OPTION (deliberately NOT in v1): verify-and-retry —
+ * watch whether the composer cleared and, if not, send Escape + CR
+ * (covers autocomplete eating the CR, e.g. a leading "/" opening the
+ * command popup). See anthropics/claude-code#15553. A blind retry
+ * would double-submit the common case, so v1 ships without it.
+ */
+internal fun buildSubmitSequence(
+    text: String,
+    bracketedPaste: Boolean,
+    moshBacked: Boolean,
+): List<PtyWriteStep> {
+    val sanitized = sanitizePtySubmitText(text)
+    if (sanitized.isEmpty()) {
+        // Nothing to insert — the submit collapses to a bare Enter.
+        // No delay either: the delay only exists to separate the CR
+        // from a preceding text chunk.
+        return listOf(PtyWriteStep(byteArrayOf(SUBMIT_CR)))
+    }
+    val payload = if (bracketedPaste) {
+        BRACKETED_PASTE_OPEN + sanitized + BRACKETED_PASTE_CLOSE
+    } else {
+        sanitized
+    }
+    val crDelayMs = if (moshBacked) MOSH_SUBMIT_CR_DELAY_MS else SSH_SUBMIT_CR_DELAY_MS
+    return listOf(
+        PtyWriteStep(payload.toByteArray(Charsets.UTF_8)),
+        PtyWriteStep(byteArrayOf(SUBMIT_CR), delayBeforeMs = crDelayMs),
+    )
+}
+
+/** The one byte that means "submit": CR (0x0D). Never LF — see [buildSubmitSequence]. */
+private const val SUBMIT_CR: Byte = 0x0D
 
 /**
  * One server's connection slot, keyed by [serverId] in
@@ -170,6 +357,11 @@ class TermxConnection internal constructor(
      * `extraBufferCapacity = 1` + DROP_OLDEST so a flurry of failures
      * coalesces into one snackbar instead of stacking, and we never
      * suspend the IO coroutine just to deliver an error.
+     *
+     * Since Task #52 the sole emitter is the shell's single write
+     * drainer ([ConnectionManager.startShellWriteQueue]), which also
+     * covers emulator-originated IME bytes — those previously
+     * log-and-dropped on failure with no UI signal.
      */
     internal val mutableWriteErrors = MutableSharedFlow<String>(
         replay = 0,
@@ -469,23 +661,69 @@ class ConnectionManager @Inject constructor(
 
     /**
      * Forward raw bytes to [serverId]'s shell PTY. Used by the
-     * extra-keys toolbar and the Volume-Down=Ctrl binding (via the VM).
+     * extra-keys toolbar, the Volume-Down=Ctrl binding, and PTT sends
+     * (via the VM).
+     *
+     * Fire-and-forget for the caller, FIFO on the wire (Task #52):
+     * every burst is enqueued on the shell's [ShellWriteQueue] and
+     * delivered by its single drainer in exact submission order.
+     * Previously each call fired an independent
+     * `scope.launch(Dispatchers.IO)`, so two rapid writes had NO
+     * ordering guarantee — a latent reorder risk for rapid extra-keys
+     * taps and a hard blocker for the PTT two-phase submit ("text
+     * write, delay, lone CR write" must stay in that order). Failures
+     * surface on the one-slot DROP_OLDEST
+     * [TermxConnection.writeErrors] flow exactly as before. A write
+     * racing teardown drops (no shell, or a shut-down queue, swallows
+     * it) — stale input must never land on a future shell's transport.
      */
     fun writeToPty(serverId: UUID, bytes: ByteArray) {
         if (bytes.isEmpty()) return
         val conn = _connections.value[serverId] ?: return
         val shell = conn.shell ?: return
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                shell.pty?.write(bytes)
-                shell.moshSession?.write(bytes)
-            }.onFailure { t ->
-                Log.w(LOG_TAG, "pty write failed", t)
-                // Best-effort UI signal: don't suspend here, just emit.
-                conn.mutableWriteErrors.tryEmit(
-                    "Send failed — connection may have dropped.",
-                )
-            }
+        shell.writeQueue.enqueue(listOf(PtyWriteStep(bytes)))
+    }
+
+    /**
+     * Two-phase line submit — "type this line and press Enter" as one
+     * atomic write-queue element (the PTT Send path, via the VM).
+     *
+     * Phase 1 delivers the sanitized [text], wrapped in bracketed-paste
+     * markers when the remote app enabled DECSET 2004; phase 2 is the
+     * LONE CR after a transport-sized delay. The full WHY — Claude
+     * Code's <64-char stdin tokenizer rule, the first-party-injector
+     * recipe this mirrors, the delay constants — lives on
+     * [buildSubmitSequence] / [SSH_SUBMIT_CR_DELAY_MS] /
+     * [MOSH_SUBMIT_CR_DELAY_MS]. Do not collapse this back into a
+     * single `writeToPty(text + "\r")` — that is the exact bug this
+     * replaces (PTT Send failing on transcripts >=64 bytes).
+     *
+     * THREADING: the bracketed-paste bit lives on the emulator, and
+     * emulator state is main-thread-confined (PROJECT_KNOWLEDGE §17
+     * item 22) — so the read happens inside a `Main.immediate` launch.
+     * For the UI caller (Compose onClick is already on main) the whole
+     * body runs synchronously inline, preserving the user's action
+     * order; off-main callers get a post. Like [writeToPty] this is
+     * fire-and-forget: a submit racing teardown drops with its shell.
+     *
+     * A null emulator (the session never attached a TerminalView, so
+     * `initializeEmulator` hasn't run) conservatively reads as "no
+     * bracketed paste": clean text is correct for the plain-prompt
+     * case and merely suboptimal for the Claude-Code case, while the
+     * reverse (markers at a bash prompt) would be garbage input.
+     */
+    fun submitLine(serverId: UUID, text: String) {
+        scope.launch(Dispatchers.Main.immediate) {
+            val conn = _connections.value[serverId] ?: return@launch
+            val shell = conn.shell ?: return@launch
+            val bracketed = shell.emulator.emulator?.isBracketedPasteMode == true
+            shell.writeQueue.enqueue(
+                buildSubmitSequence(
+                    text = text,
+                    bracketedPaste = bracketed,
+                    moshBacked = shell.moshSession != null,
+                ),
+            )
         }
     }
 
@@ -703,6 +941,11 @@ class ConnectionManager @Inject constructor(
      */
     private fun teardownMoshShellForFallback(conn: TermxConnection, shell: SessionPty) {
         conn.shell = null
+        // Kill the dead shell's write queue with it: anything queued
+        // against the abandoned mosh attempt must drop, never land on
+        // the ssh shell this same attempt is about to open (see
+        // startShellWriteQueue's LIFECYCLE note).
+        shell.writeQueue.shutdown()
         shell.outputJob.cancel()
         runCatching { shell.moshSession?.close() }
         notifyTabEmulatorFinished(shell.emulator)
@@ -931,6 +1174,75 @@ class ConnectionManager @Inject constructor(
     }
 
     /**
+     * Create the per-shell FIFO write queue: an UNLIMITED [Channel]
+     * drained by ONE long-lived coroutine on [Dispatchers.IO].
+     *
+     * WHY (Task #52): the input direction used to fire an independent
+     * `scope.launch(Dispatchers.IO)` PER WRITE — [writeToPty] and the
+     * emulator's `onInputBytes` callback both — so two rapid writes had
+     * no ordering guarantee. That was a latent reorder risk for ALL
+     * input (rapid extra-keys taps, IME bursts) and a hard blocker for
+     * the PTT two-phase submit, which must deliver "text write, delay,
+     * lone CR write" in strict order. A single drainer consuming one
+     * channel preserves submission order BY CONSTRUCTION and survives
+     * bursts; callers stay fire-and-forget. Both input paths feed the
+     * SAME queue, so there is exactly one total order per shell — and
+     * a multi-step [PtyWriteStep] sequence travels as one channel
+     * element, atomic against every other enqueue (the seam the PTT
+     * submit fix builds on).
+     *
+     * LIFECYCLE — per SHELL, not per connection slot: created in
+     * [openTab]/[openMoshTab] next to the transport handle the [write]
+     * lambda closes over, shut down wherever that shell dies
+     * ([cleanupQuietly], [teardownMoshShellForFallback]). Parking the
+     * queue on the long-lived [TermxConnection] instead would let input
+     * queued against a dead shell land on the NEXT shell's transport
+     * mid-handshake after a reconnect; per-shell, those writes drop —
+     * matching the old per-call behavior where a dead shell meant a
+     * null pty.
+     *
+     * FAILURES: one failed write must not kill the drainer — subsequent
+     * input still flows — and surfaces on the one-slot DROP_OLDEST
+     * [TermxConnection.writeErrors] flow (the v1.1.13 contract). This
+     * also closes an old gap: emulator-originated bytes used to
+     * log-and-drop on failure with no UI signal; they now get the same
+     * snackbar surfacing the extra-keys path had. Cancellation is NOT
+     * reported ([ensureActive] rethrows it): teardown aborting a
+     * mid-flight write is not a user-facing send failure.
+     *
+     * NOTE this is the INPUT direction only. The output byte pumps keep
+     * their suspending-`send` semantics untouched (§17 item 3 — frame
+     * drops corrupt full-screen TUI repaints).
+     */
+    private fun startShellWriteQueue(
+        conn: TermxConnection,
+        write: suspend (ByteArray) -> Unit,
+    ): ShellWriteQueue {
+        val channel = Channel<List<PtyWriteStep>>(Channel.UNLIMITED)
+        val drainer = scope.launch(Dispatchers.IO) {
+            for (steps in channel) {
+                for (step in steps) {
+                    if (step.delayBeforeMs > 0) delay(step.delayBeforeMs)
+                    try {
+                        write(step.bytes)
+                    } catch (t: Throwable) {
+                        // Teardown cancelling a mid-flight write is not a
+                        // user-facing send failure — rethrow, don't report.
+                        coroutineContext.ensureActive()
+                        if (t is CancellationException) throw t
+                        Log.w(LOG_TAG, "pty write failed", t)
+                        // Best-effort UI signal: don't suspend here, just emit.
+                        conn.mutableWriteErrors.tryEmit(
+                            "Send failed — connection may have dropped.",
+                        )
+                    }
+                }
+            }
+        }
+        return ShellWriteQueue(channel, drainer)
+    }
+
+    /**
      * Open the shell PTY, wiring bytes in both directions into a fresh
      * [RemoteTerminalSession], and stash it as [TermxConnection.shell].
      * Caller updates transport state. [attachCommand] is the optional
@@ -945,6 +1257,12 @@ class ConnectionManager @Inject constructor(
             command = attachCommand,
         )
 
+        // Per-shell FIFO input path (Task #52) — created BEFORE the
+        // emulator so IME/hardware-key bytes (onInputBytes) and
+        // extra-keys/PTT bytes (writeToPty) share one total order from
+        // the first keystroke. See startShellWriteQueue.
+        val writeQueue = startShellWriteQueue(conn) { bytes -> channel.write(bytes) }
+
         val sessionClient = SshSessionClient(
             context = appContext,
             onSessionFinished = { finished ->
@@ -957,10 +1275,10 @@ class ConnectionManager @Inject constructor(
         val emulator = RemoteTerminalSession(
             client = sessionClient,
             onInputBytes = { bytes ->
-                scope.launch(Dispatchers.IO) {
-                    runCatching { channel.write(bytes) }
-                        .onFailure { Log.w(LOG_TAG, "pty write failed", it) }
-                }
+                // Through the shared per-shell queue — NOT a per-call
+                // launch — so emulator input cannot reorder against
+                // writeToPty traffic (see startShellWriteQueue).
+                writeQueue.enqueue(listOf(PtyWriteStep(bytes)))
             },
             onResize = { cols, rows ->
                 scope.launch(Dispatchers.IO) {
@@ -991,6 +1309,7 @@ class ConnectionManager @Inject constructor(
             moshSession = null,
             emulator = emulator,
             outputJob = outputJob,
+            writeQueue = writeQueue,
             serverIdForRegistry = conn.serverId,
             serverLabel = conn.serverLabel,
         )
@@ -1023,6 +1342,11 @@ class ConnectionManager @Inject constructor(
         session: MoshSession,
         firstOutput: CompletableDeferred<Unit>,
     ): SessionPty {
+        // Per-shell FIFO input path (Task #52) — same contract as the
+        // sshj wiring in [openTab]; the drainer closes over mosh-client's
+        // stdin instead of the sshj channel.
+        val writeQueue = startShellWriteQueue(conn) { bytes -> session.write(bytes) }
+
         val sessionClient = SshSessionClient(
             context = appContext,
             onSessionFinished = { finished ->
@@ -1035,10 +1359,10 @@ class ConnectionManager @Inject constructor(
         val emulator = MoshRemoteTerminalSession(
             client = sessionClient,
             onInputBytes = { bytes ->
-                scope.launch(Dispatchers.IO) {
-                    runCatching { session.write(bytes) }
-                        .onFailure { Log.w(LOG_TAG, "mosh write failed", it) }
-                }
+                // Through the shared per-shell queue — NOT a per-call
+                // launch — so emulator input cannot reorder against
+                // writeToPty traffic (see startShellWriteQueue).
+                writeQueue.enqueue(listOf(PtyWriteStep(bytes)))
             },
             onResize = { cols, rows ->
                 scope.launch(Dispatchers.IO) {
@@ -1082,6 +1406,7 @@ class ConnectionManager @Inject constructor(
             moshSession = session,
             emulator = emulator,
             outputJob = outputJob,
+            writeQueue = writeQueue,
             serverIdForRegistry = conn.serverId,
             serverLabel = conn.serverLabel,
         )
@@ -1189,6 +1514,11 @@ class ConnectionManager @Inject constructor(
 
     private fun cleanupQuietly(conn: TermxConnection) {
         conn.shell?.let { shell ->
+            // Input queue first: kill the drainer before closing the
+            // transport under it, so a still-queued write can't race the
+            // close into a spurious "Send failed" snackbar. Queued input
+            // dies with its shell — by design (see startShellWriteQueue).
+            shell.writeQueue.shutdown()
             shell.outputJob.cancel()
             runCatching { shell.pty?.close() }
             runCatching { shell.moshSession?.close() }

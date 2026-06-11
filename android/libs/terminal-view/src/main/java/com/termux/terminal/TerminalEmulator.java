@@ -489,6 +489,25 @@ public final class TerminalEmulator {
         return isDecsetInternalBitSet(DECSET_BIT_APPLICATION_KEYPAD);
     }
 
+    /**
+     * termx addition (NOT upstream Termux): whether the remote application enabled
+     * bracketed paste mode (DECSET 2004 — see {@link #paste(String)}).
+     *
+     * WHY: the app-side two-phase line submit (ConnectionManager.submitLine, the PTT
+     * Send path) must build the bracketed-paste-wrapped byte sequence ITSELF so the
+     * whole "text + trailing CR" travels as ONE element on the per-shell write queue.
+     * {@link #paste(String)} cannot be used for that — it issues up to three separate
+     * mSession.write() calls (open marker, text, close marker), each of which becomes
+     * its own queue element, so a concurrently-enqueued keystroke could land between
+     * the pasted text and the submit CR. This read-only accessor lets the app
+     * replicate paste()'s DECSET-2004 gating without giving up atomicity.
+     *
+     * Call on the main thread only — emulator state is main-thread-confined.
+     */
+    public boolean isBracketedPasteMode() {
+        return isDecsetInternalBitSet(DECSET_BIT_BRACKETED_PASTE_MODE);
+    }
+
     public boolean isCursorKeysApplicationMode() {
         return isDecsetInternalBitSet(DECSET_BIT_APPLICATION_CURSOR_KEYS);
     }

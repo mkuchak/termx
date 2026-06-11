@@ -7,7 +7,6 @@ import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
-import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -48,13 +47,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -152,8 +147,20 @@ fun TerminalScreen(
     // First-show-on-entry — once the SSH session reaches Connected the
     // TerminalView is attached and ready. Request focus and pop the IME
     // so the user can type immediately without an extra tap.
+    //
+    // This is THE single focus claim for the terminal (the 2026-06-11
+    // tap-before-type fix). It also covers re-maximize: TerminalSheetHost
+    // wraps the sheet in key(serverId) and unmounts it on minimize, so
+    // every maximize recomposes this screen from scratch and this effect
+    // relaunches even when status is already Connected.
     LaunchedEffect(uiState.status) {
         if (uiState.status == TerminalUiState.Status.Connected) {
+            // Wait one frame so composition (and the AndroidView
+            // attach/layout pass) settles before claiming focus —
+            // requesting focus mid-composition let the IME bind against
+            // a view the window was still rearranging, leaving the
+            // keyboard visible but its input connection dead.
+            withFrameNanos { }
             terminalViewRef.value?.let { v ->
                 v.requestFocus()
                 imm.showSoftInput(v, 0)
@@ -165,6 +172,47 @@ fun TerminalScreen(
         terminalViewRef.value?.let { v ->
             v.requestFocus()
             imm.showSoftInput(v, 0)
+        }
+    }
+
+    // Focus RESTORE (Task #50) — the counterpart to
+    // [showKeyboardOnTerminalTap] for the secondary focus claimants
+    // (the PTT card's text field, the URL/password AlertDialogs). They
+    // take focus legitimately while open but release it to nowhere on
+    // dismissal, leaving keystrokes targeting nothing until a repair
+    // tap. Deliberately requestFocus ONLY — no showSoftInput. A tap on
+    // the terminal is the user saying "I want to type" (force the IME
+    // up); a card/dialog closing says nothing about IME intent, so we
+    // re-point key routing at the terminal and leave IME visibility
+    // exactly as the user had it: if the keyboard is up (e.g. the PTT
+    // compose field popped it), it rebinds to the terminal and typing
+    // continues; if the user had it hidden, it stays hidden.
+    val restoreTerminalFocus: () -> Unit = {
+        terminalViewRef.value?.requestFocus()
+    }
+
+    // PTT-card dismissal → focus return. The Ready card's BasicTextField
+    // is a legitimate focus claimant while open (the keyboard-chip
+    // long-press compose flow DEPENDS on its auto-focus — load-bearing,
+    // do not disturb), but on send/✕/error-dismiss the card vanishes
+    // and focus dies with it. :feature:ptt must not know about terminal
+    // types (module cycle), so instead of widening PttSurface's API
+    // with an onDismissed callback, the host observes the shared VM's
+    // state machine and reacts to the transitions that mean "card
+    // closed": Ready → Idle (Send → consumeSend, ✕ → dismiss) and
+    // Error → Idle (Dismiss → dismiss) — both pinned in
+    // PttViewModelTest. Transitions OUT of Idle (the compose-card
+    // entry, Idle → Ready(requestFocus=true)) can never match, so the
+    // card's auto-focus path is untouched. Recording → Idle is
+    // deliberately excluded: RecordingBody has no focusable field, so
+    // the terminal never lost focus on that path.
+    LaunchedEffect(pttViewModel) {
+        var previous: PttState = pttViewModel.state.value
+        pttViewModel.state.collect { current ->
+            val cardReleasedFocus = current is PttState.Idle &&
+                (previous is PttState.Ready || previous is PttState.Error)
+            if (cardReleasedFocus) restoreTerminalFocus()
+            previous = current
         }
     }
 
@@ -278,11 +326,16 @@ fun TerminalScreen(
                             // itself lives in ExtraKeysBar's pinned trailing
                             // area — the floating FAB is gone (task #39).
                             PttSurface(
-                                onSend = { text, appendNewline ->
-                                    viewModel.writeToPty(
-                                        encodePttPayload(text, appendNewline),
-                                    )
-                                },
+                                // Two-phase submit (Task #53): text →
+                                // transport-sized delay → lone CR, with
+                                // bracketed-paste wrapping when the
+                                // remote app enabled DECSET 2004. NOT
+                                // writeToPty(encodePttPayload(...)) —
+                                // one buffer carrying text+"\r" is the
+                                // exact shape Claude Code's >=64-char
+                                // stdin chunks refuse to submit. See
+                                // ConnectionManager.buildSubmitSequence.
+                                onSend = { text -> viewModel.submitLine(text) },
                                 modifier = Modifier.fillMaxSize(),
                             )
                         } else {
@@ -341,15 +394,43 @@ fun TerminalScreen(
     if (pendingUrl != null) {
         UrlTapConfirmDialog(
             url = pendingUrl,
-            onDismiss = { viewModel.onUrlTapDismissed() },
+            // The AlertDialog is its own window and takes focus while
+            // open; closing it hands focus back to nothing, so we
+            // re-point it at the terminal (Task #50). One path suffices:
+            // the dialog funnels Open through the same onDismiss after
+            // firing the browser intent, so Cancel, scrim/back, and
+            // Open all land here. On Open the browser covers us anyway;
+            // when the user returns, the window regains focus with the
+            // TerminalView already its focus target.
+            onDismiss = {
+                viewModel.onUrlTapDismissed()
+                restoreTerminalFocus()
+            },
         )
     }
 
     uiState.awaitingPassword?.let { info ->
         PasswordPromptDialog(
             serverLabel = info.serverLabel,
+            // No focus restore on confirm — submitPassword retries the
+            // connect, so status walks Disconnected(AwaitingPassword) →
+            // Connecting → Connected, and the LaunchedEffect(uiState
+            // .status) above re-fires on the change TO Connected,
+            // granting focus AND popping the IME (the right call after
+            // a fresh connect). A restore here would race that effect
+            // against a TerminalView that isn't mounted yet.
             onSubmit = { pw -> viewModel.submitPassword(info.serverId, pw) },
-            onDismiss = { viewModel.cancelPasswordPrompt() },
+            // Cancel keeps status at Disconnected, so the Connected
+            // effect never fires — restore explicitly. While the prompt
+            // is up there is normally no mounted TerminalView
+            // (AwaitingPassword maps to status Disconnected, so
+            // ConnectedPane is gone and the ref is null), making this a
+            // defensive no-op today; it matters if the prompt ever
+            // overlays a live terminal (e.g. a future re-auth flow).
+            onDismiss = {
+                viewModel.cancelPasswordPrompt()
+                restoreTerminalFocus()
+            },
         )
     }
 }
@@ -427,10 +508,10 @@ private fun DisconnectedPane(onReconnect: () -> Unit) {
 /**
  * The terminal + extra-keys bar vertical stack. Wraps the
  * [TerminalPane] in a [Column] so the extra-keys bar docks above the
- * IME. Volume-Down-as-Ctrl interception is attached both as a
- * Compose-level [onKeyEvent] and as a native
- * [android.view.View.OnKeyListener] on the [TerminalView] itself so it
- * fires regardless of which child holds focus at the time.
+ * IME. Volume-Down-as-Ctrl interception lives solely on the
+ * [TerminalView]'s native [android.view.View.OnKeyListener] (installed
+ * in [TerminalPane]'s factory) — see the WHY on the [Column] below for
+ * why this composable must NOT carry a focus/key path of its own.
  */
 @Composable
 private fun ConnectedPane(
@@ -447,7 +528,6 @@ private fun ConnectedPane(
     pttRecording: Boolean,
 ) {
     val volState = remember { VolDownState() }
-    val focusRequester = remember { FocusRequester() }
     val fontSizeSp by viewModel.fontSizeSp.collectAsStateWithLifecycle()
     // Hoisted out of ExtraKeysBar so the IME-key path below can read
     // the sticky CTRL/ALT state. Without this hoist, tapping CTRL on
@@ -456,26 +536,21 @@ private fun ConnectedPane(
     // handler. Issue 3, v1.1.13.
     val extraKeysState = dev.kuch.termx.feature.terminal.keys.rememberExtraKeysState()
 
-    LaunchedEffect(Unit) {
-        runCatching { focusRequester.requestFocus() }
-    }
-
+    // WHY no focusRequester/focusable/onKeyEvent on this Column: a
+    // Compose-side focusable here steals view-focus from the embedded
+    // TerminalView after every sheet open — Compose effects dispatch in
+    // tree order, so this pane's focus claim ran AFTER the screen-level
+    // Connected effect and won, AndroidComposeView reclaimed view-focus
+    // from the TerminalView, and the IME restarted its input connection
+    // against the ComposeView (no editable target): keyboard visible but
+    // typing dead until a repair tap (the 2026-06-11 tap-before-type
+    // bug). Vol-Down-as-Ctrl does not need a Compose key path either —
+    // the TerminalView's own setOnKeyListener (TerminalPane factory)
+    // runs the same [handleVolDownAwareKey] whenever the view holds
+    // focus, which the fix guarantees is the steady state. ONE source
+    // of truth: the view.
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .focusRequester(focusRequester)
-            .focusable()
-            .onKeyEvent { event ->
-                handleVolDownAwareKey(
-                    keyCode = event.nativeKeyEvent.keyCode,
-                    native = event.nativeKeyEvent,
-                    isDown = event.type == KeyEventType.KeyDown,
-                    isUp = event.type == KeyEventType.KeyUp,
-                    state = volState,
-                    extraKeysState = extraKeysState,
-                    onWriteToPty = onWriteToPty,
-                )
-            },
+        modifier = Modifier.fillMaxSize(),
     ) {
         TerminalPane(
             session = session,
@@ -509,9 +584,10 @@ private fun ConnectedPane(
 }
 
 /**
- * Shared mutable state for the Vol-Down modifier detector. Held by a
- * `remember {}` in [ConnectedPane] and read from both the Compose
- * `onKeyEvent` handler and the native `TerminalView.setOnKeyListener`.
+ * Mutable state for the Vol-Down modifier detector. Held by a
+ * `remember {}` in [ConnectedPane] and read from the native
+ * `TerminalView.setOnKeyListener` (the single Vol-Down key path — see
+ * the WHY on [ConnectedPane]'s Column).
  */
 private class VolDownState {
     var pressedAtMs: Long = 0L
@@ -899,8 +975,12 @@ private const val VOL_DOWN_PASSTHROUGH_MS = 500L
  * stream. With the widened regex below, any run of mixed line-break
  * codepoints collapses to a single `\r` — the only thing readline +
  * mosh agree means "submit this line."
+ *
+ * `internal` (not private) since Task #53: the live PTT submit path —
+ * `ConnectionManager.sanitizePtySubmitText` — reuses this exact regex
+ * so the two layers can never drift on what counts as a line break.
  */
-private val ANY_LINE_BREAK = Regex("[\\r\\n\\u0085\\u000B\\u000C\\u2028\\u2029]+")
+internal val ANY_LINE_BREAK = Regex("[\\r\\n\\u0085\\u000B\\u000C\\u2028\\u2029]+")
 
 /**
  * Convert a PTT transcript / typed draft into the bytes a PTY expects.
@@ -917,6 +997,15 @@ private val ANY_LINE_BREAK = Regex("[\\r\\n\\u0085\\u000B\\u000C\\u2028\\u2029]+
  * Pure function — no Android, no Compose. Lives at file scope so the
  * unit-test suite (`PttPayloadTest`) can hammer it without spinning
  * up a Robolectric runtime.
+ *
+ * NO LONGER the live Send path (Task #53): PTT Send goes through
+ * `TerminalViewModel.submitLine` → `ConnectionManager.submitLine`,
+ * because appending the CR to the SAME buffer is exactly what broke
+ * Claude Code submits (its stdin tokenizer only treats `\r` as the
+ * Enter KEY in chunks <64 chars — see `buildSubmitSequence`). This
+ * function and its tests (`PttPayloadTest`/`PttPayloadProbeTest`)
+ * stay as the pinned reference for the [ANY_LINE_BREAK] collapse the
+ * submit path's sanitizer shares.
  */
 internal fun encodePttPayload(text: String, appendNewline: Boolean): ByteArray {
     val normalized = ANY_LINE_BREAK.replace(text, "\r")
