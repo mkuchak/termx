@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.1](https://github.com/mkuchak/termx/compare/v1.7.0...v1.7.1) (2026-06-11)
+
+### Bug Fixes
+
+* input reliability — focus without repair taps, ordered PTY writes, PTT two-phase submit ([084441a](https://github.com/mkuchak/termx/commit/084441a14a9cb92f03cc6b558e75a888d8f02c29))
+
 ## [1.7.0](https://github.com/mkuchak/termx/compare/v1.6.0...v1.7.0) (2026-06-10)
 
 ### Features
