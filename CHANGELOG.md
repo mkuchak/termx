@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.3](https://github.com/mkuchak/termx/compare/v1.7.2...v1.7.3) (2026-06-15)
+
+### Bug Fixes
+
+* **ptt:** read language/context settings fresh so they reach Gemini ([e4cec71](https://github.com/mkuchak/termx/commit/e4cec71723c0025ed596e790d6f0602b57c19967))
+
 ## [1.7.2](https://github.com/mkuchak/termx/compare/v1.7.1...v1.7.2) (2026-06-15)
 
 ### Bug Fixes
