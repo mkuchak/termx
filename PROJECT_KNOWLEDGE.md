@@ -635,6 +635,18 @@ on the Error/Disconnected panes. Load-bearing mechanics:
   required), with the keyboard chip + PTT mic pinned in a non-scrolling trailing Row.
   Sticky tri-state behavior and all three sticky-consumer paths unchanged. User-editable layouts
   remain designed-for but not shipped.
+- **Repeat-key gestures fire on RELEASE, never mid-scroll** (`KeyButton`, 2026-06-15 / v1.7.2):
+  the arrow + nav keys (↑↓←→ HOME END PGUP PGDN) sit inside the `horizontalScroll` Row, so they
+  run through `detectTapGestures` — `onTap` fires on release; `onLongPress` (at the platform
+  long-press timeout) fires once then repeats every `LONG_PRESS_REPEAT_MS` (60 ms) until lift;
+  `onPress`'s `tryAwaitRelease` cancels the repeat job. detectTapGestures YIELDS its tap/long-press
+  detection the instant the scroller consumes the drag, so dragging the bar scrolls it and fires
+  ZERO keys — that consumption-based cancellation IS the disambiguation (don't re-implement slop).
+  The pre-fix raw `awaitEachGesture` fired on touch-DOWN and ignored consumption, so every
+  drag-to-scroll leaked a keystroke and a slow drag auto-repeated it (the 2026-06-15 drag-fires-keys
+  bug — gotcha #28); don't regress to fire-on-down. Non-repeat keys (ESC TAB CTRL ALT | ~ \ /) keep
+  `Modifier.clickable`, which already fires on release and yields to the scroller. `MicKey` and the
+  keyboard chip are pinned OUTSIDE the scroll Row and keep their own raw await loops (§5.11/§17 #2).
 - Keyboard chip: tap toggles IME (reads real IME inset, not `isFocused` — that latched), long-press
   opens the PTT compose card (`PttViewModel.composeText`, no-op unless Idle). Uses
   `detectTapGestures` because `combinedClickable.onClick` failed on a real device (cause unknown,
@@ -732,6 +744,21 @@ before removing). Private bytes are `fill(0)`-wiped immediately after the vault 
   detected" instead of injecting hallucinated text into the PTY (v1.1.9). Retry: 3 attempts,
   500/1200 ms ±20% jitter, on 429/5xx/IOException/body-regex `overloaded|unavailable|try again|fetch failed`
   (Gemini sometimes returns 200 + JSON error envelope).
+- **The two prompts are a PORT of push-to-talk** (`github.com/mkuchak/push-to-talk`,
+  `src/main/services/gemini.ts` → `buildPrompt`) and must be re-synced when it evolves — a
+  provenance comment now sits above `buildTranscribePrompt` (the drift below happened precisely
+  because nothing recorded the lineage). The original termx fork had silently DROPPED two
+  load-bearing sentences, re-imported 2026-06-15 (v1.7.2): (a) the numerals rule *"Always use
+  numerals instead of words spelled out."* — the transcript feeds shell commands / Claude Code, so
+  "3000" must not arrive as "three thousand"; (b) the double-attention language/country clamp
+  (*"…double attention(!): you must respect the selected language, both the language and the country
+  of origin — <locale>."*) — stops the output dialect drifting off the selected locale; transcribe
+  clamps the single locale, **translate clamps the TARGET** (not the source). The upstream pins both
+  with E2E tests against real audio on the same `gemini-3.1-flash-lite` model (word→digit; en-US vs
+  en-GB spelling), so they are proven, not speculative. **termx-ONLY** additions the reference lacks,
+  which MUST survive every re-sync: the trailing `NO_SPEECH` guard (v1.1.9) and the `generationConfig`
+  temperature 0.0 / topP 1.0 determinism. Unit tests (`GeminiClientTest`) pin sentence PRESENCE only;
+  the behavioral proof lives in the upstream E2E suite — termx has no audio-fixture harness (§17 #29).
 - **`PttViewModel`**: Idle → Recording → Transcribing(attempt) → Ready(editable draft) →
   consumeSend. **1500 ms minimum duration** before spending an API call (was 250 ms; sub-second
   recordings are gesture races or accidental taps and produce hallucination-bait room tone).
@@ -1222,7 +1249,8 @@ declared but barely used):
   table tests).
 - The former blind spot — no coverage of the broker phone→VPS round-trip — is closed: golden
   fixtures + Go contract tests above, plus `docs/PRE_RELEASE_CHECKLIST.md` item 10 (manual
-  round-trip; keyboard focus is item 11, PTT submit item 12, the biometric item moved to 13).
+  round-trip; keyboard focus is item 11, PTT submit item 12, extra-keys bar gestures item 13, the
+  biometric item moved to 14).
 
 ---
 
@@ -1427,7 +1455,8 @@ UI row flips them yet (router honors them if ever set).
 | termxd 0.1.4 | systemd --user PATH fix for herdr resolution | The PATH gotcha; applies to any future daemon |
 | **v1.6.0** / termxd 0.1.5 (2026-06-07) | mosh side channel (alerts over mosh), companion on-connect update offers, supersede-only-when-deliverable, idle-finish catching, unified rotation | HEAD at the 2026-06-10 full audit |
 | **post-v1.6.0 redesign wave** (2026-06-10, shipped in **v1.7.0**) | 14 tasks: broker return path FIXED (phone writes `.res.json` + allowlist append; §14.1 resolved, golden fixtures + Go contract tests); mosh stderr classification + locale prefix + 3 s first-output liveness gate + truthful fallback surfacing + termxd install preflight; **`ConnectionManager` ownership refactor + lifecycle flip** (sessions survive navigation/backgrounding; explicit disconnect; EOF full-teardown leak fixed); terminal-as-sheet (`terminal/{serverId}` route deleted, notification connect-then-maximize); Moshi-style home with live-thumbnail session cards (reorder/move-to-group/collapse deleted); single-row extra-keys bar with in-bar PTT mic; pill Ready card (Insert button removed) | The state THIS document describes; sections untouched by the wave may carry pre-wave line numbers |
-| **post-v1.7.0 input wave** (2026-06-11, **UNCOMMITTED** at this update) | Tasks #49–53: tap-before-type focus fix (single-source focus — the TerminalView; Compose focus thief + parallel `onKeyEvent` path deleted); per-shell FIFO write queue (`ShellWriteQueue`); PTT two-phase submit (bracketed-paste wrap + delayed lone CR via `submitLine`) | The Claude Code composer contract — §5.11; gotcha #27; checklist items 11–12 |
+| **post-v1.7.0 input wave** (2026-06-11, shipped in **v1.7.1**) | Tasks #49–53: tap-before-type focus fix (single-source focus — the TerminalView; Compose focus thief + parallel `onKeyEvent` path deleted); per-shell FIFO write queue (`ShellWriteQueue`); PTT two-phase submit (bracketed-paste wrap + delayed lone CR via `submitLine`) | The Claude Code composer contract — §5.11; gotcha #27; checklist items 11–12 |
+| **v1.7.2 input/prompt fixes** (2026-06-15) | extra-keys repeat keys (arrows + nav) now fire on RELEASE via `detectTapGestures` — drag-to-scroll no longer leaks/auto-repeats a keystroke (the THIRD latent flaw the v1.7.0 redesign promoted to a daily bug, after tap-before-type and the 64-byte submit rule); Gemini transcription/translation prompts re-synced with the push-to-talk upstream (re-imported the dropped numerals rule + double-attention language clamp) | gotchas #28–29; §5.8 bar gestures, §5.11 prompt provenance; checklist item 13 |
 
 ---
 
@@ -1502,6 +1531,15 @@ The "if you change this without reading its comment, you will reintroduce a ship
     it back into one `text+"\r"` write resurrects the 64-byte paste bug: Claude Code's stdin
     tokenizer only treats `\r` as the Enter key in chunks <64 chars. §5.11 /
     `buildSubmitSequence`.
+28. **Extra-keys repeat keys fire on RELEASE via `detectTapGestures`** — arrows + nav live in a
+    `horizontalScroll` row; the old raw `awaitEachGesture` fired on touch-DOWN and ignored
+    consumption, so every drag-to-scroll leaked a keystroke and a slow drag auto-repeated it
+    (2026-06-15 drag-fires-keys bug). detectTapGestures' consumption-based cancellation IS the
+    disambiguation — never revert to fire-on-down or re-implement slop logic. §5.8.
+29. **`feature/ptt` Gemini prompts are a fork of push-to-talk's** — keep them synced and never drop
+    the numerals rule or the double-attention language clamp (their omission was the 2026-06-15
+    numbers-as-words / language-drift bug). The `NO_SPEECH` guard and `generationConfig`
+    temperature 0.0 are termx-ONLY — keep them on every re-sync. §5.11.
 
 ---
 
@@ -1590,6 +1628,7 @@ ActiveSessionCardModel}.kt` · `feature/terminal/.../TerminalSheetHost.kt` ·
 | 1 s | `TerminalThumbnailRenderer.thumbnails` `periodMs` default | home-card thumbnail poll |
 | 180 dp / 110 dp | `ActiveSessionsRail` `CARD_WIDTH` / `THUMBNAIL_HEIGHT` | session card geometry |
 | 52×40 dp / 24 dp | `ExtraKeysBar` `KEY_WIDTH`×`KEY_HEIGHT` / `EDGE_FADE_WIDTH` | bar key size / fading edge |
+| 60 ms / 300 ms | `ExtraKeysBar` `LONG_PRESS_REPEAT_MS` / `DOUBLE_TAP_WINDOW_MS` | held arrow/nav repeat interval (initial delay now delegated to the platform long-press timeout — `LONG_PRESS_INITIAL_DELAY_MS` removed 2026-06-15) / CTRL·ALT double-tap-to-lock window |
 | 32 dp | `TerminalSheetHost.DRAG_HANDLE_HEIGHT` | the ONLY draggable strip of the sheet |
 | 42 | foreground service notification id | |
 
