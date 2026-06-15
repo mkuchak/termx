@@ -59,7 +59,6 @@ import kotlinx.coroutines.launch
 
 private const val DOUBLE_TAP_WINDOW_MS = 300L
 private const val LONG_PRESS_REPEAT_MS = 60L
-private const val LONG_PRESS_INITIAL_DELAY_MS = 400L
 
 /** Fixed key dimensions — keys keep their size regardless of screen width. */
 private val KEY_WIDTH = 52.dp
@@ -81,9 +80,11 @@ private val EDGE_FADE_WIDTH = 24.dp
  * timestamp: a second tap within [DOUBLE_TAP_WINDOW_MS] upgrades
  * OneShot → Locked.
  *
- * Arrow keys support long-press repeat: after
- * [LONG_PRESS_INITIAL_DELAY_MS] the key re-fires every
- * [LONG_PRESS_REPEAT_MS] until the finger lifts.
+ * Arrow / nav keys fire on RELEASE (not touch-down) so a drag that
+ * scrolls the bar never leaks a keystroke, and they support
+ * long-press repeat: a stationary hold past the platform long-press
+ * timeout re-fires every [LONG_PRESS_REPEAT_MS] until the finger
+ * lifts. See [KeyButton] for the gesture rationale.
  *
  * The mic is wired through plain lambdas ([onPttPressStart] /
  * [onPttRelease] / [onPttCancel] + the [pttRecording] tint flag) so this
@@ -411,28 +412,53 @@ private fun KeyButton(
 
     val scope = rememberCoroutineScope()
 
+    // Repeat-capable keys (arrows + nav) live inside a horizontalScroll
+    // row, so their gesture handling MUST yield to a drag-to-scroll.
+    // detectTapGestures does exactly that: it cancels its own tap /
+    // long-press detection the moment a scrolling ancestor consumes the
+    // pointer, so dragging across the bar scrolls it and fires ZERO keys.
+    //
+    // Behaviour:
+    //   • quick tap  → onTap, fired on RELEASE (not touch-down)
+    //   • drag       → scroller consumes; onTap/onLongPress never fire
+    //   • held still → onLongPress at the platform long-press timeout:
+    //                  fire once, then repeat every LONG_PRESS_REPEAT_MS
+    //                  until the finger lifts (onPress's tryAwaitRelease
+    //                  resumes and cancels the repeat job).
+    //
+    // This deliberately trades the old fire-on-touch-down behaviour (which
+    // ignored consumption and leaked a keystroke on every scroll attempt —
+    // the 2026-06-15 drag-fires-keys bug) for standard tap latency. Do NOT
+    // regress to awaitFirstDown-fires-immediately. Non-repeat keys keep
+    // Modifier.clickable, which already fires on release and yields to the
+    // scroller.
     val gestureModifier = if (supportsRepeat) {
         Modifier.pointerInput(key) {
-            awaitEachGesture {
-                awaitFirstDown(requireUnconsumed = false)
-                // Fire once immediately (same behavior as a tap).
-                onTap(key)
-                var repeatJob: Job? = scope.launch {
-                    delay(LONG_PRESS_INITIAL_DELAY_MS)
-                    while (isActive) {
-                        onRepeatKey(key)
-                        delay(LONG_PRESS_REPEAT_MS)
+            // One reference shared by onLongPress (starts the repeat) and
+            // onPress (stops it). The job's whole life is a single
+            // press→release, so it needn't survive a recomposition.
+            var repeatJob: Job? = null
+            detectTapGestures(
+                onPress = {
+                    // Suspends until the finger lifts (returns true) or the
+                    // scroller claims the drag (returns false). Either way,
+                    // stop repeating — this is the disambiguation that
+                    // keeps a scroll from leaking keystrokes.
+                    tryAwaitRelease()
+                    repeatJob?.cancel()
+                    repeatJob = null
+                },
+                onTap = { onTap(key) },
+                onLongPress = {
+                    onTap(key)
+                    repeatJob = scope.launch {
+                        while (isActive) {
+                            onRepeatKey(key)
+                            delay(LONG_PRESS_REPEAT_MS)
+                        }
                     }
-                }
-                // Wait until all pointers are up (or the gesture is
-                // cancelled by the scroller pulling the pointer away).
-                while (true) {
-                    val event = awaitPointerEvent()
-                    if (event.changes.all { !it.pressed }) break
-                }
-                repeatJob?.cancel()
-                repeatJob = null
-            }
+                },
+            )
         }
     } else {
         Modifier.clickable { onTap(key) }
