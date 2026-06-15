@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.2](https://github.com/mkuchak/termx/compare/v1.7.1...v1.7.2) (2026-06-15)
+
+### Bug Fixes
+
+* **keys:** fire extra-keys repeat keys on release, not on touch-down ([deec648](https://github.com/mkuchak/termx/commit/deec64886465560b18032b4d84aec285802c70c3))
+* **ptt:** restore numerals + language-clamp sentences in Gemini prompts ([464c8d1](https://github.com/mkuchak/termx/commit/464c8d10e22f4b1c62b848abb1f292a63fb21b00))
+
 ## [1.7.1](https://github.com/mkuchak/termx/compare/v1.7.0...v1.7.1) (2026-06-11)
 
 ### Bug Fixes
