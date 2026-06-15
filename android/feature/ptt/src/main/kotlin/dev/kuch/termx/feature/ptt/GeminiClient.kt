@@ -141,17 +141,42 @@ class GeminiClient @Inject constructor(
         return if (ctx.isEmpty()) base else base + contextAppendix(ctx)
     }
 
+    // PROVENANCE — these two builders mirror, sentence for sentence, the
+    // prompts in github.com/mkuchak/push-to-talk (src/main/services/gemini.ts,
+    // function buildPrompt). push-to-talk is the author's desktop dictation
+    // app and the upstream of record for this wording; it E2E-tests the
+    // prompts against real audio on the same model termx uses
+    // (gemini-3.1-flash-lite), so changes there are vetted before they reach
+    // here. Keep these in sync when gemini.ts evolves.
+    //
+    // Two of those sentences are LOAD-BEARING and were missing from the
+    // original termx fork — their absence was exactly two reported bugs
+    // (v1.7.2, 2026-06-15):
+    //   1. "Always use numerals instead of words spelled out." — without it
+    //      Gemini writes "three thousand" where Claude Code wants "3000".
+    //   2. The "double attention(!)" language/country clamp — without it the
+    //      output dialect drifts off the user's selected locale.
+    //
+    // termx DIVERGES from the upstream in two deliberate ways, both of which
+    // must survive any re-sync: (a) the trailing NO_SPEECH_GUARD (termx-only,
+    // v1.1.9 — Gemini hallucinates transcripts from silent audio); (b)
+    // generationConfig temperature 0.0 / topP 1.0 (termx-only determinism,
+    // set in buildRequestPayload). The upstream has neither.
     internal fun buildTranscribePrompt(code: String): String {
         val name = PttLanguage.fullName[code] ?: code
         return "You are a precise transcription assistant. Transcribe the " +
-            "following audio faithfully in $name ($code). Fix any obvious " +
-            "spelling or grammatical errors while preserving the speaker's " +
-            "original meaning, tone, and style. Pay close attention to the " +
-            "speaker's intonation to distinguish questions from statements, " +
-            "and punctuate accordingly. Do not add, remove, or rephrase " +
-            "content beyond error corrections. Output only the corrected " +
-            "transcription, nothing else — no quotes, no labels, no " +
-            "explanation. " + NO_SPEECH_GUARD
+            "following audio faithfully in $name ($code). Attention to the " +
+            "output language, double attention(!): you must respect the " +
+            "selected language, both the language and the country of " +
+            "origin — $name ($code). Fix any obvious spelling or " +
+            "grammatical errors while preserving the speaker's original " +
+            "meaning, tone, and style. Pay close attention to the speaker's " +
+            "intonation to distinguish questions from statements, and " +
+            "punctuate accordingly. Always use numerals instead of words " +
+            "spelled out. Do not add, remove, or rephrase content beyond " +
+            "error corrections. Output only the corrected transcription, " +
+            "nothing else — no quotes, no labels, no explanation. " +
+            NO_SPEECH_GUARD
     }
 
     internal fun buildTranslatePrompt(from: String, to: String): String {
@@ -161,15 +186,19 @@ class GeminiClient @Inject constructor(
         val toShort = PttLanguage.shortName(to)
         return "You are a precise translation assistant. The following audio " +
             "is spoken in $fromName ($from). You MUST translate it into " +
-            "$toName ($to). Even if parts of the audio sound like $toShort, " +
-            "treat the entire input as $fromShort and translate everything " +
-            "to $toShort. Produce a faithful, natural-sounding translation " +
-            "that preserves the speaker's meaning, tone, and intent. Pay " +
-            "close attention to the speaker's intonation to distinguish " +
-            "questions from statements, and punctuate accordingly. Fix any " +
-            "obvious errors. Output ONLY the translated text in $toShort " +
-            "— no quotes, no labels, no explanation, no original " +
-            "$fromShort text. " + NO_SPEECH_GUARD
+            "$toName ($to). Attention to the output language, double " +
+            "attention(!): you must respect the selected language, both " +
+            "the language and the country of origin — $toName ($to). Even " +
+            "if parts of the audio sound like $toShort, treat the entire " +
+            "input as $fromShort and translate everything to $toShort. " +
+            "Produce a faithful, natural-sounding translation that " +
+            "preserves the speaker's meaning, tone, and intent. Pay close " +
+            "attention to the speaker's intonation to distinguish questions " +
+            "from statements, and punctuate accordingly. Always use " +
+            "numerals instead of words spelled out. Fix any obvious errors. " +
+            "Output ONLY the translated text in $toShort — no quotes, no " +
+            "labels, no explanation, no original $fromShort text. " +
+            NO_SPEECH_GUARD
     }
 
     internal fun contextAppendix(ctx: String): String =

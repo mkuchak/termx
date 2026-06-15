@@ -83,6 +83,57 @@ class GeminiClientTest {
         assertNotEquals(transcribe, translate)
     }
 
+    // ---- numerals + language clamp (imported from push-to-talk) ---------
+    // These two sentences are a verbatim port of
+    // github.com/mkuchak/push-to-talk's gemini.ts. Their ABSENCE in the
+    // original termx fork was two user-reported bugs: numbers spelled out
+    // as words, and the output dialect drifting off the selected locale.
+    // These tests can only prove the sentences are PRESENT — the behavioral
+    // proof (word→digit, US vs UK spelling) lives in the upstream's E2E
+    // suite against real audio, which termx has no fixture harness to
+    // replicate.
+
+    @Test fun `transcribe prompt forces numerals over spelled-out words`() {
+        val prompt = client.buildTranscribePrompt("pt-BR")
+        assertTrue(prompt.contains("Always use numerals instead of words spelled out"))
+    }
+
+    @Test fun `transcribe prompt carries the double-attention language clamp`() {
+        val prompt = client.buildTranscribePrompt("pt-BR")
+        assertTrue(prompt.contains("double attention(!)"))
+        // The clamp must name the (single) selected locale.
+        assertTrue(
+            prompt.contains(
+                "you must respect the selected language, both the language " +
+                    "and the country of origin — Brazilian Portuguese (pt-BR)",
+            ),
+        )
+    }
+
+    @Test fun `translate prompt forces numerals over spelled-out words`() {
+        val prompt = client.buildTranslatePrompt(from = "en-US", to = "pt-BR")
+        assertTrue(prompt.contains("Always use numerals instead of words spelled out"))
+    }
+
+    @Test fun `translate clamp targets the TARGET language, not the source`() {
+        // In translation the dialect that must not drift is the OUTPUT one,
+        // so the clamp names the target locale (pt-BR), never the source.
+        val prompt = client.buildTranslatePrompt(from = "en-US", to = "pt-BR")
+        assertTrue(prompt.contains("double attention(!)"))
+        assertTrue(
+            prompt.contains(
+                "you must respect the selected language, both the language " +
+                    "and the country of origin — Brazilian Portuguese (pt-BR)",
+            ),
+        )
+        assertFalse(
+            "translate clamp must target pt-BR, not the en-US source",
+            prompt.contains(
+                "the country of origin — American English (en-US)",
+            ),
+        )
+    }
+
     // ---- context appendix -----------------------------------------------
 
     @Test fun `buildPrompt skips the context appendix when context is blank`() {
