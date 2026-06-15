@@ -5,6 +5,7 @@ import androidx.test.core.app.ApplicationProvider
 import dev.kuch.termx.core.data.prefs.AppPreferences
 import dev.kuch.termx.core.data.prefs.GeminiApiKeyStore
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import java.io.File
@@ -284,6 +285,60 @@ class PttViewModelTest {
             "post-Gemini Ready must NOT auto-focus (the user may want to tap Send, not edit)",
             ready.requestFocus,
         )
+    }
+
+    // ---- language/context routing (v1.7.3 regression) -----------------
+
+    @Test fun `transcribe receives the persisted source, target and context, not the en-US default`() = runBlocking {
+        // Regression for the WhileSubscribed/never-collected StateFlow bug:
+        // PttViewModel used to read source/target/context off stateIn()
+        // StateFlows that nothing ever collects, so .value was stuck at the
+        // install default ("en-US"/"en-US"/"") — every recording ran
+        // transcribe-only in English and Settings was silently ignored
+        // (a Portuguese speaker translating to English got a Portuguese
+        // transcription back). The fix reads the prefs fresh via .first().
+        // This test pins the EXACT values reaching Gemini; with the old
+        // code it fails (transcribe sees en-US/en-US/"").
+        val recorder: AudioRecorder = mockk(relaxed = true)
+        val apiKeyStore: GeminiApiKeyStore = mockk(relaxed = true)
+        val gemini: GeminiClient = mockk(relaxed = true)
+        val prefs: AppPreferences = mockk(relaxed = true) {
+            every { pttSourceLanguage } returns MutableStateFlow("pt-BR")
+            every { pttTargetLanguage } returns MutableStateFlow("en-US")
+            every { pttContext } returns MutableStateFlow("kubectl, k9s")
+        }
+        val audioFile = File.createTempFile("ptt-test", ".m4a").apply {
+            writeText("fake audio bytes")
+            deleteOnExit()
+        }
+        every { recorder.amplitudes } returns MutableStateFlow(emptyList())
+        every { recorder.start(any()) } returns Unit
+        every { recorder.stop() } returns RecordedAudio(file = audioFile, durationMs = 5_000L, amplitudeSamples = emptyList())
+        coEvery { apiKeyStore.get() } returns "fake-api-key"
+        coEvery {
+            gemini.transcribe(any(), any(), any(), any(), any(), any())
+        } returns "list pods in default"
+
+        val vm = newViewModel(
+            audioRecorder = recorder,
+            apiKeyStore = apiKeyStore,
+            geminiClient = gemini,
+            appPreferences = prefs,
+        )
+        vm.startRecording()
+        vm.stopRecordingAndTranscribe()
+        waitForState(vm) { it is PttState.Ready }
+
+        coVerify {
+            gemini.transcribe(
+                apiKey = "fake-api-key",
+                audioFile = any(),
+                sourceLanguage = "pt-BR",
+                targetLanguage = "en-US",
+                context = "kubectl, k9s",
+                onAttempt = any(),
+            )
+        }
     }
 
     // ---- NO_SPEECH sentinel handling ----------------------------------

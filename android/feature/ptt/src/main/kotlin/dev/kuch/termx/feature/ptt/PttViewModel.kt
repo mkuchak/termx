@@ -14,10 +14,9 @@ import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -56,29 +55,17 @@ class PttViewModel @Inject constructor(
     private val _state = MutableStateFlow<PttState>(PttState.Idle)
     val state: StateFlow<PttState> = _state.asStateFlow()
 
-    /** BCP-47 source locale ("en-US"); driven by Settings. */
-    val sourceLanguage: StateFlow<String> = appPreferences.pttSourceLanguage
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5_000),
-            "en-US",
-        )
-
-    /** BCP-47 target locale; equal to [sourceLanguage] = transcribe-only. */
-    val targetLanguage: StateFlow<String> = appPreferences.pttTargetLanguage
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5_000),
-            "en-US",
-        )
-
-    /** Optional domain-context hints appended to every prompt. */
-    val context: StateFlow<String> = appPreferences.pttContext
-        .stateIn(
-            viewModelScope,
-            SharingStarted.WhileSubscribed(5_000),
-            "",
-        )
+    // The PTT language + context selections live in DataStore (driven by
+    // the Settings screen). They are read FRESH from [appPreferences] at
+    // transcribe time (see [stopRecordingAndTranscribe]) rather than cached
+    // in stateIn() StateFlows here. A WhileSubscribed stateIn only hydrates
+    // while something collects it — but nothing in the PTT path or the
+    // terminal host ever observes these values (only [state] is collected),
+    // so .value would have been stuck forever at the install default
+    // "en-US"/"en-US", silently forcing transcribe-only and ignoring every
+    // Settings choice. That was the v1.7.3 "speak Portuguese, get a
+    // Portuguese transcription instead of an English translation" bug —
+    // and the dropped context hints alongside it. See gotcha #30.
 
     private var activeRecordingFile: File? = null
     private var transcribeJob: Job? = null
@@ -134,13 +121,21 @@ class PttViewModel @Inject constructor(
                 if (key.isBlank()) {
                     throw GeminiException("Add your Gemini API key in Settings to use push-to-talk.")
                 }
+                // Read the language + context selections fresh from disk —
+                // see the note on these prefs above. .first() on the
+                // DataStore-backed flow always yields the current persisted
+                // value (DataStore emits on collection), so Settings is
+                // honoured on every recording.
+                val source = appPreferences.pttSourceLanguage.first()
+                val target = appPreferences.pttTargetLanguage.first()
+                val hints = appPreferences.pttContext.first()
                 withContext(Dispatchers.IO) {
                     geminiClient.transcribe(
                         apiKey = key,
                         audioFile = captured.file,
-                        sourceLanguage = sourceLanguage.value,
-                        targetLanguage = targetLanguage.value,
-                        context = context.value,
+                        sourceLanguage = source,
+                        targetLanguage = target,
+                        context = hints,
                         onAttempt = { attempt ->
                             _state.value = PttState.Transcribing(
                                 attempt = attempt,
