@@ -766,6 +766,18 @@ before removing). Private bytes are `fill(0)`-wiped immediately after the vault 
   the IME — the post-Gemini path deliberately doesn't). Gemini transcripts are `trim()`ed before
   Ready (Task #53) so the card shows exactly what Send will submit;
   `ConnectionManager.sanitizePtySubmitText` re-trims edited drafts as the defensive half.
+- **Language + context are read FRESH at transcribe time, not cached** (v1.7.3 fix):
+  `stopRecordingAndTranscribe` reads `appPreferences.pttSourceLanguage / pttTargetLanguage /
+  pttContext` via `.first()` immediately before the Gemini call. They were previously exposed as
+  `stateIn(WhileSubscribed(5000))` StateFlows read one-shot via `.value` — but NOTHING ever collects
+  them (the terminal host observes only `PttViewModel.state`; Settings drives its own
+  `SettingsViewModel`), so the upstream DataStore flow never hydrated and `.value` was permanently
+  the install default `"en-US"`/`"en-US"`/`""`. Net effect: **every** recording ran transcribe-only
+  in American English and ignored Settings (and silently dropped the context hints) — a Portuguese
+  speaker translating to English got a Portuguese transcription back. The per-language
+  transcribe/translate feature (commit `0044083`) was effectively dead-on-arrival; translation never
+  worked until v1.7.3. `GeminiClientTest` pins prompt wording; `PttViewModelTest` now pins the exact
+  source/target/context reaching `transcribe()`. See gotcha #30.
 - **`PttSurface.kt`** (renamed from `PttFab.kt`; Tasks #38/#39) — the floating FAB is deleted;
   the hold-to-record trigger is now `MicKey` inside the extra-keys bar's pinned trailing Row
   (§5.8), driven through `rememberPttStartAction` (the explicit `PttState.Idle` gate that
@@ -1457,6 +1469,7 @@ UI row flips them yet (router honors them if ever set).
 | **post-v1.6.0 redesign wave** (2026-06-10, shipped in **v1.7.0**) | 14 tasks: broker return path FIXED (phone writes `.res.json` + allowlist append; §14.1 resolved, golden fixtures + Go contract tests); mosh stderr classification + locale prefix + 3 s first-output liveness gate + truthful fallback surfacing + termxd install preflight; **`ConnectionManager` ownership refactor + lifecycle flip** (sessions survive navigation/backgrounding; explicit disconnect; EOF full-teardown leak fixed); terminal-as-sheet (`terminal/{serverId}` route deleted, notification connect-then-maximize); Moshi-style home with live-thumbnail session cards (reorder/move-to-group/collapse deleted); single-row extra-keys bar with in-bar PTT mic; pill Ready card (Insert button removed) | The state THIS document describes; sections untouched by the wave may carry pre-wave line numbers |
 | **post-v1.7.0 input wave** (2026-06-11, shipped in **v1.7.1**) | Tasks #49–53: tap-before-type focus fix (single-source focus — the TerminalView; Compose focus thief + parallel `onKeyEvent` path deleted); per-shell FIFO write queue (`ShellWriteQueue`); PTT two-phase submit (bracketed-paste wrap + delayed lone CR via `submitLine`) | The Claude Code composer contract — §5.11; gotcha #27; checklist items 11–12 |
 | **v1.7.2 input/prompt fixes** (2026-06-15) | extra-keys repeat keys (arrows + nav) now fire on RELEASE via `detectTapGestures` — drag-to-scroll no longer leaks/auto-repeats a keystroke (the THIRD latent flaw the v1.7.0 redesign promoted to a daily bug, after tap-before-type and the 64-byte submit rule); Gemini transcription/translation prompts re-synced with the push-to-talk upstream (re-imported the dropped numerals rule + double-attention language clamp) | gotchas #28–29; §5.8 bar gestures, §5.11 prompt provenance; checklist item 13 |
+| **v1.7.3 PTT language routing fix** (2026-06-15) | PTT language + context Settings never reached Gemini: `PttViewModel` read them off `stateIn(WhileSubscribed)` StateFlows that nothing collects, so `.value` was always the `en-US`/`en-US`/`""` default → transcribe-only, Settings ignored since the per-language feature shipped (`0044083`). Now read fresh via `.first()` at transcribe time, so translation (e.g. pt-BR→en-US) works for the first time | gotcha #30; §5.11 PttViewModel; checklist item 12(g) |
 
 ---
 
@@ -1540,6 +1553,14 @@ The "if you change this without reading its comment, you will reintroduce a ship
     the numerals rule or the double-attention language clamp (their omission was the 2026-06-15
     numbers-as-words / language-drift bug). The `NO_SPEECH` guard and `generationConfig`
     temperature 0.0 are termx-ONLY — keep them on every re-sync. §5.11.
+30. **`stateIn(WhileSubscribed)` + a one-shot `.value` read = the default, forever.** Such a
+    StateFlow only starts its upstream while something COLLECTS it; reading `.value` does not
+    subscribe. `PttViewModel` exposed source/target/context as these flows and read `.value` at
+    transcribe time, but nothing ever collected them → `.value` was stuck at the install default and
+    Settings was silently ignored for the entire life of the feature (the v1.7.3 "speak Portuguese,
+    get Portuguese" bug; translation never worked). For a one-shot action that must reflect current
+    persisted state, read the pref directly (`appPreferences.x.first()`) — or use
+    `SharingStarted.Eagerly` only if a genuinely hot StateFlow is needed. §5.11.
 
 ---
 
