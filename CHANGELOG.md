@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.4](https://github.com/mkuchak/termx/compare/v1.7.3...v1.7.4) (2026-06-16)
+
+### Bug Fixes
+
+* **ssh-native:** detecting keepalive + liveness probes on the session ([1adbae3](https://github.com/mkuchak/termx/commit/1adbae3870310c9473b1c313214979fd646c230d))
+* **terminal:** auto-reconnect dropped sessions, probe liveness on resume ([7f52fe2](https://github.com/mkuchak/termx/commit/7f52fe287141aaa50eea5382142718bb94c50fb8))
+
 ## [1.7.3](https://github.com/mkuchak/termx/compare/v1.7.2...v1.7.3) (2026-06-15)
 
 ### Bug Fixes
