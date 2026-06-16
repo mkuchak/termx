@@ -520,8 +520,22 @@ One connection = one `SshSession` (or one `MoshSession`) = one shell = one `Sess
 - **Lifecycle semantics (the flip):** a session ENDS only on explicit Disconnect (terminal
   top-bar button), notification "Disconnect all", remote shell EOF, or a failed connect.
   Back/home/backgrounding/vault-relock NEVER touch transports (steady-state paths are
-  vault-free). Process death is NOT survived (KDoc'd boundary); the 30 s sshj keepalive is the
-  only Doze mitigation.
+  vault-free). Process death is NOT survived (KDoc'd boundary).
+- **Liveness & auto-reconnect (v1.7.4)** — a transport can die silently while backgrounded
+  (server idle-timeout, NAT expiry, IP change), leaving a live UI bound to a dead socket where
+  input vanishes ("frozen after long background"). Three layers recover: (1) a DETECTING sshj
+  keepalive (`SshConnector`, `KeepAliveProvider.KEEP_ALIVE` + `maxAliveCount` — NOT the default
+  HEARTBEAT, which never detects death; gotcha #31) tears a dead link down within ~120 s of
+  foreground use → EOF → `onShellFinished`; (2) an on-resume liveness PROBE
+  (`probeLiveConnectionsOnResume`, wired from the previously-dormant
+  `AppForegroundTracker.isForeground`) round-trips every Connected slot (`SshSession.probe`) on
+  return to foreground — the real cure, since the keepalive is frozen in Doze; (3) an INVOLUNTARY
+  drop from either path triggers bounded best-effort AUTO-RECONNECT (`scheduleAutoReconnect`),
+  falling back to the Disconnected banner / password prompt. A clean logout (remote `exit` —
+  transport stays connected, `SshSession.isTransportAlive` true) is distinguished from a drop and
+  NEVER auto-reconnects. mosh: `MoshSession.probe` is best-effort (process-alive only — a
+  dead-UDP-with-live-client link can't be told from the pty), and a mosh reconnect is a fresh
+  handshake (server-side resync deferred — §18).
 - **Threading:** the connect pipeline launches on `Dispatchers.Main.immediate` — the vendored
   Termux `TerminalSession` constructor binds a no-arg `Handler()` to the constructing thread's
   looper (TerminalSession.java), so `openTab`/`openMoshTab` must run on main. Byte pumps and PTY
@@ -1470,6 +1484,7 @@ UI row flips them yet (router honors them if ever set).
 | **post-v1.7.0 input wave** (2026-06-11, shipped in **v1.7.1**) | Tasks #49–53: tap-before-type focus fix (single-source focus — the TerminalView; Compose focus thief + parallel `onKeyEvent` path deleted); per-shell FIFO write queue (`ShellWriteQueue`); PTT two-phase submit (bracketed-paste wrap + delayed lone CR via `submitLine`) | The Claude Code composer contract — §5.11; gotcha #27; checklist items 11–12 |
 | **v1.7.2 input/prompt fixes** (2026-06-15) | extra-keys repeat keys (arrows + nav) now fire on RELEASE via `detectTapGestures` — drag-to-scroll no longer leaks/auto-repeats a keystroke (the THIRD latent flaw the v1.7.0 redesign promoted to a daily bug, after tap-before-type and the 64-byte submit rule); Gemini transcription/translation prompts re-synced with the push-to-talk upstream (re-imported the dropped numerals rule + double-attention language clamp) | gotchas #28–29; §5.8 bar gestures, §5.11 prompt provenance; checklist item 13 |
 | **v1.7.3 PTT language routing fix** (2026-06-15) | PTT language + context Settings never reached Gemini: `PttViewModel` read them off `stateIn(WhileSubscribed)` StateFlows that nothing collects, so `.value` was always the `en-US`/`en-US`/`""` default → transcribe-only, Settings ignored since the per-language feature shipped (`0044083`). Now read fresh via `.first()` at transcribe time, so translation (e.g. pt-BR→en-US) works for the first time | gotcha #30; §5.11 PttViewModel; checklist item 12(g) |
+| **v1.7.4 frozen-session fix** (2026-06-16) | A session left backgrounded a long time froze on return — input went nowhere, only a manual reconnect recovered it. The process survived (foreground service) but the socket died silently in Doze and nothing detected it: the sshj keepalive was the non-detecting HEARTBEAT provider, a half-open write never throws, and there was no resume probe or auto-reconnect (`AppForegroundTracker` was dormant). Fixed with the detecting KEEP_ALIVE provider + on-resume liveness probe + bounded auto-reconnect on involuntary drops (clean `exit` excluded) | gotcha #31; §5.8 liveness; checklist item 15 |
 
 ---
 
@@ -1561,6 +1576,17 @@ The "if you change this without reading its comment, you will reintroduce a ship
     get Portuguese" bug; translation never worked). For a one-shot action that must reflect current
     persisted state, read the pref directly (`appPreferences.x.first()`) — or use
     `SharingStarted.Eagerly` only if a genuinely hot StateFlow is needed. §5.11.
+31. **sshj keepalive must use `KEEP_ALIVE`, not the default `HEARTBEAT` — and a half-open write
+    never throws.** `DefaultConfig` defaults to `KeepAliveProvider.HEARTBEAT`, a `Heartbeater`
+    that fires `SSH_MSG_IGNORE` fire-and-forget: it warms the NAT pinhole but tracks no replies and
+    NEVER tears a dead link down. Only `KeepAliveProvider.KEEP_ALIVE` (`KeepAliveRunner` +
+    `maxAliveCount`) throws `CONNECTION_LOST` on silence. That mismatch was the v1.7.4
+    frozen-after-background bug — the keepalive was the intended fix and silently did nothing. Two
+    corollaries: (a) the keepalive thread is FROZEN during Doze, so a screen-off death is caught not
+    by it but by the on-resume probe (`ConnectionManager.probeLiveConnectionsOnResume`); (b) a
+    half-open TCP write succeeds into the kernel buffer and does NOT throw, so input is silently
+    swallowed and `writeErrors` never fires — never rely on a write error to detect a dead link.
+    §5.8, `SshConnector`.
 
 ---
 
@@ -1573,6 +1599,13 @@ From `docs/ROADMAP.md` "explicitly deferred past v1.0" + observed TODOs, still o
 - ~~**Permission broker server half**~~ — DONE 2026-06-10 (phone-side `.res.json` writes; §14.1).
 - Supervised relaunch of the **mosh side channel** after transport death (documented limitation in
   `ConnectionManager.startMoshSideChannel`) — STILL OPEN; the wave moved the code, not the gap.
+- NEW follow-up (v1.7.4): **true mosh session resume** — a dropped mosh-backed session reconnects
+  with a FRESH `mosh-server new` handshake, losing the server-side session (screen/scrollback/running
+  process). mosh-server keeps the session alive server-side, so relaunching mosh-client against the
+  existing MOSH_KEY/port could resync it (real continuation, what mosh was built for). Deliberately
+  deferred from the v1.7.4 freeze fix (the user chose "treat mosh like SSH for now"); needs a
+  feasibility spike on mosh-server timeout + key reuse. The v1.7.4 liveness/auto-reconnect work also
+  can't reliably probe a dead-UDP mosh link (`MoshSession.probe` is process-alive only).
 - ~~The "Server-ownership refactor"~~ — SHIPPED as `ConnectionManager` (Task #42/#43). What
   remains deferred is **process-death session resurrection**: the manager's KDoc explicitly
   scopes it out (swipe-kill/OOM/force-stop drop every transport, no resurrection on relaunch).
@@ -1630,7 +1663,9 @@ ActiveSessionCardModel}.kt` · `feature/terminal/.../TerminalSheetHost.kt` ·
 | 8 s | `ConnectionManager.MOSH_HANDSHAKE_TIMEOUT_MS` | mosh race before sshj fallback |
 | 3 s | `ConnectionManager.MOSH_FIRST_OUTPUT_TIMEOUT_MS` | mosh first-output liveness gate (catches firewalled UDP) |
 | 2 s | `MOSH_EARLY_EXIT_WINDOW_MS` (`ConnectionManager` + `MoshSessionImpl`) | exit < this = startup failure |
-| 30 s | `SshConnector.KEEPALIVE_INTERVAL_SECONDS` | sshj keepalive |
+| 30 s | `SshConnector.KEEPALIVE_INTERVAL_SECONDS` | sshj keepalive interval |
+| 4 | `SshConnector.KEEPALIVE_MAX_COUNT` | unanswered keepalive probes before `CONNECTION_LOST` (30 s × 4 ≈ 120 s detection); requires the detecting `KEEP_ALIVE` provider — gotcha #31 |
+| 5 s / 3 / 60 s | `ConnectionManager` `RESUME_PROBE_TIMEOUT_MS` / `MAX_AUTO_RECONNECTS` / `AUTO_RECONNECT_WINDOW_MS` | on-resume liveness-probe round-trip budget / bounded auto-reconnect retries / window after which the retry counter resets |
 | 100 ms / 30 s | `hook_pretooluse.go` | approval poll interval / default-deny ceiling |
 | 10 s / 2 s | `hooks.go` | long-command / error-command event thresholds |
 | 5 MiB | `events.go DefaultRotateBytes` | event log rotation |

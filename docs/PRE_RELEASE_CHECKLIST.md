@@ -73,3 +73,8 @@ gh run download <id> --name termx-debug-<sha> --dir /tmp && adb install /tmp/app
 - Click-path: Unlock via biometric. Background the app for 6 min. Foreground.
 - Expected: biometric prompt reappears before the server list is accessible.
 - Cadence: quarterly — skip on every release; otherwise this doc bloats.
+
+## 15. Session survives long background
+- Click-path: connect to a server and leave an active session on screen. Background the app and leave it for several minutes (10+; a real Doze window is best — screen off, stationary). To force the drop deterministically instead, toggle airplane mode on for ~30 s (or `kill` the sshd connection server-side / drop the network). Return to the app and type.
+- Expected: the session becomes usable again — it AUTO-RECONNECTS silently (brief connecting spinner → Connected), or, if it can't, shows a Disconnected banner with a Reconnect button (or the password prompt for password-auth servers). It must NEVER silently freeze with input going nowhere. A deliberate `exit` typed in the shell must still end the session (it must NOT auto-reconnect a logout).
+- Would have caught: the v1.7.4 frozen-session bug — the socket died in Doze, the non-detecting HEARTBEAT keepalive never noticed, a half-open write swallowed input with no error, and nothing probed or reconnected on resume (`AppForegroundTracker` was dormant). Fixed by the detecting KEEP_ALIVE provider + on-resume liveness probe + bounded auto-reconnect (§5.8).
