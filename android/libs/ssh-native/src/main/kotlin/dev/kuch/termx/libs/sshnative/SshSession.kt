@@ -39,4 +39,24 @@ interface SshSession : AutoCloseable {
 
     /** Suspending alias of [close] — prefer this from coroutines. */
     suspend fun closeAsync()
+
+    /**
+     * Passive: is the underlying SSH transport still connected? Cheap, no
+     * round-trip. After a clean channel close (the remote shell ran
+     * `exit`) the transport stays up → `true`; after a transport death
+     * (keepalive `CONNECTION_LOST`, TCP RST) it is down → `false`. Lets a
+     * caller tell a deliberate logout from an involuntary drop. Defaults
+     * to `true` so fakes that don't model it read as alive.
+     */
+    fun isTransportAlive(): Boolean = true
+
+    /**
+     * Active liveness probe: a bounded round-trip to the server. `true` =
+     * a reply came back within [timeoutMs]; `false` = it timed out or the
+     * transport is dead. Used on app resume to catch a socket that died
+     * silently while backgrounded (the keepalive thread is frozen during
+     * Doze and produces no EOF until poked). Defaults to `true` so fakes
+     * that don't model it read as alive.
+     */
+    suspend fun probe(timeoutMs: Long = 5_000L): Boolean = true
 }

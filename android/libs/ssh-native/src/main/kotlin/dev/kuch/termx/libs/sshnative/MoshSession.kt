@@ -42,6 +42,16 @@ interface MoshSession : AutoCloseable {
      */
     val diagnostic: StateFlow<MoshDiagnostic>
 
+    /**
+     * Best-effort liveness: is the mosh-client child still running? A dead
+     * UDP path with a still-running mosh-client can't be told apart from a
+     * healthy idle one through the pty, so this only catches a process
+     * that already exited (which also EOFs [output] and is handled there).
+     * Detecting a silently-dead UDP link is a deferred follow-up. Defaults
+     * to `true` so fakes that don't model it read as alive.
+     */
+    suspend fun probe(): Boolean = true
+
     override fun close()
 }
 

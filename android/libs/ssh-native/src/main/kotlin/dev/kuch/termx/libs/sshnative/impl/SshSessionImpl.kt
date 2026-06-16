@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.channel.direct.PTYMode
 
@@ -94,4 +95,32 @@ internal class SshSessionImpl(
     }
 
     override suspend fun closeAsync() = withContext(Dispatchers.IO) { close() }
+
+    /**
+     * Passive — sshj flips `isConnected` to false the moment the transport
+     * dies (keepalive `CONNECTION_LOST`, RST), but keeps it true when only
+     * a channel closed (remote `exit`). See [SshSession.isTransportAlive].
+     */
+    override fun isTransportAlive(): Boolean = !closed && client.isConnected
+
+    /**
+     * Authoritative bounded round-trip: a trivial remote exec. A half-open
+     * socket never returns the channel-open reply, so [withTimeoutOrNull]
+     * elapses and we report dead. Reuses the well-tested exec path rather
+     * than poking sshj's keepalive internals. See [SshSession.probe].
+     */
+    override suspend fun probe(timeoutMs: Long): Boolean = withContext(Dispatchers.IO) {
+        if (closed || !client.isConnected) return@withContext false
+        withTimeoutOrNull(timeoutMs) {
+            runCatching {
+                val exec = openExec("true")
+                try {
+                    exec.exitCode.await()
+                } finally {
+                    runCatching { exec.close() }
+                }
+                true
+            }.getOrDefault(false)
+        } ?: false
+    }
 }

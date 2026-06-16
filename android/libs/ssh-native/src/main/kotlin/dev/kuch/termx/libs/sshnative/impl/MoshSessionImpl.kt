@@ -95,6 +95,14 @@ internal class MoshSessionImpl(
         // channelFlow unwind so the collector completes cleanly.
     }.flowOn(Dispatchers.IO)
 
+    /**
+     * Best-effort: the child is alive while it hasn't exited. A dead UDP
+     * path with a still-running mosh-client is indistinguishable through
+     * the pty, so this can't catch that case (deferred follow-up). See
+     * [MoshSession.probe].
+     */
+    override suspend fun probe(): Boolean = !closed && _diagnostic.value.exitCode == null
+
     override suspend fun write(bytes: ByteArray): Unit = withContext(Dispatchers.IO) {
         // We used to swallow IOException here and only log it. That made
         // the symptom from v1.1.12 invisible: when the mosh-client pipe
