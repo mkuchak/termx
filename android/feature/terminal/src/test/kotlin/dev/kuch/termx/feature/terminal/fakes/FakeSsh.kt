@@ -59,6 +59,24 @@ open class FakeSshSession : SshSession {
     val sftpRenames = CopyOnWriteArrayList<Pair<String, String>>()
     val closed = AtomicInteger(0)
 
+    /**
+     * Liveness controls for the v1.7.4 auto-reconnect/resume-probe tests.
+     * Default ALIVE so existing tests (clean-exit EOF, etc.) keep treating
+     * a finished shell as a deliberate logout (no auto-reconnect). Flip
+     * [transportAlive] to model a dropped transport at onShellFinished, or
+     * [probeResult] to model a failed on-resume probe.
+     */
+    @Volatile var transportAlive: Boolean = true
+    @Volatile var probeResult: Boolean = true
+    val probeCount = AtomicInteger(0)
+
+    override fun isTransportAlive(): Boolean = transportAlive
+
+    override suspend fun probe(timeoutMs: Long): Boolean {
+        probeCount.incrementAndGet()
+        return probeResult
+    }
+
     override suspend fun openShell(
         term: String,
         cols: Int,

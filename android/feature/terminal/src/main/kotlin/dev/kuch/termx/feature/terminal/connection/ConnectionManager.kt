@@ -7,6 +7,7 @@ import com.termux.terminal.RemoteTerminalSession
 import com.termux.terminal.TerminalSession
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dev.kuch.termx.core.data.prefs.AlertPreferences
+import dev.kuch.termx.core.data.prefs.AppForegroundTracker
 import dev.kuch.termx.core.data.prefs.PasswordCache
 import dev.kuch.termx.core.data.remote.CompanionUpdateRepository
 import dev.kuch.termx.core.data.remote.EventStreamRepository
@@ -56,6 +57,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -421,6 +423,17 @@ class TermxConnection internal constructor(
     internal var sideSession: SshSession? = null
 
     internal var connectJob: Job? = null
+
+    /**
+     * Bounded auto-reconnect bookkeeping for involuntary-drop recovery
+     * (keepalive death / failed resume probe). The counter caps retries
+     * within [ConnectionManager.AUTO_RECONNECT_WINDOW_MS] so a flapping
+     * link can't spin; it resets on a successful Connected transition and
+     * when the window since the last attempt elapses. See
+     * [ConnectionManager.scheduleAutoReconnect].
+     */
+    internal var autoReconnectAttempts: Int = 0
+    internal var lastAutoReconnectAtMs: Long = 0L
 }
 
 /**
@@ -462,13 +475,26 @@ class TermxConnection internal constructor(
  * collectors therefore live HERE (see `init`), not in a ViewModel —
  * they must work with zero screens alive.
  *
+ * LIVENESS & AUTO-RECONNECT (v1.7.4). A transport can die silently while
+ * backgrounded (server idle-timeout, NAT mapping expiry, IP change),
+ * leaving a live UI bound to a dead socket where input vanishes. Three
+ * layers recover from that: (1) a DETECTING sshj keepalive
+ * (`SshConnector`, `KEEP_ALIVE` provider) tears a dead link down within
+ * ~120s of foreground use → EOF → [onShellFinished]; (2) an on-resume
+ * liveness PROBE ([probeLiveConnectionsOnResume]) round-trips every live
+ * slot when the app returns to the foreground, since the keepalive is
+ * frozen during Doze; (3) an INVOLUNTARY drop from either path triggers
+ * best-effort AUTO-RECONNECT ([scheduleAutoReconnect], bounded), falling
+ * back to the Disconnected banner / password prompt. A deliberate logout
+ * (remote `exit` — transport stays connected) is distinguished from a
+ * drop ([SshSession.isTransportAlive]) and never auto-reconnects.
+ *
  * KNOWN BOUNDARY — PROCESS DEATH IS NOT SURVIVED. Swipe-kill, OOM kill,
  * or force-stop drops every transport; there is no resurrection on the
  * next launch (the "process-death session resurrection" roadmap item).
- * No Doze-special engineering either: the existing 30s sshj keepalive
- * (`SshConnector`) is the mitigation that keeps an idle link alive
- * through short app-standby windows, and mosh-backed sessions tolerate
- * roaming/idle natively.
+ * mosh-backed sessions tolerate roaming/idle natively, but termx does not
+ * yet leverage mosh-server resync on reconnect (deferred follow-up), so a
+ * mosh reconnect is a fresh handshake.
  *
  * THREADING: the connect pipeline is launched on
  * `Dispatchers.Main.immediate` — NOT the scope's default dispatcher —
@@ -493,6 +519,10 @@ class ConnectionManager @Inject constructor(
     private val companionUpdateRepository: CompanionUpdateRepository,
     private val moshClient: MoshClient,
     private val sshClient: SshClient,
+    // Defaulted so the Mosh*Test construction sites compile unchanged;
+    // Hilt still provides the @Singleton instance in production. The
+    // resume-liveness collector (init) reads its foreground edge.
+    private val appForegroundTracker: AppForegroundTracker = AppForegroundTracker(),
 ) {
 
     /**
@@ -528,6 +558,20 @@ class ConnectionManager @Inject constructor(
             reconnectBroker.requests.collect { serverId ->
                 disconnect(serverId)
                 connect(serverId.takeUnless { it == FALLBACK_SERVER_ID })
+            }
+        }
+        // On returning to the foreground, actively probe each live
+        // connection. The sshj keepalive is frozen during Doze, so a
+        // socket that died while the app was backgrounded is invisible
+        // (no EOF) until we round-trip it; a failed probe is an
+        // involuntary drop → teardown + best-effort auto-reconnect. Acts
+        // only on the false→true edge (an actual resume), not the initial
+        // seed. See [probeLiveConnectionsOnResume].
+        scope.launch {
+            var wasForeground = false
+            appForegroundTracker.isForeground.collect { foreground ->
+                if (foreground && !wasForeground) probeLiveConnectionsOnResume()
+                wasForeground = foreground
             }
         }
     }
@@ -827,6 +871,7 @@ class ConnectionManager @Inject constructor(
                     } != null
                     if (live) {
                         touchLastConnected(server.id)
+                        conn.autoReconnectAttempts = 0
                         conn.mutableState.value = TransportState.Connected(
                             session = shell.emulator,
                             moshBacked = true,
@@ -895,6 +940,7 @@ class ConnectionManager @Inject constructor(
 
         val shell = openTab(conn, attachCommand = startup)
         server?.id?.let { touchLastConnected(it) }
+        conn.autoReconnectAttempts = 0
         conn.mutableState.value = TransportState.Connected(
             session = shell.emulator,
             moshBacked = false,
@@ -1163,6 +1209,16 @@ class ConnectionManager @Inject constructor(
      */
     private fun onShellFinished(conn: TermxConnection, finished: TerminalSession) {
         if (conn.shell?.emulator !== finished) return
+        // Tell a deliberate logout (remote `exit`/agent-done — the SSH
+        // transport stays connected, only the channel closed) from an
+        // INVOLUNTARY drop (keepalive CONNECTION_LOST, RST — the transport
+        // is dead). Captured BEFORE cleanupQuietly closes the session.
+        // Only an involuntary drop earns an auto-reconnect; a deliberate
+        // logout must stay Disconnected. mosh shells (sshSession == null)
+        // only reach here on a mosh-client PROCESS exit, treated as
+        // voluntary — a dead-UDP mosh link produces no EOF here and is
+        // caught by the resume probe instead.
+        val involuntary = conn.sshSession?.let { !it.isTransportAlive() } ?: false
         cleanupQuietly(conn)
         // Keep an Error written by the mosh early-exit post-mortem (the
         // pump's diagnostic branch) — under the old flat UiState the
@@ -1171,6 +1227,106 @@ class ConnectionManager @Inject constructor(
         conn.mutableState.update {
             if (it is TransportState.Error) it else TransportState.Disconnected
         }
+        if (involuntary) scheduleAutoReconnect(conn)
+    }
+
+    /**
+     * Best-effort auto-reconnect after an INVOLUNTARY drop — a transport
+     * death surfaced by the keepalive's EOF ([onShellFinished]) or the
+     * on-resume liveness probe ([handleInvoluntaryDrop]). The chosen UX is
+     * "reconnect automatically, banner on fail": dial again silently and,
+     * if it can't, leave the slot in its Disconnected/Error/AwaitingPassword
+     * state so the existing banner + Reconnect button (or password prompt)
+     * takes over.
+     *
+     * Bounded to [MAX_AUTO_RECONNECTS] attempts within
+     * [AUTO_RECONNECT_WINDOW_MS] so a flapping link can't spin; the counter
+     * resets on a Connected transition and when the window since the last
+     * attempt elapses. NEVER called for a user-initiated [disconnect]:
+     * those tear down and stay down by design.
+     */
+    private fun scheduleAutoReconnect(conn: TermxConnection) {
+        val now = System.currentTimeMillis()
+        if (now - conn.lastAutoReconnectAtMs > AUTO_RECONNECT_WINDOW_MS) {
+            conn.autoReconnectAttempts = 0
+        }
+        if (conn.autoReconnectAttempts >= MAX_AUTO_RECONNECTS) {
+            conn.mutableTransportNotices.tryEmit("Reconnect failed — tap to retry.")
+            return
+        }
+        conn.autoReconnectAttempts++
+        conn.lastAutoReconnectAtMs = now
+        conn.mutableTransportNotices.tryEmit("Connection dropped — reconnecting…")
+        // bind-if-alive no-ops if something already redialed; the slot is
+        // Disconnected here, so this dials. connect() owns the Connecting →
+        // Connected/Error/AwaitingPassword transitions and the fallback
+        // surfacing. persistedServerId is null only on the test-server path
+        // (where the slot key is FALLBACK_SERVER_ID), which connect(null)
+        // resolves back to the same slot.
+        connect(conn.persistedServerId)
+    }
+
+    /**
+     * On app foreground, actively round-trip each Connected slot to catch
+     * a transport that died silently while backgrounded (Doze freezes the
+     * keepalive, so a dead socket produces no EOF until poked). A failed
+     * probe is an involuntary drop → full teardown + auto-reconnect.
+     * Probes run off the main thread; the teardown hops back to main
+     * because emulator state is main-confined.
+     */
+    private fun probeLiveConnectionsOnResume() {
+        scope.launch(Dispatchers.IO) {
+            _connections.value.values.forEach { conn ->
+                if (conn.state.value !is TransportState.Connected) return@forEach
+                if (isShellAlive(conn)) return@forEach
+                withContext(Dispatchers.Main.immediate) {
+                    // Re-check on main: a concurrent disconnect()/EOF may
+                    // have moved the slot while the probe was in flight.
+                    if (conn.state.value is TransportState.Connected) {
+                        handleInvoluntaryDrop(conn)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Active liveness of a slot's live shell. SSH: a bounded round-trip on
+     * the session ([SshSession.probe]); a half-open socket never replies →
+     * false. mosh: best-effort process-alive check ([MoshSession.probe]) —
+     * a dead UDP path with a live mosh-client can't be told apart from a
+     * healthy idle one here, so mosh effectively can't be probed for UDP
+     * death (deferred follow-up; the mosh side channel is not the
+     * terminal's liveness). Returns false when there's no shell.
+     */
+    private suspend fun isShellAlive(conn: TermxConnection): Boolean {
+        val shell = conn.shell ?: return false
+        val mosh = shell.moshSession
+        return if (mosh != null) {
+            mosh.probe()
+        } else {
+            conn.sshSession?.probe(RESUME_PROBE_TIMEOUT_MS) ?: true
+        }
+    }
+
+    /**
+     * Tear a slot down because a resume probe found its transport dead,
+     * then auto-reconnect. Mirror of [disconnect]'s teardown routed into
+     * [scheduleAutoReconnect] (unlike [disconnect], which is voluntary and
+     * never reconnects). Runs on the main thread.
+     */
+    private fun handleInvoluntaryDrop(conn: TermxConnection) {
+        conn.connectJob?.cancel()
+        conn.connectJob = null
+        cleanupQuietly(conn)
+        conn.mutableState.update {
+            if (it is TransportState.Error || it is TransportState.AwaitingPassword) {
+                it
+            } else {
+                TransportState.Disconnected
+            }
+        }
+        scheduleAutoReconnect(conn)
     }
 
     /**
@@ -1608,6 +1764,28 @@ class ConnectionManager @Inject constructor(
          * the UI post-mortem agree on what counts as "immediate".
          */
         const val MOSH_EARLY_EXIT_WINDOW_MS: Long = 2_000L
+
+        /**
+         * Bounded round-trip budget for the on-resume SSH liveness probe
+         * ([probeLiveConnectionsOnResume] → [SshSession.probe]). A healthy
+         * link answers in ~1 RTT; a half-open socket never replies, so we
+         * give up and declare it dead after this.
+         */
+        const val RESUME_PROBE_TIMEOUT_MS: Long = 5_000L
+
+        /**
+         * Max consecutive auto-reconnects within [AUTO_RECONNECT_WINDOW_MS]
+         * before giving up and leaving the banner (see
+         * [scheduleAutoReconnect]) — the flapping-link guard.
+         */
+        const val MAX_AUTO_RECONNECTS = 3
+
+        /**
+         * A drop more than this long after the last auto-reconnect attempt
+         * resets the attempt counter — a connection that stayed healthy for
+         * a while earns a fresh budget on its next drop.
+         */
+        const val AUTO_RECONNECT_WINDOW_MS: Long = 60_000L
 
         /**
          * Stable sentinel UUID for BuildConfig test-server connections

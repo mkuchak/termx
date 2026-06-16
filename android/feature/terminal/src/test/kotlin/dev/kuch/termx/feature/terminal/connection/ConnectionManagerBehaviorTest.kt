@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Looper
 import androidx.test.core.app.ApplicationProvider
 import dev.kuch.termx.core.data.prefs.AlertPreferences
+import dev.kuch.termx.core.data.prefs.AppForegroundTracker
 import dev.kuch.termx.core.data.prefs.PasswordCache
 import dev.kuch.termx.core.data.remote.EventStreamRepository
 import dev.kuch.termx.core.data.session.EventStreamHub
@@ -144,6 +145,7 @@ class ConnectionManagerBehaviorTest {
         moshClient: MoshClient? = null,
         secretVault: FakeSecretVault = FakeSecretVault(),
         passwordCache: PasswordCache = PasswordCache().apply { put(serverId, "pw") },
+        foregroundTracker: AppForegroundTracker = AppForegroundTracker(),
     ): ConnectionManager = ConnectionManager(
         appContext = appContext,
         serverRepository = servers,
@@ -158,6 +160,7 @@ class ConnectionManagerBehaviorTest {
         companionUpdateRepository = mockk(relaxed = true),
         moshClient = moshClient ?: FakeMoshClient(appContext, sshClient, session = null),
         sshClient = sshClient,
+        appForegroundTracker = foregroundTracker,
     ).also { mainRule.track(it) }
 
     /**
@@ -656,5 +659,139 @@ class ConnectionManagerBehaviorTest {
         // Registry + hub repopulated under the same key.
         assertEquals(setOf(serverId to "shell"), registry.entries.value.keys)
         assertEquals(setOf(serverId), hub.clients.value.keys)
+    }
+
+    // ── (9) involuntary drop (transport dead) on EOF → AUTO-RECONNECT ──
+    //
+    // v1.7.4: when the detecting keepalive declares a half-open link dead,
+    // the channel EOFs while the SSH transport is already down. That is an
+    // INVOLUNTARY drop (not a deliberate `exit`), so the manager must dial
+    // a fresh transport on its own and land back on Connected — no user
+    // tap. Distinguished from a clean exit by SshSession.isTransportAlive.
+    @Test
+    fun involuntaryDrop_transportDead_autoReconnectsToFreshTransport() {
+        val sshClient = object : FakeSshClient() {
+            override fun newSession(): FakeSshSession = EofSshSession()
+        }
+        val servers = FakeServerRepository().apply { put(server()) }
+        val manager = newManager(servers, EventStreamHub(), SessionRegistry(), sshClient)
+
+        val conn = manager.connect(serverId)
+        waitUntil { conn.state.value is TransportState.Connected }
+        val firstSession = sshClient.sessions.single() as EofSshSession
+
+        // Model a transport DEATH (not a clean logout): the SSH transport
+        // is already dead by the time the shell channel EOFs.
+        firstSession.transportAlive = false
+        firstSession.shellPty.eof.complete(Unit)
+
+        // The drop is involuntary → auto-reconnect dials a fresh transport
+        // and returns to Connected with no user action.
+        waitUntil { sshClient.sessions.size == 2 && conn.state.value is TransportState.Connected }
+        assertEquals("involuntary drop must auto-reconnect", 2, sshClient.connectCount.get())
+        assertTrue(conn.state.value is TransportState.Connected)
+        assertNotSame("auto-reconnect must dial a fresh transport", firstSession, sshClient.sessions[1])
+    }
+
+    // ── (10) clean remote exit (transport alive) → NO auto-reconnect ──
+    //
+    // The mirror of (9): a deliberate `exit`/agent-done closes only the
+    // channel; the SSH transport stays connected. That must stay
+    // Disconnected — auto-reconnecting a logout would make sessions
+    // impossible to end.
+    @Test
+    fun cleanExit_transportAlive_doesNotAutoReconnect() {
+        val sshClient = object : FakeSshClient() {
+            override fun newSession(): FakeSshSession = EofSshSession()
+        }
+        val servers = FakeServerRepository().apply { put(server()) }
+        val manager = newManager(servers, EventStreamHub(), SessionRegistry(), sshClient)
+
+        val conn = manager.connect(serverId)
+        waitUntil { conn.state.value is TransportState.Connected }
+        val firstSession = sshClient.sessions.single() as EofSshSession
+
+        // transportAlive defaults true → a clean logout.
+        firstSession.shellPty.eof.complete(Unit)
+        waitUntil { conn.state.value is TransportState.Disconnected }
+
+        // Let any erroneous auto-reconnect have a chance to fire, then
+        // assert it did not.
+        repeat(20) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(5)
+        }
+        assertTrue("clean exit must stay Disconnected", conn.state.value is TransportState.Disconnected)
+        assertEquals("clean exit must NOT auto-reconnect", 1, sshClient.connectCount.get())
+    }
+
+    // ── (11) on-resume liveness probe FAILS → auto-reconnect ──
+    //
+    // The real cure for the reported bug: a socket that died while the app
+    // was backgrounded produces no EOF (the keepalive is frozen in Doze).
+    // On returning to the foreground the manager round-trips every live
+    // slot; a failed probe is an involuntary drop → auto-reconnect.
+    @Test
+    fun resumeProbeFailure_autoReconnects() {
+        val sshClient = object : FakeSshClient() {
+            override fun newSession(): FakeSshSession = FakeSshSession()
+        }
+        val servers = FakeServerRepository().apply { put(server()) }
+        val tracker = AppForegroundTracker()
+        val manager = newManager(
+            servers, EventStreamHub(), SessionRegistry(), sshClient,
+            foregroundTracker = tracker,
+        )
+
+        val conn = manager.connect(serverId)
+        waitUntil { conn.state.value is TransportState.Connected }
+        val firstSession = sshClient.sessions.single()
+
+        // The socket died silently while backgrounded: the live session's
+        // probe now reports dead.
+        firstSession.probeResult = false
+
+        // App returns to the foreground → resume sweep probes → dead →
+        // involuntary drop → auto-reconnect to a fresh (healthy) session.
+        tracker.onStart(mockk(relaxed = true))
+        waitUntil { sshClient.sessions.size == 2 && conn.state.value is TransportState.Connected }
+
+        assertTrue("the resume probe must have run", firstSession.probeCount.get() >= 1)
+        assertEquals("a failed resume probe must auto-reconnect", 2, sshClient.connectCount.get())
+        assertTrue(conn.state.value is TransportState.Connected)
+        assertNotSame(firstSession, sshClient.sessions[1])
+    }
+
+    // ── (12) on-resume probe SUCCEEDS → slot untouched ──
+    //
+    // A healthy session must not be churned on every foreground: the probe
+    // runs, succeeds, and the exact same Connected state instance survives.
+    @Test
+    fun resumeProbeSuccess_staysConnected_noReconnect() {
+        val sshClient = object : FakeSshClient() {
+            override fun newSession(): FakeSshSession = FakeSshSession()
+        }
+        val servers = FakeServerRepository().apply { put(server()) }
+        val tracker = AppForegroundTracker()
+        val manager = newManager(
+            servers, EventStreamHub(), SessionRegistry(), sshClient,
+            foregroundTracker = tracker,
+        )
+
+        val conn = manager.connect(serverId)
+        waitUntil { conn.state.value is TransportState.Connected }
+        val session = sshClient.sessions.single()
+        val connectedState = conn.state.value
+
+        // Healthy link: probe succeeds (default). Resume must not churn it.
+        tracker.onStart(mockk(relaxed = true))
+        waitUntil { session.probeCount.get() >= 1 }
+        repeat(20) {
+            shadowOf(Looper.getMainLooper()).idle()
+            Thread.sleep(5)
+        }
+
+        assertSame("a healthy slot must be untouched on resume", connectedState, conn.state.value)
+        assertEquals("no reconnect on a healthy resume", 1, sshClient.connectCount.get())
     }
 }

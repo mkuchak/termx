@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.flow
  */
 class FakeMoshSession(
     private val emitFirstOutput: Boolean = true,
+    private val probeAlive: Boolean = true,
 ) : MoshSession {
     override val output: Flow<ByteArray> = flow {
         if (emitFirstOutput) emit("mosh-screen".toByteArray(Charsets.UTF_8))
@@ -45,6 +46,7 @@ class FakeMoshSession(
 
     override suspend fun write(bytes: ByteArray) { /* no-op */ }
     override suspend fun resize(cols: Int, rows: Int) { /* no-op */ }
+    override suspend fun probe(): Boolean = probeAlive
     override fun close() {
         closed.incrementAndGet()
     }
