@@ -10,7 +10,9 @@ import javax.inject.Singleton
  * Entry point for the mosh transport.
  *
  * Opens a short-lived SSH session against the target, runs
- * `mosh-server new -i <bindIp> -p <portRange>`, parses the
+ * `mosh-server new -s -p <portRange>` (`-s` binds the `$SSH_CONNECTION`
+ * address, so the UDP socket follows the bootstrap SSH's address
+ * family), parses the
  * `MOSH CONNECT <port> <key>` line from its stdout, and then spawns the
  * on-device `libmoshclient.so` (from
  * [android.content.pm.ApplicationInfo.nativeLibraryDir]) to handle the
@@ -44,7 +46,6 @@ open class MoshClient @Inject constructor(
     open suspend fun tryConnect(
         target: SshTarget,
         auth: SshAuth,
-        bindIp: String = "0.0.0.0",
         portRange: String = "60000:60010",
         handshakeTimeoutMs: Long = 8_000,
         startupCommand: String? = null,
@@ -52,7 +53,6 @@ open class MoshClient @Inject constructor(
         tryConnectDetailed(
             target = target,
             auth = auth,
-            bindIp = bindIp,
             portRange = portRange,
             handshakeTimeoutMs = handshakeTimeoutMs,
             startupCommand = startupCommand,
@@ -74,14 +74,12 @@ open class MoshClient @Inject constructor(
     open suspend fun tryConnectDetailed(
         target: SshTarget,
         auth: SshAuth,
-        bindIp: String = "0.0.0.0",
         portRange: String = "60000:60010",
         handshakeTimeoutMs: Long = 8_000,
         startupCommand: String? = null,
     ): MoshConnectResult = MoshClientImpl(context, sshClient).tryConnect(
         target = target,
         auth = auth,
-        bindIp = bindIp,
         portRange = portRange,
         handshakeTimeoutMs = handshakeTimeoutMs,
         startupCommand = startupCommand,

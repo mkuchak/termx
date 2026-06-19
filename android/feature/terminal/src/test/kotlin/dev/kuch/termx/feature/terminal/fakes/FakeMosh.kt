@@ -71,7 +71,6 @@ class FakeMoshClient(
     override suspend fun tryConnectDetailed(
         target: SshTarget,
         auth: SshAuth,
-        bindIp: String,
         portRange: String,
         handshakeTimeoutMs: Long,
         startupCommand: String?,

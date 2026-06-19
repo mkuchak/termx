@@ -22,8 +22,10 @@ import kotlinx.coroutines.withTimeoutOrNull
  * Raw mosh-client process wrapper.
  *
  * 1. Opens a short-lived SSH session (reused [SshClient]) and runs
- *    `LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -i <bindIp>
- *    -p <portRange>`.
+ *    `LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -p
+ *    <portRange>` — `-s` binds the address from `$SSH_CONNECTION`, so
+ *    mosh-server follows the bootstrap SSH's address family (IPv4 or
+ *    IPv6) automatically; see [moshServerCommand].
  * 2. Drains stdout AND stderr concurrently, scanning stdout for the
  *    canonical `MOSH CONNECT <port> <key>` line — see https://mosh.org.
  *    stderr is kept: if the handshake fails it is classified into a
@@ -50,14 +52,13 @@ internal class MoshClientImpl(
     suspend fun tryConnect(
         target: SshTarget,
         auth: SshAuth,
-        bindIp: String,
         portRange: String,
         handshakeTimeoutMs: Long,
         startupCommand: String? = null,
     ): MoshConnectResult {
         val handshake = when (
             val attempt =
-                handshake(target, auth, bindIp, portRange, startupCommand, handshakeTimeoutMs)
+                handshake(target, auth, portRange, startupCommand, handshakeTimeoutMs)
         ) {
             is HandshakeAttempt.Failure -> return MoshConnectResult.Failed(attempt.reason)
             is HandshakeAttempt.Success -> attempt.handshake
@@ -81,7 +82,6 @@ internal class MoshClientImpl(
     private suspend fun handshake(
         target: SshTarget,
         auth: SshAuth,
-        bindIp: String,
         portRange: String,
         startupCommand: String?,
         timeoutMs: Long,
@@ -96,7 +96,7 @@ internal class MoshClientImpl(
             withTimeoutOrNull(timeoutMs) {
                 val session: SshSession = sshClient.connect(target, auth)
                 try {
-                    val cmd = moshServerCommand(bindIp, portRange, startupCommand)
+                    val cmd = moshServerCommand(portRange, startupCommand)
                     session.openExec(cmd).use { exec -> scanForConnectLine(exec, stderr) }
                 } finally {
                     runCatching { session.close() }
@@ -264,8 +264,22 @@ internal class MoshClientImpl(
 
         /**
          * Build the server-side bootstrap line that termx runs over SSH:
-         * `LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -i <bindIp>
-         * -p <portRange>`.
+         * `LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -p
+         * <portRange>`.
+         *
+         * ADDRESS FAMILY (`-s`, no `-i`): `-s` tells mosh-server to bind
+         * the IP it reads from `$SSH_CONNECTION` — i.e. exactly the
+         * server-side address the phone reached over the bootstrap SSH,
+         * in whatever family (IPv4 or IPv6) that connection used. This is
+         * what the upstream `mosh` wrapper and the working desktop client
+         * do. termx historically ALSO passed `-i 0.0.0.0`, but getopt is
+         * last-wins and `-i` overrides `-s`: `0.0.0.0` binds the IPv4
+         * wildcard ONLY, so a server reached over IPv6 would bind a
+         * socket the client could never reach and every mosh attempt
+         * failed the first-output liveness gate. Dropping `-i` entirely
+         * (rather than threading the right family through) lets `-s` do
+         * its job and is strictly more correct for IPv4 too (binds the
+         * actual reached address instead of the wildcard).
          *
          * The LANG/LC_ALL prefix exists because `openExec` lands in a
          * non-login, non-interactive remote shell: minimal VPS images leave
@@ -288,12 +302,11 @@ internal class MoshClientImpl(
          * free so it can be unit-tested on the JVM.
          */
         internal fun moshServerCommand(
-            bindIp: String,
             portRange: String,
             startupCommand: String?,
         ): String {
             val base =
-                "LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -i $bindIp -p $portRange"
+                "LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -p $portRange"
             return if (!startupCommand.isNullOrBlank()) {
                 "$base -- $startupCommand"
             } else {
