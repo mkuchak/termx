@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.5](https://github.com/mkuchak/termx/compare/v1.7.4...v1.7.5) (2026-06-19)
+
+### Bug Fixes
+
+* **mosh:** bind via -s alone so mosh-server follows the SSH family ([a4cc070](https://github.com/mkuchak/termx/commit/a4cc0700bc3eb9acb2e8a2cf59fda8f830ff7c06))
+* **mosh:** widen first-output gate to 15s, end false firewall blame ([a12260d](https://github.com/mkuchak/termx/commit/a12260df47f12ec9d635fbd8c31b0dcb966dabb8))
+
 ## [1.7.4](https://github.com/mkuchak/termx/compare/v1.7.3...v1.7.4) (2026-06-16)
 
 ### Bug Fixes
