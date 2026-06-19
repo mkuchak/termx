@@ -161,14 +161,20 @@ class ConnectionManagerBehaviorTest {
         moshClient = moshClient ?: FakeMoshClient(appContext, sshClient, session = null),
         sshClient = sshClient,
         appForegroundTracker = foregroundTracker,
-    ).also { mainRule.track(it) }
+    ).also {
+        // Tiny so the no-first-output liveness-failure path falls back in
+        // ~0.3s instead of burning the production 15s window in real time.
+        it.firstOutputTimeoutMs = 300L
+        mainRule.track(it)
+    }
 
     /**
      * Busy-wait on a predicate, draining the Robolectric main looper on
      * every spin (see class KDoc — the EOF callback is a main-looper
-     * post that would otherwise never run). Deadline is 12s like the
-     * fallback suite's: the liveness-failure case burns the full
-     * real-time MOSH_FIRST_OUTPUT_TIMEOUT_MS (3s) before falling back.
+     * post that would otherwise never run). Deadline is a generous 12s;
+     * the liveness-failure case burns the real-time first-output window,
+     * which these tests shrink to 300ms via [newManager]'s
+     * `firstOutputTimeoutMs` override (production is 15s).
      */
     private fun waitUntil(predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 12_000L
@@ -221,8 +227,9 @@ class ConnectionManagerBehaviorTest {
         assertEquals(1, sshClient.connectCount.get())
     }
 
-    // ── (2) mosh liveness failure: fallback reason ON THE SLOT, exactly
-    //        one hub publication ──
+    // ── (2) mosh liveness failure (no first output within the window:
+    //        a slow-cold-starting client or genuinely filtered UDP):
+    //        fallback reason ON THE SLOT, exactly one hub publication ──
     //
     // The fallback suite pins the same scenario through the VM's mapped
     // uiState; this pins the manager's own slot state plus a hole in
@@ -231,7 +238,7 @@ class ConnectionManagerBehaviorTest {
     // (The production ordering guarantee is that the side channel starts
     // strictly AFTER the liveness gate passes.)
     @Test
-    fun moshLivenessFailure_sameAttemptSshFallback_slotCarriesUdpReason_noStrayPublication() {
+    fun moshLivenessFailure_sameAttemptSshFallback_slotCarriesFallbackReason_noStrayPublication() {
         val servers = FakeServerRepository().apply { put(server(useMosh = true)) }
         val hub = RecordingHub()
         val registry = SessionRegistry()
@@ -249,7 +256,7 @@ class ConnectionManagerBehaviorTest {
             "fallback connection must not be mosh-backed",
             (connected as TransportState.Connected).moshBacked,
         )
-        assertEquals(ConnectionManager.FALLBACK_REASON_NO_UDP, connected.transportFallbackReason)
+        assertEquals(ConnectionManager.FALLBACK_REASON_NO_FIRST_OUTPUT, connected.transportFallbackReason)
         // Same attempt: one mosh try, dead mosh session closed.
         assertEquals(1, moshClient.tryConnectCount.get())
         assertTrue("dead mosh session must be closed", moshSession.closed.get() >= 1)

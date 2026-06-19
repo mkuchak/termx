@@ -526,6 +526,19 @@ class ConnectionManager @Inject constructor(
 ) {
 
     /**
+     * Mosh first-output liveness window (see [MOSH_FIRST_OUTPUT_TIMEOUT_MS]).
+     * A mutable test seam rather than a constructor param: Hilt's
+     * `@Inject` constructor demands a graph binding for every parameter
+     * and there is none for a raw `Long`, so it cannot be defaulted the
+     * way [appForegroundTracker] can. Production never writes it; the
+     * mosh liveness-gate unit tests set it to a few hundred ms so the
+     * no-output fallback path runs fast instead of burning 15 real
+     * seconds. Read at connect time, long after construction, so a
+     * post-construction assignment in tests is safe.
+     */
+    internal var firstOutputTimeoutMs: Long = MOSH_FIRST_OUTPUT_TIMEOUT_MS
+
+    /**
      * Process-lifetime scope; never cancelled in production (see class
      * KDoc). `internal` so unit tests can cancel it in teardown and not
      * leak pumps/timeouts into the next test class's swapped Main
@@ -854,19 +867,26 @@ class ConnectionManager @Inject constructor(
             when (result) {
                 is MoshConnectResult.Success -> {
                     // LIVENESS GATE: a successful handshake only proves the
-                    // `MOSH CONNECT` line crossed the SSH/TCP channel. When
-                    // UDP 60000-60010 is firewalled on the VPS — the single
-                    // most common real-world mosh failure — mosh-client
-                    // spawns fine and then waits forever for datagrams that
-                    // never arrive; pre-gate the app reported success on a
-                    // dead connection. Require first remote output bytes
-                    // within [MOSH_FIRST_OUTPUT_TIMEOUT_MS] before declaring
-                    // the transport live. The deferred is completed by the
-                    // byte pump's first emission (observation only — bytes
-                    // continue to the emulator untouched).
+                    // `MOSH CONNECT` line crossed the SSH/TCP channel — it
+                    // says nothing about the UDP data path. Two distinct
+                    // things can leave the gate starved of bytes: (1) the
+                    // on-device mosh-client is a heavyweight native binary
+                    // (~40 dynamically-linked libs) that can take several
+                    // seconds to cold-start and transmit its first UDP
+                    // datagram — the diagnosed cause of "mosh never works in
+                    // the app but works from my laptop"; (2) UDP 60000-60010
+                    // is genuinely firewalled, so the client spawns fine and
+                    // then waits forever for datagrams that never arrive.
+                    // Require first remote output bytes within
+                    // [firstOutputTimeoutMs] before declaring the transport
+                    // live. The window is generous (see the const KDoc) so a
+                    // slow cold-start is NOT mistaken for a dead link. The
+                    // deferred is completed by the byte pump's first emission
+                    // (observation only — bytes continue to the emulator
+                    // untouched).
                     val firstOutput = CompletableDeferred<Unit>()
                     val shell = openMoshTab(conn, result.session, firstOutput)
-                    val live = withTimeoutOrNull(MOSH_FIRST_OUTPUT_TIMEOUT_MS) {
+                    val live = withTimeoutOrNull(firstOutputTimeoutMs) {
                         firstOutput.await()
                     } != null
                     if (live) {
@@ -892,11 +912,11 @@ class ConnectionManager @Inject constructor(
                     }
                     Log.i(
                         LOG_TAG,
-                        "mosh produced no output within ${MOSH_FIRST_OUTPUT_TIMEOUT_MS}ms " +
-                            "(UDP likely filtered); falling back to ssh",
+                        "mosh produced no output within ${firstOutputTimeoutMs}ms " +
+                            "(slow cold-start or filtered UDP); falling back to ssh",
                     )
                     teardownMoshShellForFallback(conn, shell)
-                    moshFallbackReason = FALLBACK_REASON_NO_UDP
+                    moshFallbackReason = FALLBACK_REASON_NO_FIRST_OUTPUT
                 }
                 is MoshConnectResult.Failed -> {
                     moshFallbackReason = describeMoshFailure(result.reason)
@@ -959,8 +979,8 @@ class ConnectionManager @Inject constructor(
     /**
      * Map a classified [MoshFailureReason] onto the short human string
      * shown in the fallback subtitle + snackbar. The liveness-gate
-     * failure ([FALLBACK_REASON_NO_UDP]) is mapped at its call site —
-     * it is detected here in the manager, not by the handshake
+     * failure ([FALLBACK_REASON_NO_FIRST_OUTPUT]) is mapped at its call
+     * site — it is detected here in the manager, not by the handshake
      * classifier.
      */
     private fun describeMoshFailure(reason: MoshFailureReason): String = when (reason) {
@@ -1736,26 +1756,42 @@ class ConnectionManager @Inject constructor(
          * Liveness gate: the mosh session must produce its FIRST remote
          * output bytes within this window after a successful handshake.
          *
-         * WHY 3s: mosh-server pushes the initial screen state immediately
-         * on first UDP contact, so a healthy link delivers bytes within
-         * roughly one round-trip — 3 seconds is generous. WHY the gate
-         * exists: the `MOSH CONNECT` line travels over SSH/TCP, so the
-         * handshake "succeeds" even when UDP 60000-60010 is firewalled on
-         * the VPS (the most common real-world mosh failure); the local
-         * mosh-client then waits forever and the user got a frozen
-         * terminal that claimed to be connected. The 2s early-exit window
+         * WHY 15s (was 3s, and 3s was the bug): the on-device mosh-client
+         * is a Termux-built native binary that dynamically links ~40
+         * `lib*_mosh.so` deps on first launch. On a cold app process that
+         * link-load + transmit-first-UDP can take well over 3 seconds —
+         * longer than the old window — so the gate killed a perfectly
+         * healthy mosh-client mid-startup and fell back to SSH EVERY time,
+         * while the same server worked instantly from a desktop mosh
+         * (native client, no cold-start). Diagnosed 2026-06 by tcpdump on
+         * the server: a good bootstrap SSH but ZERO mosh UDP packets ever
+         * left the phone — the client never finished starting. 15s gives
+         * the cold start ample headroom; a genuinely firewalled link still
+         * trips the gate, just later. WHY the gate exists at all: the
+         * `MOSH CONNECT` line travels over SSH/TCP, so the handshake
+         * "succeeds" even when no UDP ever flows (firewalled, or a client
+         * that never starts); without the gate the user gets a frozen
+         * terminal that claims to be connected. The 2s early-exit window
          * in `MoshSessionImpl` only catches process EXITS — this catches
-         * hangs.
+         * hangs. Overridable per-instance via the [firstOutputTimeoutMs]
+         * property so unit tests don't burn 15 real seconds.
          */
-        const val MOSH_FIRST_OUTPUT_TIMEOUT_MS: Long = 3_000L
+        const val MOSH_FIRST_OUTPUT_TIMEOUT_MS: Long = 15_000L
 
         /**
          * Fallback reason shown when the liveness gate trips: handshake
-         * OK over TCP, zero bytes over UDP. Names the exact port range
-         * because opening it is the fix in almost every case.
+         * OK over TCP, but no remote output bytes arrived in time. The
+         * cause is genuinely ambiguous at this point — either the
+         * mosh-client cold-started too slowly even for the 15s window, or
+         * UDP is actually blocked — so the message names both honestly
+         * and, crucially, does NOT falsely accuse the firewall (the old
+         * "check firewall: allow 60000-60010/udp" text was doubly wrong in
+         * the cold-start case: no UDP was ever sent, and the firewall was
+         * open). Front-loaded so it still reads under the subtitle's
+         * single-line ellipsis.
          */
-        const val FALLBACK_REASON_NO_UDP =
-            "no UDP response — check firewall: allow 60000-60010/udp"
+        const val FALLBACK_REASON_NO_FIRST_OUTPUT =
+            "no response in time — slow start or blocked UDP"
 
         /**
          * Window within which a mosh-client exit is treated as a

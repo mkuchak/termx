@@ -38,8 +38,8 @@ data class TerminalUiState(
      * transport was unusable). One of the classified handshake failures
      * ("VPS missing UTF-8 locale", "mosh-server not installed",
      * "handshake timeout", a stderr-derived detail) or the first-output
-     * liveness failure ("no UDP response — check firewall: allow
-     * 60000-60010/udp"). Drives the small "via SSH" subtitle near the
+     * liveness failure ("no response in time — slow start or blocked
+     * UDP"). Drives the small "via SSH" subtitle near the
      * mosh badge spot plus the one-shot fallback snackbar. Null when the
      * terminal is mosh-backed, mosh wasn't requested, or no connection
      * is up; reset on every `connect()` attempt.

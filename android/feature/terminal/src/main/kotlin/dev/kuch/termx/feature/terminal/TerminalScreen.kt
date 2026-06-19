@@ -440,8 +440,8 @@ fun TerminalScreen(
  * requested mosh but the connection fell back to plain SSH
  * ([TerminalUiState.transportFallbackReason] non-null). The reason
  * strings are the short, user-actionable ones minted in
- * [TerminalViewModel] ("no UDP response — check firewall: …",
- * "mosh-server not installed", …). M3 tokens only — the muted
+ * [TerminalViewModel] ("no response in time — slow start or blocked
+ * UDP", "mosh-server not installed", …). M3 tokens only — the muted
  * onSurfaceVariant keeps it legible without competing with terminal
  * content.
  */

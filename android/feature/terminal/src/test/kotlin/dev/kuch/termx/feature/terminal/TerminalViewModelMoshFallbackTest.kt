@@ -124,7 +124,12 @@ class TerminalViewModelMoshFallbackTest {
             companionUpdateRepository = mockk(relaxed = true),
             moshClient = moshClient,
             sshClient = sshClient,
-        ).also { mainRule.track(it) }
+        ).also {
+            // Tiny so the no-first-output liveness-failure path falls back
+            // in ~0.3s instead of burning the production 15s window.
+            it.firstOutputTimeoutMs = 300L
+            mainRule.track(it)
+        }
         return TerminalViewModel(
             appPreferences = AppPreferences(appContext),
             connectionManager = manager,
@@ -138,9 +143,11 @@ class TerminalViewModelMoshFallbackTest {
     }
 
     /**
-     * Busy-wait on a predicate. Deadline is 12s (not the Tier-1 file's
-     * 5s) because the liveness-failure cases burn the full real-time
-     * MOSH_FIRST_OUTPUT_TIMEOUT_MS (3s) before the SSH fallback starts.
+     * Busy-wait on a predicate. Deadline is a generous 12s (not the
+     * Tier-1 file's 5s) because the liveness-failure cases burn the
+     * real-time first-output window before the SSH fallback starts —
+     * these tests shrink it to 300ms via [newVm]'s `firstOutputTimeoutMs`
+     * override (production is 15s).
      */
     private fun waitUntil(predicate: () -> Boolean) {
         val deadline = System.currentTimeMillis() + 12_000L
@@ -158,11 +165,13 @@ class TerminalViewModelMoshFallbackTest {
         return notices to job
     }
 
-    // (a) THE BUG THIS KILLS: handshake OK but zero output bytes (UDP
-    //     firewalled) → SSH fallback IN THE SAME connect attempt, mosh
-    //     session closed, UDP reason on uiState, one-shot notice emitted.
+    // (a) THE BUG THIS KILLS: handshake OK but zero output bytes within
+    //     the first-output window (a slow-cold-starting mosh-client or
+    //     genuinely filtered UDP) → SSH fallback IN THE SAME connect
+    //     attempt, mosh session closed, fallback reason on uiState,
+    //     one-shot notice emitted.
     @Test
-    fun moshSilentAfterHandshake_fallsBackToSsh_sameAttempt_withUdpReason() {
+    fun moshSilentAfterHandshake_fallsBackToSsh_sameAttempt_withFallbackReason() {
         val servers = FakeServerRepository().apply { put(moshServer()) }
         val hub = EventStreamHub()
         val sshClient = FakeSshClient()
@@ -178,7 +187,7 @@ class TerminalViewModelMoshFallbackTest {
         assertFalse("fallback connection must NOT be mosh-backed", vm.state.value.moshBacked)
         assertNull("fallback is not an error", vm.state.value.error)
         assertEquals(
-            "no UDP response — check firewall: allow 60000-60010/udp",
+            "no response in time — slow start or blocked UDP",
             vm.state.value.transportFallbackReason,
         )
         // Same attempt: exactly one mosh try, the dead session closed.
@@ -198,7 +207,7 @@ class TerminalViewModelMoshFallbackTest {
         assertEquals(
             listOf(
                 "Connected via SSH — mosh unavailable: " +
-                    "no UDP response — check firewall: allow 60000-60010/udp",
+                    "no response in time — slow start or blocked UDP",
             ),
             notices.toList(),
         )
