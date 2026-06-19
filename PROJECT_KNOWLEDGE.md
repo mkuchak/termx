@@ -422,7 +422,7 @@ Critical implementation facts:
   `/usr/share/terminfo`; without extracting `xterm-256color/xterm/vt100/dumb` (~10 KB) into
   `filesDir/terminfo`, ncurses' `setupterm()` fails and mosh-client dies silently in <100 ms.
 - **Handshake** (`impl/MoshClientImpl.kt`): short-lived SSH session runs
-  `LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -i 0.0.0.0 -p 60000:60010`
+  `LANG=C.UTF-8 LC_ALL=C.UTF-8 mosh-server new -s -c 256 -p 60000:60010`
   (+ ` -- <startupCommand>` verbatim when set — the *remote login shell* does the
   quoting/expansion; do not re-quote; the locale prefix is a POSIX env-assignment applying to
   mosh-server only and exists because `openExec` lands in a non-login shell that minimal images
@@ -434,9 +434,14 @@ Critical implementation facts:
   pure `MoshClientImpl.classifyHandshakeFailure` into a `MoshFailureReason`
   (`MoshHandshakeClassifierTest`). Whole race capped at **8 s**
   (`ConnectionManager.MOSH_HANDSHAKE_TIMEOUT_MS` — the constant moved out of the VM) → fall back
-  to sshj. A "successful" handshake is additionally gated on FIRST OUTPUT BYTES within **3 s**
-  (`ConnectionManager.MOSH_FIRST_OUTPUT_TIMEOUT_MS`): the `MOSH CONNECT` line travels over
-  TCP/SSH, so firewalled UDP used to produce a frozen terminal that claimed Connected — see §7.
+  to sshj. A "successful" handshake is additionally gated on FIRST OUTPUT BYTES within **15 s**
+  (`ConnectionManager.MOSH_FIRST_OUTPUT_TIMEOUT_MS`, was 3 s): the `MOSH CONNECT` line travels
+  over TCP/SSH, so a session can "connect" yet never deliver UDP. Two things starve the gate — a
+  genuinely firewalled UDP path, **or** the native mosh-client's slow cold start (~40 `lib*_mosh.so`
+  deps link-loaded on first launch). The 3 s window killed healthy clients mid-startup and fell
+  back to SSH *every time* on cold processes (gotcha #32, §7); 15 s covers the cold start. The
+  bind is `-s` ALONE now (no `-i 0.0.0.0`) so the UDP socket follows the bootstrap SSH's address
+  family — IPv4 *and* IPv6 (gotcha #32).
 - **Exit diagnostics** (`impl/MoshSessionImpl.kt`): first 1 KB of pty output captured; on a
   non-zero exit within 2 s, also greps `logcat -d` (linker/DEBUG/libc tags, pid-filtered — works
   without READ_LOGS for own UID) because bionic linker failures never reach the child's stderr.
@@ -542,14 +547,17 @@ One connection = one `SshSession` (or one `MoshSession`) = one shell = one `Sess
   writes hop to `Dispatchers.IO`; `feedRemoteBytes` posts emulator mutation to main internally.
 - `connect(serverId)` → `openSession`: resolve target+auth (vault key bytes, or password from
   vault→cache→prompt via `PasswordRequiredException` → AwaitingPassword) → mosh race (8 s,
-  `tryConnectDetailed`) → **first-output liveness gate (3 s)** → on gate failure
-  `teardownMoshShellForFallback` and continue down sshj IN THE SAME ATTEMPT → `openTab`/
-  `openMoshTab` binds a `RemoteTerminalSession` and a byte-pump `outputJob`.
+  `tryConnectDetailed`) → **first-output liveness gate (15 s, was 3 s; overridable per-instance via
+  the `internal var firstOutputTimeoutMs` test seam so unit tests don't burn 15 real seconds)** →
+  on gate failure `teardownMoshShellForFallback` and continue down sshj IN THE SAME ATTEMPT →
+  `openTab`/`openMoshTab` binds a `RemoteTerminalSession` and a byte-pump `outputJob`.
 - **Truthful transport surfacing:** a mosh→SSH fallback sets
   `TransportState.Connected.transportFallbackReason` (persistent subtitle in the UI) and emits a
   one-shot `transportNotices` snackbar "Connected via SSH — mosh unavailable: <reason>". Reasons:
   "VPS missing UTF-8 locale" / "mosh-server not installed" / "handshake timeout" /
-  `FALLBACK_REASON_NO_UDP` ("no UDP response — check firewall: allow 60000-60010/udp") /
+  `FALLBACK_REASON_NO_FIRST_OUTPUT` ("no response in time — slow start or blocked UDP"; renamed
+  from `FALLBACK_REASON_NO_UDP` in v1.7.5 — the old "check firewall: allow 60000-60010/udp" text
+  was doubly wrong in the cold-start case: no UDP was ever sent and the firewall was open) /
   truncated stderr detail. The liveness-gate orphan trade is documented at
   `teardownMoshShellForFallback`: the spawned mosh-server is deliberately NOT pkill'd (could kill
   the user's other mosh sessions); stock mosh-server self-exits after ~60 s with no client.
@@ -1082,10 +1090,11 @@ ENTRY (any of):  server row tap / active-session card tap / notification tap
          PASSWORD: vault → PasswordCache → PasswordRequiredException → prompt dialog
                    (submitPassword persists + self-heals alias, retries connect)
     → server.useMosh?  moshClient.tryConnectDetailed (8 s cap)
-         ├─ handshake OK → openMoshTab → LIVENESS GATE: first output bytes ≤ 3 s?
+         ├─ handshake OK → openMoshTab → LIVENESS GATE: first output bytes ≤ 15 s?
          │     ├─ yes: Connected(moshBacked=true); ONLY NOW startMoshSideChannel()
          │     │       opens a SECOND ssh for events/endpoint/companion-check
-         │     └─ no ("no UDP response"): teardownMoshShellForFallback → fall through ↓
+         │     └─ no ("no response in time — slow start or blocked UDP"):
+         │        teardownMoshShellForFallback → fall through ↓
          └─ Failed(reason): remember human-readable reason → fall through ↓
     → sshClient.connect (sshj, keepalive 30 s, PromiscuousVerifier ⚠)
     → eventStreamHub.publish(serverId, label, clientFor(session))
@@ -1485,6 +1494,7 @@ UI row flips them yet (router honors them if ever set).
 | **v1.7.2 input/prompt fixes** (2026-06-15) | extra-keys repeat keys (arrows + nav) now fire on RELEASE via `detectTapGestures` — drag-to-scroll no longer leaks/auto-repeats a keystroke (the THIRD latent flaw the v1.7.0 redesign promoted to a daily bug, after tap-before-type and the 64-byte submit rule); Gemini transcription/translation prompts re-synced with the push-to-talk upstream (re-imported the dropped numerals rule + double-attention language clamp) | gotchas #28–29; §5.8 bar gestures, §5.11 prompt provenance; checklist item 13 |
 | **v1.7.3 PTT language routing fix** (2026-06-15) | PTT language + context Settings never reached Gemini: `PttViewModel` read them off `stateIn(WhileSubscribed)` StateFlows that nothing collects, so `.value` was always the `en-US`/`en-US`/`""` default → transcribe-only, Settings ignored since the per-language feature shipped (`0044083`). Now read fresh via `.first()` at transcribe time, so translation (e.g. pt-BR→en-US) works for the first time | gotcha #30; §5.11 PttViewModel; checklist item 12(g) |
 | **v1.7.4 frozen-session fix** (2026-06-16) | A session left backgrounded a long time froze on return — input went nowhere, only a manual reconnect recovered it. The process survived (foreground service) but the socket died silently in Doze and nothing detected it: the sshj keepalive was the non-detecting HEARTBEAT provider, a half-open write never throws, and there was no resume probe or auto-reconnect (`AppForegroundTracker` was dormant). Fixed with the detecting KEEP_ALIVE provider + on-resume liveness probe + bounded auto-reconnect on involuntary drops (clean `exit` excluded) | gotcha #31; §5.8 liveness; checklist item 15 |
+| **v1.7.5 mosh cold-start fix** (2026-06-19) | Mosh fell back to SSH *every time* in-app while working instantly from the desktop. Diagnosed by `tcpdump` on the VPS (which is this very machine): a good bootstrap SSH but **zero** mosh UDP packets ever left the phone — the native mosh-client never finished its ~40-lib cold start before the **3 s** first-output gate killed it. Fix: widen `MOSH_FIRST_OUTPUT_TIMEOUT_MS` to **15 s** (made an `internal var` test seam so unit suites don't burn 15 real s), and rename `FALLBACK_REASON_NO_UDP` → `FALLBACK_REASON_NO_FIRST_OUTPUT` with honest text ("no response in time — slow start or blocked UDP") — the old "check firewall" message was doubly wrong (no UDP sent, firewall open). Separately, dropped the IPv4-only `-i 0.0.0.0` from `mosh-server` so `-s` alone governs the bind and it follows the SSH address family (IPv6 servers worked never before) | gotcha #32; §5.5/§5.8 mosh; §7 lifecycle; checklist item 16 |
 
 ---
 
@@ -1587,6 +1597,22 @@ The "if you change this without reading its comment, you will reintroduce a ship
     half-open TCP write succeeds into the kernel buffer and does NOT throw, so input is silently
     swallowed and `writeErrors` never fires — never rely on a write error to detect a dead link.
     §5.8, `SshConnector`.
+32. **mosh "no UDP" is almost never the firewall — and `-i 0.0.0.0` overrides `-s`.** When mosh
+    falls back to SSH in-app, the instinct (and the old `FALLBACK_REASON_NO_UDP` text) was to blame
+    a closed firewall port. It was doubly wrong: the diagnosed v1.7.5 cause was the on-device
+    native mosh-client's COLD START — it dynamically link-loads ~40 `lib*_mosh.so` deps on first
+    launch and can take >3 s to send its first UDP datagram, so the **3 s** first-output gate killed
+    a perfectly healthy client before it ever transmitted. **The decisive diagnostic:** `tcpdump`
+    on the *server* (`sudo tcpdump -n -i any 'udp and portrange 60000-60010'`) showed a good
+    bootstrap SSH (`Accepted password …`) but **ZERO** mosh UDP packets arriving — proving the
+    phone never sent any, so it could not be the server's firewall (which was open) and was not the
+    network. The same server worked instantly from a desktop mosh (native client, no cold start).
+    Fix: 15 s gate (`MOSH_FIRST_OUTPUT_TIMEOUT_MS`). SEPARATELY, the bootstrap line used to pass
+    `-s -c 256 -i 0.0.0.0`: getopt is last-wins, so `-i 0.0.0.0` *overrode* `-s` and pinned the
+    IPv4 wildcard — an IPv6-reached server bound a socket the client could never reach and failed
+    the same gate. Dropping `-i` lets `-s` bind the `$SSH_CONNECTION` address in the right family.
+    Takeaway: when mosh "won't connect," tcpdump the SERVER first — if no packets arrive, look at
+    the client/timeout, not the firewall. §5.5, §5.8, §7; `MoshClientImpl.moshServerCommand`.
 
 ---
 
@@ -1661,7 +1687,7 @@ ActiveSessionCardModel}.kt` · `feature/terminal/.../TerminalSheetHost.kt` ·
 | Value | Where | Meaning |
 |---|---|---|
 | 8 s | `ConnectionManager.MOSH_HANDSHAKE_TIMEOUT_MS` | mosh race before sshj fallback |
-| 3 s | `ConnectionManager.MOSH_FIRST_OUTPUT_TIMEOUT_MS` | mosh first-output liveness gate (catches firewalled UDP) |
+| 15 s | `ConnectionManager.MOSH_FIRST_OUTPUT_TIMEOUT_MS` (was 3 s; `internal var` test seam) | mosh first-output liveness gate — generous enough for the native client's ~40-lib cold start; also catches firewalled UDP (gotcha #32) |
 | 2 s | `MOSH_EARLY_EXIT_WINDOW_MS` (`ConnectionManager` + `MoshSessionImpl`) | exit < this = startup failure |
 | 30 s | `SshConnector.KEEPALIVE_INTERVAL_SECONDS` | sshj keepalive interval |
 | 4 | `SshConnector.KEEPALIVE_MAX_COUNT` | unanswered keepalive probes before `CONNECTION_LOST` (30 s × 4 ≈ 120 s detection); requires the detecting `KEEP_ALIVE` provider — gotcha #31 |
@@ -1680,7 +1706,7 @@ ActiveSessionCardModel}.kt` · `feature/terminal/.../TerminalSheetHost.kt` ·
 | 8–32 sp (default 14) | font size clamp | |
 | 5 s | server-list delete undo window; watch-herdr re-list tick | |
 | 500 ms→10 s | watch-herdr backoff | |
-| 60000:60010 / 0.0.0.0 | mosh-server port range / bind (`moshUDPRange` in install.go mirrors it) | |
+| 60000:60010 | mosh-server UDP port range (`moshUDPRange` in install.go mirrors it). No fixed bind IP — `-s` binds the `$SSH_CONNECTION` address (its family follows the SSH); `-i 0.0.0.0` was removed in v1.7.5 (gotcha #32) | |
 | 1 s | `TerminalThumbnailRenderer.thumbnails` `periodMs` default | home-card thumbnail poll |
 | 180 dp / 110 dp | `ActiveSessionsRail` `CARD_WIDTH` / `THUMBNAIL_HEIGHT` | session card geometry |
 | 52×40 dp / 24 dp | `ExtraKeysBar` `KEY_WIDTH`×`KEY_HEIGHT` / `EDGE_FADE_WIDTH` | bar key size / fading edge |
