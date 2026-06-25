@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.8](https://github.com/mkuchak/termx/compare/v1.7.7...v1.7.8) (2026-06-25)
+
+### Bug Fixes
+
+* **mosh:** buffer and replay the first keyframe to stop reconnect-freeze ([5d9d52b](https://github.com/mkuchak/termx/commit/5d9d52b84c6c449dfcfcd97a347df0f6f5f4227d))
+
 ## [1.7.7](https://github.com/mkuchak/termx/compare/v1.7.6...v1.7.7) (2026-06-25)
 
 ### Bug Fixes
