@@ -30,6 +30,9 @@ out/
 # Claude Code harness scratch
 .claude/
 
+# Serena MCP tool dir
+.serena/
+
 # macOS
 .DS_Store
 
