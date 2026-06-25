@@ -1,6 +1,9 @@
 package dev.kuch.termx.feature.terminal.connection
 
 import android.content.Context
+import android.os.Build
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import com.termux.terminal.MoshRemoteTerminalSession
 import com.termux.terminal.RemoteTerminalSession
@@ -32,6 +35,7 @@ import dev.kuch.termx.libs.sshnative.PtyChannel
 import dev.kuch.termx.libs.sshnative.SshAuth
 import dev.kuch.termx.libs.sshnative.SshClient
 import dev.kuch.termx.libs.sshnative.SshSession
+import dev.kuch.termx.libs.sshnative.MoshDiagnostic
 import dev.kuch.termx.libs.sshnative.SshTarget
 import java.io.FileNotFoundException
 import java.time.Instant
@@ -99,15 +103,29 @@ sealed interface TransportState {
      * carry the truthful-transport surfacing (Tasks #27/#35): reason is
      * non-null only when the server requested mosh but the connection
      * came up over plain SSH.
+     *
+     * [transportFallbackDetail] is the FULL copy-pasteable diagnostic
+     * blob for that fallback (device/OS/ABI/page-size + the mosh-client
+     * exit code/elapsed + its captured stdout/linker log). Non-null only
+     * alongside a non-null [transportFallbackReason]; the UI hangs a
+     * "tap for details" → Copy/Share affordance off it so a user with no
+     * adb can hand us the real reason a mosh-client died (see
+     * [buildMoshFallbackReport], gotcha #32).
      */
     data class Connected(
         val session: TerminalSession,
         val moshBacked: Boolean,
         val transportFallbackReason: String?,
+        val transportFallbackDetail: String? = null,
     ) : TransportState
 
-    /** Connect failed (or mosh-client died at startup); [message] is user-facing. */
-    data class Error(val message: String) : TransportState
+    /**
+     * Connect failed (or mosh-client died at startup); [message] is
+     * user-facing. [detail] carries the same copy-pasteable mosh
+     * diagnostic blob as [Connected.transportFallbackDetail] when the
+     * failure was a mosh-client startup death.
+     */
+    data class Error(val message: String, val detail: String? = null) : TransportState
 
     /** No transport. Initial state, post-disconnect state, post-remote-exit state. */
     data object Disconnected : TransportState
@@ -849,6 +867,10 @@ class ConnectionManager @Inject constructor(
         // attempt ("mosh first, then ssh automatically"), remembering a
         // short human-readable reason so the UI can say why.
         var moshFallbackReason: String? = null
+        // Full copy-pasteable diagnostic for that fallback (gotcha #32),
+        // assembled at the fallback site while the dead mosh session is
+        // still readable; surfaced via the subtitle's Copy/Share dialog.
+        var moshFallbackDetail: String? = null
         if (server?.useMosh == true) {
             val result = runCatching {
                 moshClient.tryConnectDetailed(
@@ -868,22 +890,22 @@ class ConnectionManager @Inject constructor(
                 is MoshConnectResult.Success -> {
                     // LIVENESS GATE: a successful handshake only proves the
                     // `MOSH CONNECT` line crossed the SSH/TCP channel — it
-                    // says nothing about the UDP data path. Two distinct
-                    // things can leave the gate starved of bytes: (1) the
-                    // on-device mosh-client is a heavyweight native binary
-                    // (~40 dynamically-linked libs) that can take several
-                    // seconds to cold-start and transmit its first UDP
-                    // datagram — the diagnosed cause of "mosh never works in
-                    // the app but works from my laptop"; (2) UDP 60000-60010
-                    // is genuinely firewalled, so the client spawns fine and
-                    // then waits forever for datagrams that never arrive.
-                    // Require first remote output bytes within
+                    // says nothing about whether the local mosh-client even
+                    // runs. Require first remote output bytes within
                     // [firstOutputTimeoutMs] before declaring the transport
-                    // live. The window is generous (see the const KDoc) so a
-                    // slow cold-start is NOT mistaken for a dead link. The
-                    // deferred is completed by the byte pump's first emission
-                    // (observation only — bytes continue to the emulator
-                    // untouched).
+                    // live; the deferred is completed by the byte pump's
+                    // first emission (observation only — bytes continue to
+                    // the emulator untouched). KEY FACT (gotcha #32): per
+                    // mosh's own source a *running* client paints terminal
+                    // init within milliseconds and a "Nothing received …"
+                    // banner within 250ms — it is incapable of long silence.
+                    // So zero output here does NOT mean "slow start" or
+                    // "blocked UDP" (the wrong v1.7.5 story); it means the
+                    // client died before main(), almost always in the
+                    // dynamic linker loading its ~40 lib*_mosh.so deps — a
+                    // failure bionic writes to logcat, never the pty. We
+                    // snapshot that logcat detail into the fallback report
+                    // below so the user can actually see it.
                     val firstOutput = CompletableDeferred<Unit>()
                     val shell = openMoshTab(conn, result.session, firstOutput)
                     val live = withTimeoutOrNull(firstOutputTimeoutMs) {
@@ -913,13 +935,28 @@ class ConnectionManager @Inject constructor(
                     Log.i(
                         LOG_TAG,
                         "mosh produced no output within ${firstOutputTimeoutMs}ms " +
-                            "(slow cold-start or filtered UDP); falling back to ssh",
+                            "(client likely died pre-main; see diagnostic); falling back to ssh",
+                    )
+                    // Snapshot the dead mosh-client's diagnostic (exit code +
+                    // captured stdout/linker log) BEFORE teardown closes it —
+                    // this is the blob the Copy/Share affordance hands the
+                    // user. By now the gate has waited the full window, so the
+                    // waitpid+logcat capture has long since populated it.
+                    moshFallbackReason = FALLBACK_REASON_NO_FIRST_OUTPUT
+                    moshFallbackDetail = buildMoshFallbackReport(
+                        diag = result.session.diagnostic.value,
+                        reason = FALLBACK_REASON_NO_FIRST_OUTPUT,
+                        target = target,
                     )
                     teardownMoshShellForFallback(conn, shell)
-                    moshFallbackReason = FALLBACK_REASON_NO_FIRST_OUTPUT
                 }
                 is MoshConnectResult.Failed -> {
                     moshFallbackReason = describeMoshFailure(result.reason)
+                    moshFallbackDetail = buildMoshFallbackReport(
+                        diag = null,
+                        reason = moshFallbackReason,
+                        target = target,
+                    )
                     Log.i(LOG_TAG, "mosh handshake failed ($moshFallbackReason); falling back to ssh")
                 }
             }
@@ -965,6 +1002,7 @@ class ConnectionManager @Inject constructor(
             session = shell.emulator,
             moshBacked = false,
             transportFallbackReason = moshFallbackReason,
+            transportFallbackDetail = moshFallbackDetail,
         )
         if (moshFallbackReason != null) {
             // One-shot surfacing of the silent-until-now mosh→SSH
@@ -1571,7 +1609,12 @@ class ConnectionManager @Inject constructor(
             if (diag.exitCode != null && diag.exitCode != 0 && diag.elapsedMs < MOSH_EARLY_EXIT_WINDOW_MS) {
                 val reason = extractReadableReason(diag.head)
                 conn.mutableState.value = TransportState.Error(
-                    "mosh-client exited after ${diag.elapsedMs}ms (exit ${diag.exitCode}): $reason",
+                    message = "mosh-client exited after ${diag.elapsedMs}ms (exit ${diag.exitCode}): $reason",
+                    detail = buildMoshFallbackReport(
+                        diag = diag,
+                        reason = "mosh-client exited (${diag.exitCode})",
+                        target = null,
+                    ),
                 )
             }
         }
@@ -1614,6 +1657,59 @@ class ConnectionManager @Inject constructor(
         }
         val best = preferred ?: lines.firstOrNull() ?: head.replace('\n', ' ').trim()
         return best.take(200)
+    }
+
+    /**
+     * Assemble the copy-pasteable mosh fallback diagnostic (gotcha #32).
+     *
+     * For "mosh works on my laptop but not in the app", the load-bearing
+     * datum is the on-device linker/exit detail — which the user has no
+     * way to retrieve without adb. We bundle the device fingerprint
+     * (PAGE SIZE matters: a 16 KB-page device rejects 4 KB-aligned native
+     * libs in the linker), the mosh-client exit code/elapsed, and its
+     * captured stdout + linker log ([MoshDiagnostic.head], populated by
+     * the waitpid+logcat scrape in `MoshSessionImpl`). [diag] is null when
+     * mosh never spawned a client (handshake failure). Pure string
+     * assembly; every platform lookup is wrapped so it can never throw on
+     * the connect path. Surfaced via the fallback subtitle's Copy/Share
+     * dialog.
+     */
+    private fun buildMoshFallbackReport(
+        diag: MoshDiagnostic?,
+        reason: String,
+        target: SshTarget?,
+    ): String {
+        val appVersion = runCatching {
+            appContext.packageManager.getPackageInfo(appContext.packageName, 0).versionName
+        }.getOrNull() ?: "?"
+        val pageSize = runCatching { Os.sysconf(OsConstants._SC_PAGESIZE) }.getOrNull() ?: -1L
+        val abi = runCatching { Build.SUPPORTED_ABIS.firstOrNull() }.getOrNull() ?: "?"
+        return buildString {
+            appendLine("termx mosh diagnostics")
+            appendLine("======================")
+            appendLine("app: $appVersion")
+            appendLine("device: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLine("android: ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})")
+            appendLine("abi: $abi   page-size: ${pageSize}B")
+            if (target != null) appendLine("host: ${target.host}")
+            appendLine("fallback: $reason")
+            if (diag != null) {
+                appendLine(
+                    "mosh-client: exit=${diag.exitCode ?: "still-running"} " +
+                        "elapsed=${diag.elapsedMs}ms",
+                )
+                appendLine("--- mosh-client output / linker log ---")
+                append(
+                    diag.head.ifBlank {
+                        "(no bytes captured — the client likely died in the dynamic " +
+                            "linker before main(); bionic logs that to logcat, not the " +
+                            "pty. If this stays blank, grab a Developer-Options bug report.)"
+                    },
+                )
+            } else {
+                append("(no mosh-client was spawned — failed before/at the handshake)")
+            }
+        }
     }
 
     /**
@@ -1780,18 +1876,19 @@ class ConnectionManager @Inject constructor(
 
         /**
          * Fallback reason shown when the liveness gate trips: handshake
-         * OK over TCP, but no remote output bytes arrived in time. The
-         * cause is genuinely ambiguous at this point — either the
-         * mosh-client cold-started too slowly even for the 15s window, or
-         * UDP is actually blocked — so the message names both honestly
-         * and, crucially, does NOT falsely accuse the firewall (the old
-         * "check firewall: allow 60000-60010/udp" text was doubly wrong in
-         * the cold-start case: no UDP was ever sent, and the firewall was
-         * open). Front-loaded so it still reads under the subtitle's
-         * single-line ellipsis.
+         * OK over TCP, but the mosh-client produced ZERO output bytes in
+         * the whole window. Per mosh's own source a *running* client paints
+         * terminal-init bytes within milliseconds and a "Nothing received
+         * …" banner within 250ms, so zero output means the client never
+         * reached main() — it died in the dynamic linker (which bionic logs
+         * to logcat, not the pty). The earlier "slow start / blocked UDP"
+         * wording was wrong (gotcha #32); the real reason now rides in
+         * [TransportState.Connected.transportFallbackDetail], which the
+         * subtitle exposes via a Copy/Share dialog. Kept short so it reads
+         * under the subtitle's single-line ellipsis.
          */
         const val FALLBACK_REASON_NO_FIRST_OUTPUT =
-            "no response in time — slow start or blocked UDP"
+            "mosh-client produced no output"
 
         /**
          * Window within which a mosh-client exit is treated as a

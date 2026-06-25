@@ -256,11 +256,13 @@ class TerminalViewModel @Inject constructor(
             activeSession = transport.session,
             moshBacked = transport.moshBacked,
             transportFallbackReason = transport.transportFallbackReason,
+            moshDiagnostic = transport.transportFallbackDetail,
             pendingUrlTap = pendingUrl,
         )
         is TransportState.Error -> TerminalUiState(
             status = TerminalUiState.Status.Disconnected,
             error = transport.message,
+            moshDiagnostic = transport.detail,
             pendingUrlTap = pendingUrl,
         )
         TransportState.Disconnected -> TerminalUiState(

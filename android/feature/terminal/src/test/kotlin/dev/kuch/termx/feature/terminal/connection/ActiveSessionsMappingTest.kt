@@ -77,7 +77,7 @@ class ActiveSessionsMappingTest {
         val fallback = TransportState.Connected(
             session = mockk<TerminalSession>(),
             moshBacked = false,
-            transportFallbackReason = "no response in time — slow start or blocked UDP",
+            transportFallbackReason = "mosh-client produced no output",
         )
 
         val cards = activeSessionCardModels(listOf(slot("mosh-pref", fallback)))

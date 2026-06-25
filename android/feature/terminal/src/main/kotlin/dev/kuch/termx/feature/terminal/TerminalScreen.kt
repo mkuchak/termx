@@ -1,27 +1,36 @@
 package dev.kuch.termx.feature.terminal
 
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.view.GestureDetector
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Visibility
@@ -52,6 +61,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -278,7 +288,10 @@ fun TerminalScreen(
             if (uiState.status == TerminalUiState.Status.Connected &&
                 !uiState.moshBacked && fallbackReason != null
             ) {
-                TransportFallbackSubtitle(reason = fallbackReason)
+                TransportFallbackSubtitle(
+                    reason = fallbackReason,
+                    detail = uiState.moshDiagnostic,
+                )
             }
             Box(
                 modifier = Modifier
@@ -345,10 +358,14 @@ fun TerminalScreen(
                     TerminalUiState.Status.Disconnected -> {
                         val err = uiState.error
                         if (err != null) {
-                            ErrorPane(message = err, onRetry = {
-                                viewModel.clearError()
-                                viewModel.connect(serverId)
-                            })
+                            ErrorPane(
+                                message = err,
+                                detail = uiState.moshDiagnostic,
+                                onRetry = {
+                                    viewModel.clearError()
+                                    viewModel.connect(serverId)
+                                },
+                            )
                         } else {
                             DisconnectedPane(onReconnect = { viewModel.connect(serverId) })
                         }
@@ -446,16 +463,79 @@ fun TerminalScreen(
  * content.
  */
 @Composable
-private fun TransportFallbackSubtitle(reason: String) {
+private fun TransportFallbackSubtitle(reason: String, detail: String?) {
+    var showDialog by remember { mutableStateOf(false) }
+    val hasDetail = detail != null
     Text(
-        text = "via SSH — mosh unavailable: $reason",
+        text = "via SSH — mosh unavailable: $reason" +
+            if (hasDetail) " · tap for details" else "",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         maxLines = 1,
         overflow = TextOverflow.Ellipsis,
         modifier = Modifier
             .fillMaxWidth()
+            .then(if (hasDetail) Modifier.clickable { showDialog = true } else Modifier)
             .padding(horizontal = 12.dp, vertical = 2.dp),
+    )
+    if (showDialog && detail != null) {
+        MoshDiagnosticDialog(detail = detail, onDismiss = { showDialog = false })
+    }
+}
+
+/**
+ * Copy/Share sheet for the full mosh fallback diagnostic. The user has
+ * no adb, so this is the only path that gets the on-device linker/exit
+ * detail off the phone (gotcha #32). Text is selectable and scrollable;
+ * Copy lands it on the clipboard for a direct paste.
+ */
+@Composable
+private fun MoshDiagnosticDialog(detail: String, onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("mosh diagnostics") },
+        text = {
+            SelectionContainer {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    Text(
+                        text = detail,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = { copyToClipboard(context, detail) }) { Text("Copy") }
+                TextButton(onClick = { shareText(context, detail) }) { Text("Share") }
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+    )
+}
+
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+        ?: return
+    clipboard.setPrimaryClip(ClipData.newPlainText("termx mosh diagnostics", text))
+}
+
+private fun shareText(context: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(
+        Intent.createChooser(intent, "Share mosh diagnostics").apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        },
     )
 }
 
@@ -474,7 +554,8 @@ private fun ConnectingPane() {
 }
 
 @Composable
-private fun ErrorPane(message: String, onRetry: () -> Unit) {
+private fun ErrorPane(message: String, detail: String?, onRetry: () -> Unit) {
+    var showDialog by remember { mutableStateOf(false) }
     Box(modifier = Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -484,8 +565,16 @@ private fun ErrorPane(message: String, onRetry: () -> Unit) {
                 text = message,
                 color = MaterialTheme.colorScheme.error,
             )
-            Button(onClick = onRetry) { Text("retry") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onRetry) { Text("retry") }
+                if (detail != null) {
+                    TextButton(onClick = { showDialog = true }) { Text("details") }
+                }
+            }
         }
+    }
+    if (showDialog && detail != null) {
+        MoshDiagnosticDialog(detail = detail, onDismiss = { showDialog = false })
     }
 }
 

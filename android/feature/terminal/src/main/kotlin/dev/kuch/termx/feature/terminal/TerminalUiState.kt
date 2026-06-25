@@ -38,13 +38,22 @@ data class TerminalUiState(
      * transport was unusable). One of the classified handshake failures
      * ("VPS missing UTF-8 locale", "mosh-server not installed",
      * "handshake timeout", a stderr-derived detail) or the first-output
-     * liveness failure ("no response in time — slow start or blocked
-     * UDP"). Drives the small "via SSH" subtitle near the
-     * mosh badge spot plus the one-shot fallback snackbar. Null when the
-     * terminal is mosh-backed, mosh wasn't requested, or no connection
-     * is up; reset on every `connect()` attempt.
+     * liveness failure ("mosh-client produced no output"). Drives the
+     * small "via SSH" subtitle near the mosh badge spot plus the one-shot
+     * fallback snackbar. Null when the terminal is mosh-backed, mosh
+     * wasn't requested, or no connection is up; reset on every `connect()`
+     * attempt.
      */
     val transportFallbackReason: String? = null,
+    /**
+     * Full copy-pasteable diagnostic blob for a mosh fallback/early-exit
+     * (device fingerprint + the mosh-client's exit code and captured
+     * stdout/linker log). Non-null only when there is a [transportFallbackReason]
+     * or an [error] from a mosh-client death. The subtitle and error pane
+     * expose it via a Copy/Share dialog so a user with no adb can hand us
+     * the real reason a mosh-client died (gotcha #32).
+     */
+    val moshDiagnostic: String? = null,
     val error: String? = null,
     /**
      * When non-null, the UI should render a password prompt dialog. Set

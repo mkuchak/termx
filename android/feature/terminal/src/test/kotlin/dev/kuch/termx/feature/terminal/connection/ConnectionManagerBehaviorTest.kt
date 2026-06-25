@@ -47,6 +47,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -257,6 +258,10 @@ class ConnectionManagerBehaviorTest {
             (connected as TransportState.Connected).moshBacked,
         )
         assertEquals(ConnectionManager.FALLBACK_REASON_NO_FIRST_OUTPUT, connected.transportFallbackReason)
+        // The copy-pasteable diagnostic blob is attached so the user can
+        // retrieve the on-device linker/exit detail without adb (gotcha #32).
+        assertNotNull("fallback must carry a mosh diagnostic blob", connected.transportFallbackDetail)
+        assertTrue(connected.transportFallbackDetail!!.contains("termx mosh diagnostics"))
         // Same attempt: one mosh try, dead mosh session closed.
         assertEquals(1, moshClient.tryConnectCount.get())
         assertTrue("dead mosh session must be closed", moshSession.closed.get() >= 1)

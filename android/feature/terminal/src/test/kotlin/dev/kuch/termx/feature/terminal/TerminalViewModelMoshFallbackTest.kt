@@ -32,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -187,8 +188,18 @@ class TerminalViewModelMoshFallbackTest {
         assertFalse("fallback connection must NOT be mosh-backed", vm.state.value.moshBacked)
         assertNull("fallback is not an error", vm.state.value.error)
         assertEquals(
-            "no response in time — slow start or blocked UDP",
+            "mosh-client produced no output",
             vm.state.value.transportFallbackReason,
+        )
+        // The full copy-pasteable diagnostic blob rides alongside the
+        // short reason (gotcha #32) so the user can hand us the real cause.
+        assertNotNull(
+            "fallback must carry a copyable mosh diagnostic",
+            vm.state.value.moshDiagnostic,
+        )
+        assertTrue(
+            "diagnostic blob must be the termx mosh report",
+            vm.state.value.moshDiagnostic!!.contains("termx mosh diagnostics"),
         )
         // Same attempt: exactly one mosh try, the dead session closed.
         assertEquals(1, moshClient.tryConnectCount.get())
@@ -207,7 +218,7 @@ class TerminalViewModelMoshFallbackTest {
         assertEquals(
             listOf(
                 "Connected via SSH — mosh unavailable: " +
-                    "no response in time — slow start or blocked UDP",
+                    "mosh-client produced no output",
             ),
             notices.toList(),
         )
