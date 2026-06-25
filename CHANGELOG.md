@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.7](https://github.com/mkuchak/termx/compare/v1.7.6...v1.7.7) (2026-06-25)
+
+### Bug Fixes
+
+* **mosh:** rebuild client as a single static PIE, fixing pre-main SIGSEGV ([7fc8939](https://github.com/mkuchak/termx/commit/7fc8939a6fecf941c24ea05e5fab6a16e192a6aa))
+
 ## [1.7.6](https://github.com/mkuchak/termx/compare/v1.7.5...v1.7.6) (2026-06-25)
 
 ### Bug Fixes
