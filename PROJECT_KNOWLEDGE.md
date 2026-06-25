@@ -408,11 +408,13 @@ Critical implementation facts:
 
 **The mosh stack** (read `android/libs/ssh-native/BUILD.md` before touching):
 
-- `jniLibs/<abi>/` holds **53 files per ABI**: `libmoshclient.so` (mosh-client 1.4.0 built via
-  termux-packages with prefix rewritten to `dev.kuch.termx`) + its whole DT_NEEDED closure
-  (protobuf, OpenSSL 3, ncurses, ~45 abseil libs), every SONAME patchelf-renamed to
-  `lib<name>_mosh.so` so Android's APK extractor accepts them. ~+19 MB compressed APK cost.
-  Reproduction script: `scripts/build-mosh-jni-bundle.sh`; verification one-liner in BUILD.md.
+- `jniLibs/<abi>/` holds **ONE file per ABI** (v1.7.7): `libmoshclient.so`, a single
+  statically-linked mosh-client 1.4.0 PIE (NDK r27; static OpenSSL/protobuf-3.21-no-abseil/
+  ncursesw + `libc++_static`). Its only `DT_NEEDED` are bionic system libs
+  (`libc/libdl/libm/liblog/libz`). This REPLACED the old 53-`.so`-per-ABI termux bundle (mosh +
+  ~45 patchelf-renamed `lib*_mosh.so` abseil/protobuf deps) that **SIGSEGV'd before `main()`** in
+  the dynamic linker on real devices (gotcha #32) — mosh never ran. ~8 MB total vs ~46 MB.
+  Reproduction script: `scripts/build-mosh-static.sh`; verification one-liner in BUILD.md.
 - **Why a JNI pty** (`cpp/pty_fork_exec.c`, `impl/NativePty.kt`): mosh-client calls
   `tcgetattr(STDIN)` at startup; ProcessBuilder pipes → ENOTTY → abort in ~150 ms. The C code does
   the classic `/dev/ptmx → grantpt → unlockpt → ptsname_r → fork → setsid → TIOCSCTTY → dup2 →
@@ -429,8 +431,9 @@ Critical implementation facts:
   leave in C/POSIX, which mosh-server hard-refuses — `moshServerCommand` KDoc). stdout AND stderr
   are drained CONCURRENTLY (per-stream sshj flow-control windows; same deadlock as `execCapture`)
   while stdout is regex-scanned for `MOSH CONNECT (\d+) (\S+)`; then the SSH closes (mosh-server
-  has double-forked) and local mosh-client spawns under the pty with env `MOSH_KEY`, `TERMINFO`,
-  `LD_LIBRARY_PATH=<nativeLibDir>`. On failure the kept stderr transcript is classified by the
+  has double-forked) and the local mosh-client (the v1.7.7 single static PIE — bionic-only deps, so
+  the `LD_LIBRARY_PATH=<nativeLibDir>` the loader still sets is now a harmless no-op) spawns under
+  the pty with env `MOSH_KEY`, `TERMINFO`. On failure the kept stderr transcript is classified by the
   pure `MoshClientImpl.classifyHandshakeFailure` into a `MoshFailureReason`
   (`MoshHandshakeClassifierTest`). Whole race capped at **8 s**
   (`ConnectionManager.MOSH_HANDSHAKE_TIMEOUT_MS` — the constant moved out of the VM) → fall back
@@ -1499,6 +1502,7 @@ UI row flips them yet (router honors them if ever set).
 | **v1.7.4 frozen-session fix** (2026-06-16) | A session left backgrounded a long time froze on return — input went nowhere, only a manual reconnect recovered it. The process survived (foreground service) but the socket died silently in Doze and nothing detected it: the sshj keepalive was the non-detecting HEARTBEAT provider, a half-open write never throws, and there was no resume probe or auto-reconnect (`AppForegroundTracker` was dormant). Fixed with the detecting KEEP_ALIVE provider + on-resume liveness probe + bounded auto-reconnect on involuntary drops (clean `exit` excluded) | gotcha #31; §5.8 liveness; checklist item 15 |
 | **v1.7.5 mosh cold-start fix** (2026-06-19) | Mosh fell back to SSH *every time* in-app while working instantly from the desktop. Diagnosed by `tcpdump` on the VPS (which is this very machine): a good bootstrap SSH but **zero** mosh UDP packets ever left the phone — the native mosh-client never finished its ~40-lib cold start before the **3 s** first-output gate killed it. Fix: widen `MOSH_FIRST_OUTPUT_TIMEOUT_MS` to **15 s** (made an `internal var` test seam so unit suites don't burn 15 real s), and rename `FALLBACK_REASON_NO_UDP` → `FALLBACK_REASON_NO_FIRST_OUTPUT` with honest text ("no response in time — slow start or blocked UDP") — the old "check firewall" message was doubly wrong (no UDP sent, firewall open). Separately, dropped the IPv4-only `-i 0.0.0.0` from `mosh-server` so `-s` alone governs the bind and it follows the SSH address family (IPv6 servers worked never before). **⚠ The cold-start half of this was WRONG** — 15 s didn't fix it (the client dies pre-`main()` in the linker, not slowly; see v1.7.6 + gotcha #32). The `-i`-bind half remains valid | gotcha #32; §5.5/§5.8 mosh; §7 lifecycle; checklist item 16 |
 | **v1.7.6 mosh diagnostics surfacing** (2026-06-25) | The v1.7.5 timeout bump did NOT fix the user's mosh — proving "slow start" wrong. Re-derived from mosh source: a *running* mosh-client paints terminal-init within ms and a "Nothing received…" banner within 250 ms, so zero output for 15 s ⇒ the client died before `main()` in bionic's dynamic linker (logged to logcat, NOT the pty — invisible to termx). Static checks ruled out the cheap causes (libs are 16 KB-aligned, `DT_NEEDED` correct, `extractNativeLibs=true`), so the exact failure needs the device's logcat. termx already scraped its own child's linker logcat into `MoshDiagnostic.head` but discarded it; v1.7.6 snapshots it (+ device/OS/ABI/page-size) into `TransportState.Connected.transportFallbackDetail` (`buildMoshFallbackReport`) and makes the "via SSH — mosh unavailable" subtitle tappable → a Copy/Share dialog so a user with no adb can hand over the real linker error. Fallback text corrected to `"mosh-client produced no output"` | gotcha #32; §5.8 mosh diagnostics; checklist item 16 |
+| **v1.7.7 mosh static-binary fix** (2026-06-25) | The v1.7.6 dialog produced the proof on a Galaxy S22 / Android 14: `exit=139` (**SIGSEGV**) at **19 ms**, 4 KB pages — the bundled mosh-client crashes *before `main()`*. Not a timeout, not the firewall: the 53-`.so` termux bundle (mosh + ~40 abseil `.so`) dies in a static-initializer/ODR crash in the dynamic linker; it never ran on any device. Git history had already named this (`3a04233`/`9b00fcb`). **Fix: rebuilt mosh-client 1.4.0 with the NDK as a single static PIE** — static OpenSSL/protobuf-3.21(**no abseil**)/ncurses + `libc++_static`, 16 KB-aligned, bionic-only `DT_NEEDED`. jniLibs goes 53 files→1 per ABI (~46 MB→~8 MB). The whole dynamic-C++-load crash class is structurally eliminated. `scripts/build-mosh-static.sh` replaces the old patchelf bundler | gotcha #32; §5.5 mosh native; checklist item 16; BUILD.md |
 
 ---
 
@@ -1632,8 +1636,18 @@ The "if you change this without reading its comment, you will reintroduce a ship
     `$SSH_CONNECTION` address in the right family. Takeaways: a `tcpdump` on the *server*
     (`sudo tcpdump -n -i any 'udp and portrange 60000-60010'`) showing zero packets confirms the
     phone never transmitted — look at the client, NOT the firewall; and "no output" from a forked
-    native binary almost always means a pre-`main()` linker death you can only see in logcat. §5.5,
-    §5.8, §7; `MoshClientImpl.moshServerCommand`, `ConnectionManager.buildMoshFallbackReport`.
+    native binary almost always means a pre-`main()` linker death you can only see in logcat.
+    **v1.7.7 ROOT-CAUSE FIX (confirmed on-device):** the v1.7.6 dialog produced the proof —
+    `exit=139` (**SIGSEGV** = 128+11) at **19 ms**, page-size 4096B, on a Galaxy S22 / Android 14.
+    SIGSEGV (not SIGABRT/134) after a *successful* exec+link means a static-initializer / ODR crash
+    in the bundled C++ `.so` soup, before `main`. The git history already named this: `3a04233`
+    once replaced the native client with a Kotlin SSP transport to "eliminate the bionic-linker
+    pre-main SIGSEGV", then `9b00fcb` reverted it back in. The bundle was a termux-packages build —
+    not runnable standalone. **Fix: rebuild mosh-client as a single static PIE** (NDK r27; static
+    OpenSSL/protobuf-3.21-no-abseil/ncurses + `libc++_static`; `scripts/build-mosh-static.sh`),
+    bionic-only `DT_NEEDED`, no dynamic C++ loading → the entire ODR/static-init crash class is gone.
+    LESSON: don't ship Termux binaries to run outside Termux; statically link one consistent
+    toolchain. §5.5, §5.8, §7; `MoshClientImpl.moshServerCommand`, `ConnectionManager.buildMoshFallbackReport`.
 
 ---
 
