@@ -10,6 +10,7 @@ package com.termux.terminal
 
 import android.os.Handler
 import android.os.Looper
+import java.io.ByteArrayOutputStream
 
 /**
  * A [TerminalSession] driven by a local mosh-client child process.
@@ -48,6 +49,21 @@ class MoshRemoteTerminalSession(
     @Volatile
     private var sessionFinished = false
 
+    /**
+     * Bytes received from mosh-client BEFORE [mEmulator] exists.
+     *
+     * mosh is a DIFF protocol: its first frame is the full-screen keyframe
+     * and every later frame is only a delta against it. The byte-pump starts
+     * draining the mosh pty (and the liveness gate fires) before the
+     * TerminalView has laid out and created the emulator, so without this
+     * buffer that keyframe is dropped and the screen stays permanently
+     * desynced — the v1.7.8 mosh reconnect-freeze (gotcha #33). Buffered
+     * here, replayed in [initializeEmulator]. Touched on the main thread
+     * only; bounded so an emulator that never initializes can't grow it
+     * without limit.
+     */
+    private val pendingBytes = ByteArrayOutputStream()
+
     override fun initializeEmulator(
         columns: Int,
         rows: Int,
@@ -63,6 +79,15 @@ class MoshRemoteTerminalSession(
             /* transcriptRows = */ null,
             mClient,
         )
+        // Replay mosh's pre-emulator bytes (its first-frame keyframe) in
+        // order, so the delta stream that follows has its base. Without this
+        // the dropped keyframe leaves the screen frozen/garbled (gotcha #33).
+        if (pendingBytes.size() > 0) {
+            val buffered = pendingBytes.toByteArray()
+            pendingBytes.reset()
+            mEmulator.append(buffered, buffered.size)
+            notifyScreenUpdate()
+        }
         onResize(columns, rows)
     }
 
@@ -95,7 +120,17 @@ class MoshRemoteTerminalSession(
     fun feedRemoteBytes(bytes: ByteArray) {
         if (bytes.isEmpty() || sessionFinished) return
         mainHandler.post {
-            val emulator = mEmulator ?: return@post
+            if (sessionFinished) return@post
+            val emulator = mEmulator
+            if (emulator == null) {
+                // No emulator yet (TerminalView hasn't laid out). Buffer mosh's
+                // keyframe instead of dropping it — replayed in
+                // initializeEmulator. Bounded against a never-init emulator.
+                if (pendingBytes.size() + bytes.size <= PENDING_CAP_BYTES) {
+                    pendingBytes.write(bytes, 0, bytes.size)
+                }
+                return@post
+            }
             emulator.append(bytes, bytes.size)
             notifyScreenUpdate()
         }
@@ -128,4 +163,13 @@ class MoshRemoteTerminalSession(
      */
     fun sessionClient(): dev.kuch.termx.feature.terminal.SshSessionClient? =
         mClient as? dev.kuch.termx.feature.terminal.SshSessionClient
+
+    private companion object {
+        /**
+         * Cap on pre-init buffered mosh bytes. mosh's keyframe is ~one
+         * screen; the emulator initializes within a layout pass, so this is
+         * only a safety bound against an emulator that never appears.
+         */
+        const val PENDING_CAP_BYTES = 256 * 1024
+    }
 }
