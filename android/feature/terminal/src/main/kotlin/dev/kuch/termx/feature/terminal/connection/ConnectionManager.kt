@@ -901,11 +901,14 @@ class ConnectionManager @Inject constructor(
                     // banner within 250ms — it is incapable of long silence.
                     // So zero output here does NOT mean "slow start" or
                     // "blocked UDP" (the wrong v1.7.5 story); it means the
-                    // client died before main(), almost always in the
-                    // dynamic linker loading its ~40 lib*_mosh.so deps — a
-                    // failure bionic writes to logcat, never the pty. We
-                    // snapshot that logcat detail into the fallback report
-                    // below so the user can actually see it.
+                    // client died before main(). That was the root cause for
+                    // the whole v1.7.4–v1.7.6 saga: the bundled mosh-client
+                    // was a Termux build that SIGSEGV'd pre-main in the
+                    // dynamic linker (~40 lib*_mosh.so ODR/static-init soup),
+                    // invisible to the pty. v1.7.7 replaced it with a single
+                    // static PIE (bionic-only deps), so the gate now rarely
+                    // trips; when it does we still snapshot the logcat detail
+                    // into the fallback report below for the user.
                     val firstOutput = CompletableDeferred<Unit>()
                     val shell = openMoshTab(conn, result.session, firstOutput)
                     val live = withTimeoutOrNull(firstOutputTimeoutMs) {
@@ -1852,18 +1855,15 @@ class ConnectionManager @Inject constructor(
          * Liveness gate: the mosh session must produce its FIRST remote
          * output bytes within this window after a successful handshake.
          *
-         * WHY 15s (was 3s, and 3s was the bug): the on-device mosh-client
-         * is a Termux-built native binary that dynamically links ~40
-         * `lib*_mosh.so` deps on first launch. On a cold app process that
-         * link-load + transmit-first-UDP can take well over 3 seconds —
-         * longer than the old window — so the gate killed a perfectly
-         * healthy mosh-client mid-startup and fell back to SSH EVERY time,
-         * while the same server worked instantly from a desktop mosh
-         * (native client, no cold-start). Diagnosed 2026-06 by tcpdump on
-         * the server: a good bootstrap SSH but ZERO mosh UDP packets ever
-         * left the phone — the client never finished starting. 15s gives
-         * the cold start ample headroom; a genuinely firewalled link still
-         * trips the gate, just later. WHY the gate exists at all: the
+         * WHY 15s (was 3s): 3s was blamed in v1.7.5 as a cold-start timeout,
+         * but that diagnosis was WRONG (gotcha #32). The real bug was the
+         * bundled mosh-client itself — a Termux build that SIGSEGV'd in ~19ms
+         * pre-main in the dynamic linker (~40 `lib*_mosh.so` ODR/static-init
+         * soup), so it NEVER produced output regardless of the window. v1.7.7
+         * replaced it with a single static PIE (no dynamic C++ deps), which
+         * actually runs. The 15s value now barely matters — a healthy client
+         * emits within ms; the generous window just avoids clipping a slow
+         * first UDP round-trip on cellular. WHY the gate exists at all: the
          * `MOSH CONNECT` line travels over SSH/TCP, so the handshake
          * "succeeds" even when no UDP ever flows (firewalled, or a client
          * that never starts); without the gate the user gets a frozen
