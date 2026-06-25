@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.6](https://github.com/mkuchak/termx/compare/v1.7.5...v1.7.6) (2026-06-25)
+
+### Bug Fixes
+
+* **mosh:** surface the captured linker log via a Copy/Share dialog ([1e2a067](https://github.com/mkuchak/termx/commit/1e2a067219387a18a4d1d5b4dadfb8851d5bd7f2))
+
 ## [1.7.5](https://github.com/mkuchak/termx/compare/v1.7.4...v1.7.5) (2026-06-19)
 
 ### Bug Fixes
