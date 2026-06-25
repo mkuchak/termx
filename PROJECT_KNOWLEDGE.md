@@ -1503,6 +1503,7 @@ UI row flips them yet (router honors them if ever set).
 | **v1.7.5 mosh cold-start fix** (2026-06-19) | Mosh fell back to SSH *every time* in-app while working instantly from the desktop. Diagnosed by `tcpdump` on the VPS (which is this very machine): a good bootstrap SSH but **zero** mosh UDP packets ever left the phone — the native mosh-client never finished its ~40-lib cold start before the **3 s** first-output gate killed it. Fix: widen `MOSH_FIRST_OUTPUT_TIMEOUT_MS` to **15 s** (made an `internal var` test seam so unit suites don't burn 15 real s), and rename `FALLBACK_REASON_NO_UDP` → `FALLBACK_REASON_NO_FIRST_OUTPUT` with honest text ("no response in time — slow start or blocked UDP") — the old "check firewall" message was doubly wrong (no UDP sent, firewall open). Separately, dropped the IPv4-only `-i 0.0.0.0` from `mosh-server` so `-s` alone governs the bind and it follows the SSH address family (IPv6 servers worked never before). **⚠ The cold-start half of this was WRONG** — 15 s didn't fix it (the client dies pre-`main()` in the linker, not slowly; see v1.7.6 + gotcha #32). The `-i`-bind half remains valid | gotcha #32; §5.5/§5.8 mosh; §7 lifecycle; checklist item 16 |
 | **v1.7.6 mosh diagnostics surfacing** (2026-06-25) | The v1.7.5 timeout bump did NOT fix the user's mosh — proving "slow start" wrong. Re-derived from mosh source: a *running* mosh-client paints terminal-init within ms and a "Nothing received…" banner within 250 ms, so zero output for 15 s ⇒ the client died before `main()` in bionic's dynamic linker (logged to logcat, NOT the pty — invisible to termx). Static checks ruled out the cheap causes (libs are 16 KB-aligned, `DT_NEEDED` correct, `extractNativeLibs=true`), so the exact failure needs the device's logcat. termx already scraped its own child's linker logcat into `MoshDiagnostic.head` but discarded it; v1.7.6 snapshots it (+ device/OS/ABI/page-size) into `TransportState.Connected.transportFallbackDetail` (`buildMoshFallbackReport`) and makes the "via SSH — mosh unavailable" subtitle tappable → a Copy/Share dialog so a user with no adb can hand over the real linker error. Fallback text corrected to `"mosh-client produced no output"` | gotcha #32; §5.8 mosh diagnostics; checklist item 16 |
 | **v1.7.7 mosh static-binary fix** (2026-06-25) | The v1.7.6 dialog produced the proof on a Galaxy S22 / Android 14: `exit=139` (**SIGSEGV**) at **19 ms**, 4 KB pages — the bundled mosh-client crashes *before `main()`*. Not a timeout, not the firewall: the 53-`.so` termux bundle (mosh + ~40 abseil `.so`) dies in a static-initializer/ODR crash in the dynamic linker; it never ran on any device. Git history had already named this (`3a04233`/`9b00fcb`). **Fix: rebuilt mosh-client 1.4.0 with the NDK as a single static PIE** — static OpenSSL/protobuf-3.21(**no abseil**)/ncurses + `libc++_static`, 16 KB-aligned, bionic-only `DT_NEEDED`. jniLibs goes 53 files→1 per ABI (~46 MB→~8 MB). The whole dynamic-C++-load crash class is structurally eliminated. `scripts/build-mosh-static.sh` replaces the old patchelf bundler | gotcha #32; §5.5 mosh native; checklist item 16; BUILD.md |
+| **v1.7.8 mosh keyframe-replay fix** (2026-06-25) | With the static binary running (v1.7.7), mosh connected — but only the FIRST time: every reconnect froze with a stuck "Nothing received… UDP port N" ghost and an unscrollable/garbled screen, while SSH reconnected cleanly. Root cause: mosh is a DIFF protocol (first frame = full keyframe, rest = deltas), and `MoshRemoteTerminalSession.feedRemoteBytes` DROPPED bytes while `mEmulator == null` — and the liveness gate mounts the emulator only AFTER the first chunk, which IS the keyframe. First connect healed by accident (cold 80×24→real-size resize forces a herdr full-repaint); reconnect attaches to the already-sized herdr session → resize is a no-op → no repaint → frozen. Fix: buffer pre-emulator bytes into a bounded (256 KB) `pendingBytes` and replay them in order once `initializeEmulator` runs, so the keyframe becomes the emulator's base. Distinct from #32 (client never ran) and from deferred #64 (server-side resume) | gotcha #33; §5.8 mosh render; checklist item 16 |
 
 ---
 
@@ -1648,6 +1649,34 @@ The "if you change this without reading its comment, you will reintroduce a ship
     bionic-only `DT_NEEDED`, no dynamic C++ loading → the entire ODR/static-init crash class is gone.
     LESSON: don't ship Termux binaries to run outside Termux; statically link one consistent
     toolchain. §5.5, §5.8, §7; `MoshClientImpl.moshServerCommand`, `ConnectionManager.buildMoshFallbackReport`.
+33. **mosh is a DIFF protocol — dropping its first frame is a PERMANENT desync, not a transient
+    glitch.** Sibling of #32 but the opposite failure: there the client never *ran* (pre-`main()`
+    SIGSEGV); here the client runs fine and termx throws away its first frame. mosh-client paints a
+    full-screen **keyframe** at startup (terminal init + the whole visible screen) and thereafter
+    sends only **deltas** against it. `MoshRemoteTerminalSession.feedRemoteBytes` used to DROP every
+    byte while `mEmulator == null`, and the liveness gate in `ConnectionManager` mounts the
+    `TerminalView` (which creates the emulator) only AFTER the first output chunk arrives — and that
+    first chunk *is* the keyframe. So the base frame was always discarded, then deltas landed on an
+    empty emulator → the screen stayed frozen/garbled with a stuck "Nothing received from server on
+    UDP port N" ghost (that overlay is startup-only, so a *stuck* one is a dropped keyframe, not
+    live UDP loss). The reason the **first** connect looked fine was an accident: the emulator is
+    born at the cold 80×24 default and the layout pass immediately resizes it to the real geometry —
+    a genuine geometry change, which makes the remote multiplexer (`herdr`/tmux) repaint the whole
+    screen, papering over the lost keyframe. On **reconnect** termx reattaches to the *already-sized*
+    persistent herdr session, so the 80×24→real resize is a no-op → no repaint → the drop is exposed
+    and the session is frozen. (This is why "it worked the first time, freezes on reconnect" — it
+    was never the keyframe surviving, only a resize accidentally regenerating it.) **Fix (v1.7.8):**
+    when `mEmulator == null`, BUFFER the bytes into a bounded `ByteArrayOutputStream pendingBytes`
+    (cap `PENDING_CAP_BYTES` = 256 KB against an emulator that never appears) and REPLAY them in
+    order inside `initializeEmulator` right after `mEmulator = TerminalEmulator(...)`, before the
+    delta stream continues — so the keyframe is the emulator's base, repaint-independent. Distinct
+    from deferred Task #64 (server-side mosh-session *resume*): that's about a NEW mosh-server after a
+    roam; this is purely a local render-adapter drop. SSH (`RemoteTerminalSession`) carries the same
+    latent pre-emulator drop, but it's masked — SSH is not a diff protocol, so a fresh login shell
+    just reprints its prompt and nothing is permanently lost; only mosh's delta encoding turns a
+    dropped frame into a permanent desync. Don't "simplify" the buffer away or move the liveness gate
+    to fire before the keyframe without re-solving this. `MoshRemoteTerminalSession.kt`
+    `feedRemoteBytes`/`initializeEmulator`; §5.8.
 
 ---
 
