@@ -1504,6 +1504,7 @@ UI row flips them yet (router honors them if ever set).
 | **v1.7.6 mosh diagnostics surfacing** (2026-06-25) | The v1.7.5 timeout bump did NOT fix the user's mosh — proving "slow start" wrong. Re-derived from mosh source: a *running* mosh-client paints terminal-init within ms and a "Nothing received…" banner within 250 ms, so zero output for 15 s ⇒ the client died before `main()` in bionic's dynamic linker (logged to logcat, NOT the pty — invisible to termx). Static checks ruled out the cheap causes (libs are 16 KB-aligned, `DT_NEEDED` correct, `extractNativeLibs=true`), so the exact failure needs the device's logcat. termx already scraped its own child's linker logcat into `MoshDiagnostic.head` but discarded it; v1.7.6 snapshots it (+ device/OS/ABI/page-size) into `TransportState.Connected.transportFallbackDetail` (`buildMoshFallbackReport`) and makes the "via SSH — mosh unavailable" subtitle tappable → a Copy/Share dialog so a user with no adb can hand over the real linker error. Fallback text corrected to `"mosh-client produced no output"` | gotcha #32; §5.8 mosh diagnostics; checklist item 16 |
 | **v1.7.7 mosh static-binary fix** (2026-06-25) | The v1.7.6 dialog produced the proof on a Galaxy S22 / Android 14: `exit=139` (**SIGSEGV**) at **19 ms**, 4 KB pages — the bundled mosh-client crashes *before `main()`*. Not a timeout, not the firewall: the 53-`.so` termux bundle (mosh + ~40 abseil `.so`) dies in a static-initializer/ODR crash in the dynamic linker; it never ran on any device. Git history had already named this (`3a04233`/`9b00fcb`). **Fix: rebuilt mosh-client 1.4.0 with the NDK as a single static PIE** — static OpenSSL/protobuf-3.21(**no abseil**)/ncurses + `libc++_static`, 16 KB-aligned, bionic-only `DT_NEEDED`. jniLibs goes 53 files→1 per ABI (~46 MB→~8 MB). The whole dynamic-C++-load crash class is structurally eliminated. `scripts/build-mosh-static.sh` replaces the old patchelf bundler | gotcha #32; §5.5 mosh native; checklist item 16; BUILD.md |
 | **v1.7.8 mosh keyframe-replay fix** (2026-06-25) | With the static binary running (v1.7.7), mosh connected — but only the FIRST time: every reconnect froze with a stuck "Nothing received… UDP port N" ghost and an unscrollable/garbled screen, while SSH reconnected cleanly. Root cause: mosh is a DIFF protocol (first frame = full keyframe, rest = deltas), and `MoshRemoteTerminalSession.feedRemoteBytes` DROPPED bytes while `mEmulator == null` — and the liveness gate mounts the emulator only AFTER the first chunk, which IS the keyframe. First connect healed by accident (cold 80×24→real-size resize forces a herdr full-repaint); reconnect attaches to the already-sized herdr session → resize is a no-op → no repaint → frozen. Fix: buffer pre-emulator bytes into a bounded (256 KB) `pendingBytes` and replay them in order once `initializeEmulator` runs, so the keyframe becomes the emulator's base. Distinct from #32 (client never ran) and from deferred #64 (server-side resume) | gotcha #33; §5.8 mosh render; checklist item 16 |
+| **v1.7.9 mosh mouse-mode fix** (2026-06-26) | With rendering fixed (v1.7.8), mosh was usable — and exposed the next layer: inside a multiplexer over mosh, finger-scroll recalled the agent's prompt history instead of scrolling and taps couldn't switch panes, while SSH was perfect. Root cause: a multiplexer enables mouse with any-event tracking (`␛[?1003h`; confirmed in the user's `herdr 0.7.1` binary), but mosh keeps only ONE reporting mode and collapses 1000/1002/1003 to the last (1003) — and the vendored Termux emulator never mapped 1003, so `isMouseTrackingActive()` stayed false → `TerminalView.doScroll` fell to its arrow-key branch and taps sent no click. SSH worked because raw passthrough kept the 1002 bit. Fix (emulator-side, not a mosh patch — termx ships only mosh-client + the distro server): map DECSET 1003 to a new any-event tracking bit, make 1000/1002/1003 mutually exclusive, include it in `isMouseTrackingActive()` + the motion gate, and also honor urxvt 1015 encoding (SGR still first, SSH unchanged). Verified by 4 emulator unit tests | gotcha #34; mosh#1364; §5.8 mosh input; checklist item 16 |
 
 ---
 
@@ -1677,6 +1678,33 @@ The "if you change this without reading its comment, you will reintroduce a ship
     dropped frame into a permanent desync. Don't "simplify" the buffer away or move the liveness gate
     to fire before the keyframe without re-solving this. `MoshRemoteTerminalSession.kt`
     `feedRemoteBytes`/`initializeEmulator`; §5.8.
+34. **mosh collapses a multiplexer's mouse-enable down to ONE mode — so an emulator that ignores
+    DECSET 1003 silently loses all mouse mode over mosh (scroll → arrow keys, taps do nothing).**
+    The input-side sequel to #33 (#33 was render/keyframe; this is mouse input). Symptom: under mosh
+    inside a multiplexer, finger-scroll recalls the agent's prompt history instead of scrolling and
+    taps can't switch panes — while SSH is perfect. Mechanism, end to end: (a) a multiplexer enables
+    mouse with `␛[?1000h␛[?1002h␛[?1003h␛[?1006h` (any-event tracking + SGR). Verified on-box: the
+    user's `herdr 0.7.1` binary bakes in literal `[?1003h` (and `[?1015h`). (b) mosh's terminal
+    emulator stores only a **single** `mouse_reporting_mode` and force-disables the previous one
+    (upstream-open **mosh#1364**, repro'd with zellij + the *Termux* emulator we vendor), so it
+    collapses 1000/1002/1003 to the **last** = **1003**; the client replays just `␛[?1002l␛[?1003h`.
+    (c) the vendored Termux `TerminalEmulator` historically mapped 1000/1002/1006 but **not 1003**
+    (`mapDecSetBitToInternalBit` had no `case 1003`), so `␛[?1003h` was parsed-and-ignored →
+    `isMouseTrackingActive()` stayed **false**. (d) `TerminalView.doScroll` keys purely off emulator
+    state (transport-agnostic): mouse-off + alt-screen → the `handleKeyCode(KEYCODE_DPAD_UP/DOWN)`
+    branch (literal `␛[A`/`␛[B`) → agent history recall; and `onUp` sends a click only when mouse
+    tracking is active → taps go nowhere. SSH worked only because raw passthrough delivered all of
+    1000/1002/1003 and the surviving **1002** bit kept mouse mode on. **Fix (v1.7.9, emulator-side):**
+    map 1003 → a new `DECSET_BIT_MOUSE_TRACKING_ANY_EVENT`, make the three reporting modes
+    (1000/1002/1003) mutually exclusive, include any-event in `isMouseTrackingActive()` and the
+    motion-report gate, and also honor **urxvt 1015** encoding (SGR still checked first, so SSH is
+    byte-for-byte unchanged) so reports stay correctly encoded whatever mosh collapses the encoding
+    to. The fix is in termx's emulator, NOT a mosh patch — termx builds only mosh-CLIENT
+    (`--disable-server`) and the mosh-SERVER is the user's distro `mosh` package, so a protocol-level
+    fix isn't deployable; honoring 1003/1015 on the device sidesteps that entirely. Don't drop the
+    1003 mapping or the 3-way exclusion. `TerminalEmulator.java` (`mapDecSetBitToInternalBit`,
+    `setDecsetinternalBit`, `isMouseTrackingActive`, `sendMouseEvent`), `TerminalView.doScroll`/`onUp`;
+    §5.8.
 
 ---
 
