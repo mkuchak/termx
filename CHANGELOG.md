@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.7.9](https://github.com/mkuchak/termx/compare/v1.7.8...v1.7.9) (2026-06-26)
+
+### Bug Fixes
+
+* **mosh:** honor DECSET 1003/1015 so mouse mode survives mosh ([e221f62](https://github.com/mkuchak/termx/commit/e221f622442cf0b11ebbd027500978fa897b4952))
+
 ## [1.7.8](https://github.com/mkuchak/termx/compare/v1.7.7...v1.7.8) (2026-06-25)
 
 ### Bug Fixes
