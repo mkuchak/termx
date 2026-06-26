@@ -134,10 +134,28 @@ public final class TerminalEmulator {
     private static final int DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE = 1 << 6;
     /** DECSET 1002 - like 1000, but report moving mouse while pressed. */
     private static final int DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT = 1 << 7;
+    /**
+     * DECSET 1003 - any-event tracking (like 1002 but report movement even with no button pressed).
+     * Bit value is 1&lt;&lt;13 (out of sequence) because 1&lt;&lt;8..1&lt;&lt;12 were already taken
+     * when this was added. Load-bearing for the mosh transport: mosh keeps only ONE mouse reporting
+     * mode and collapses a multiplexer's 1000/1002/1003 enable sequence down to the last one (1003),
+     * so an emulator that ignored 1003 silently lost mouse mode over mosh — scroll fell back to
+     * arrow keys and taps stopped reaching the app, while SSH (raw passthrough kept 1002) worked.
+     * See PROJECT_KNOWLEDGE gotcha #34.
+     */
+    private static final int DECSET_BIT_MOUSE_TRACKING_ANY_EVENT = 1 << 13;
     /** DECSET 1004 - NOT implemented. */
     private static final int DECSET_BIT_SEND_FOCUS_EVENTS = 1 << 8;
     /** DECSET 1006 - SGR-like mouse protocol (the modern sane choice). */
     private static final int DECSET_BIT_MOUSE_PROTOCOL_SGR = 1 << 9;
+    /**
+     * DECSET 1015 - urxvt mouse encoding (decimal {@code CSI Cb;Cx;Cy M}, Cb = button + 32). Honored
+     * as a fallback so reports stay correctly encoded if the remote app — or mosh, which keeps a
+     * single encoding and may collapse to this one — selects urxvt instead of SGR. SGR is still
+     * checked first in {@link #sendMouseEvent}, so this never changes behavior when SGR is active.
+     * Bit value 1&lt;&lt;14.
+     */
+    private static final int DECSET_BIT_MOUSE_PROTOCOL_URXVT = 1 << 14;
     /** DECSET 2004 - see {@link #paste(String)} */
     private static final int DECSET_BIT_BRACKETED_PASTE_MODE = 1 << 10;
     /** Toggled with DECLRMM - http://www.vt100.net/docs/vt510-rm/DECLRMM */
@@ -291,11 +309,15 @@ public final class TerminalEmulator {
 
     private void setDecsetinternalBit(int internalBit, boolean set) {
         if (set) {
-            // The mouse modes are mutually exclusive.
-            if (internalBit == DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) {
-                setDecsetinternalBit(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT, false);
-            } else if (internalBit == DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT) {
+            // The three mouse reporting modes (1000/1002/1003) are mutually exclusive; enabling one
+            // clears the other two. The recursive resets run with set=false, so they skip this block
+            // and only clear — the target bit is re-applied by the |= below.
+            if (internalBit == DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE
+                || internalBit == DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT
+                || internalBit == DECSET_BIT_MOUSE_TRACKING_ANY_EVENT) {
                 setDecsetinternalBit(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE, false);
+                setDecsetinternalBit(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT, false);
+                setDecsetinternalBit(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT, false);
             }
         }
         if (set) {
@@ -325,10 +347,14 @@ public final class TerminalEmulator {
                 return DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE;
             case 1002:
                 return DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT;
+            case 1003:
+                return DECSET_BIT_MOUSE_TRACKING_ANY_EVENT;
             case 1004:
                 return DECSET_BIT_SEND_FOCUS_EVENTS;
             case 1006:
                 return DECSET_BIT_MOUSE_PROTOCOL_SGR;
+            case 1015:
+                return DECSET_BIT_MOUSE_PROTOCOL_URXVT;
             case 2004:
                 return DECSET_BIT_BRACKETED_PASTE_MODE;
             default:
@@ -380,10 +406,16 @@ public final class TerminalEmulator {
         if (row < 1) row = 1;
         if (row > mRows) row = mRows;
 
-        if (mouseButton == MOUSE_LEFT_BUTTON_MOVED && !isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT)) {
-            // Do not send tracking.
+        if (mouseButton == MOUSE_LEFT_BUTTON_MOVED
+            && !isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT)
+            && !isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT)) {
+            // Movement is only reported under button-event (1002) or any-event (1003) tracking.
         } else if (isDecsetInternalBitSet(DECSET_BIT_MOUSE_PROTOCOL_SGR)) {
             mSession.write(String.format("\033[<%d;%d;%d" + (pressed ? 'M' : 'm'), mouseButton, column, row));
+        } else if (isDecsetInternalBitSet(DECSET_BIT_MOUSE_PROTOCOL_URXVT)) {
+            // urxvt encoding: CSI Cb ; Cx ; Cy M, with Cb = button + 32 and button 3 for release.
+            int urxvtButton = (pressed ? mouseButton : 3) + 32;
+            mSession.write(String.format("\033[%d;%d;%dM", urxvtButton, column, row));
         } else {
             mouseButton = pressed ? mouseButton : 3; // 3 for release of all buttons.
             // Clip to screen, and clip to the limits of 8-bit data.
@@ -514,7 +546,9 @@ public final class TerminalEmulator {
 
     /** If mouse events are being sent as escape codes to the terminal. */
     public boolean isMouseTrackingActive() {
-        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE) || isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT);
+        return isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_PRESS_RELEASE)
+            || isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_BUTTON_EVENT)
+            || isDecsetInternalBitSet(DECSET_BIT_MOUSE_TRACKING_ANY_EVENT);
     }
 
     private void setDefaultTabStops() {
